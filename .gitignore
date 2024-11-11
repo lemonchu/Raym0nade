@@ -115,3 +115,6 @@ CMakeUserPresets.json
 __pycache__/
 *.py[cod]
 *$py.class
+
+# collaboration files
+CMakeLists.txt
