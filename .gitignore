@@ -1,0 +1,117 @@
+# VSCode
+.vscode/
+.history/
+.vscode-test/
+.vscode-oss-dev/
+
+# CLion
+.idea/
+cmake-build-debug/
+cmake-build-release/
+cmake-build-*/
+build/
+*.iml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# macOS Thumbnails
+._*
+
+# macOS Files that store Finder window information
+.Spotlight-V100
+.Trashes
+.VolumeIcon.icns
+.fseventsd
+
+# Compiled source
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.so
+*.dylib
+
+# CMake
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Testing
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+CMakeUserPresets.json
+
+# ClangD
+.clangd/
+.clangd_profile
+
+# Other IDEs and editors
+*.swp
+*~
+
+# Logs
+*.log
+
+# Backup files
+*.bak
+*.tmp
+*.old
+*.orig
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+*.def
+*.exe
+*.app
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Generated files
+*.dSYM/
+*.dSYM.zip
+*.dSYM.tar.gz
+*.patch
+*.class
+*.suo
+*.cache
+*.project
+*.directory
+
+# Coverage
+*.gcno
+*.gcda
+
+# Documentation
+*.pdf
+*.chm
+*.epub
+*.docx
+*.doc
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.lock
+*.sublime-project
+*.sublime-workspace
+
+# macOS local library
+__pycache__/
+*.py[cod]
+*$py.class

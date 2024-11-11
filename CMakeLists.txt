@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.10)
+
+project(VisualTikzDemo VERSION 1.0)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED True)
+
+set(SDL2_INCLUDE_DIRS "")
+set(SDL2_LIBRARIES "SDL2::SDL2")
+
+find_package(SDL2 REQUIRED)
+
+message(STATUS "SDL2_INCLUDE_DIRS: ${SDL2_INCLUDE_DIRS}")
+message(STATUS "SDL2_LIBRARIES: ${SDL2_LIBRARIES}")
+
+include_directories(${SDL2_INCLUDE_DIRS})
+
+include_directories(include)
+
+file(GLOB_RECURSE PROJECT_SOURCES "src/*.cpp" "src/geometry/*.cpp" "src/mathematics/*.cpp")
+
+message(STATUS "PROJECT_SOURCES: ${PROJECT_SOURCES}")
+
+add_executable(Demo src/main.cpp ${PROJECT_SOURCES})
+
+target_link_libraries(Demo PUBLIC ${SDL2_LIBRARIES})
