@@ -118,3 +118,4 @@ __pycache__/
 
 # collaboration files
 CMakeLists.txt
+glm/
