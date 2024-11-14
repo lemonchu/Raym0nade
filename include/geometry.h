@@ -3,12 +3,19 @@
 
 #include <glm/glm.hpp>
 #include <iostream>
+#include "model.h"
 
 using vec3 = glm::vec<3, float>;
 
+struct TriangleIdentifier {
+    unsigned int meshId, triangleId;
+    TriangleIdentifier() {}
+    TriangleIdentifier(unsigned int meshId, unsigned int triangleId) : meshId(meshId), triangleId(triangleId) {}
+};
+
 struct Triangle {
     vec3 v[3];
-    unsigned int id;
+    TriangleIdentifier identifier;
 };
 
 struct Ray {
@@ -18,15 +25,17 @@ struct Ray {
 struct HitRecord {
     vec3 normal;
     float t_min, t_max;
+    TriangleIdentifier identifier;
     HitRecord(vec3 normal, float t_min, float t_max) : normal(normal), t_min(t_min), t_max(t_max) {}
 };
 
 const float eps = 1e-4;
 
-bool RayTriangleIntersection(Ray ray, Triangle tri, HitRecord &hit) {
-    vec3 edge1 = tri.v[1] - tri.v[0];
-    vec3 edge2 = tri.v[2] - tri.v[0];
-    vec3 h = cross(ray.direction, edge2);
+bool RayTriangleIntersection(const Ray& ray, const Triangle& tri, HitRecord &hit) {
+    vec3
+        edge1 = tri.v[1] - tri.v[0],
+        edge2 = tri.v[2] - tri.v[0],
+        h = cross(ray.direction, edge2);
     float a = dot(edge1, h);
 
     if (abs(a) < eps)

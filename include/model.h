@@ -55,10 +55,10 @@ public:
                     mesh->mVertices[face.mIndices[2]]
                 };
                 triangles.push_back({{
-                    glm::vec<3, float>(vertex[0].x, vertex[0].y, vertex[0].z),
-                    glm::vec<3, float>(vertex[1].x, vertex[1].y, vertex[1].z),
-                    glm::vec<3, float>(vertex[2].x, vertex[2].y, vertex[2].z)},
-                    j
+                        glm::vec<3, float>(vertex[0].x, vertex[0].y, vertex[0].z),
+                        glm::vec<3, float>(vertex[1].x, vertex[1].y, vertex[1].z),
+                        glm::vec<3, float>(vertex[2].x, vertex[2].y, vertex[2].z)},
+                    TriangleIdentifier(i, j)
                 });
             }
         }
