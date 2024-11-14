@@ -5,6 +5,7 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include "geometry.h"
+#include "texture.h"
 #include <iostream>
 #include <vector>
 
@@ -13,6 +14,7 @@ private:
     Assimp::Importer importer;
     const aiScene* scene;
 public:
+    std::vector<Texture> textures;
     std::vector<Triangle> triangles;
     int load(const char* file_name) {
         scene = importer.ReadFile(file_name,
@@ -44,9 +46,9 @@ public:
         }
         */
 
+        textures.reserve(scene->mNumMeshes);
         for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
             aiMesh* mesh = scene->mMeshes[i];
-
             for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
                 aiFace &face = mesh->mFaces[j];
                 aiVector3D vertex[3] = {
@@ -54,11 +56,19 @@ public:
                     mesh->mVertices[face.mIndices[1]],
                     mesh->mVertices[face.mIndices[2]]
                 };
-                triangles.push_back({{
-                        glm::vec<3, float>(vertex[0].x, vertex[0].y, vertex[0].z),
-                        glm::vec<3, float>(vertex[1].x, vertex[1].y, vertex[1].z),
-                        glm::vec<3, float>(vertex[2].x, vertex[2].y, vertex[2].z)},
-                    TriangleIdentifier(i, j)
+                aiVector3D texCoord[3] = {
+                    mesh->mTextureCoords[0][face.mIndices[0]],
+                    mesh->mTextureCoords[0][face.mIndices[1]],
+                    mesh->mTextureCoords[0][face.mIndices[2]]
+                };
+                triangles.push_back({
+                    {vec3(vertex[0].x, vertex[0].y, vertex[0].z),
+                     vec3(vertex[1].x, vertex[1].y, vertex[1].z),
+                     vec3(vertex[2].x, vertex[2].y, vertex[2].z)},
+                    {glm::vec<2, float>(texCoord[0].x, texCoord[0].y),
+                     glm::vec<2, float>(texCoord[1].x, texCoord[1].y),
+                     glm::vec<2, float>(texCoord[2].x, texCoord[2].y)},
+                    &textures[i]
                 });
             }
         }

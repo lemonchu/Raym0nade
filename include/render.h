@@ -22,7 +22,7 @@ public:
     HitRecord rayHit(Ray ray) {
         HitRecord closest_hit = HitRecord(vec3(0), eps, INFINITY);
 
-        for (const Triangle &tri : model.triangles)
+        for (Triangle &tri : model.triangles)
             RayTriangleIntersection(ray, tri, closest_hit);
 
         return closest_hit;
