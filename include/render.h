@@ -19,23 +19,43 @@ public:
     Renderer(int width, int height, const char* model_file) : image(width, height) {
         model.load(model_file);
     }
-    HitRecord rayHit(Ray ray) {
-        HitRecord closest_hit = HitRecord(vec3(0), eps, INFINITY);
-
-        for (Triangle &tri : model.triangles)
-            RayTriangleIntersection(ray, tri, closest_hit);
-
-        return closest_hit;
-    }
 
     PixelData sampleRay(Ray ray, int depth = 0) {
-        HitRecord hit = rayHit(ray);
+        HitRecord hit = model.kdt.rayHit(ray);
         PixelData ret;
         if (hit.t_max < INFINITY) {
-            ret.color = glm::vec<3, float>(1, 1, 1);
+
+            const auto& tri = *hit.tri;
+            const auto& texture = *tri.texture;
+            const auto& uv = tri.uv;
+
+            const auto& intersection = ray.origin + hit.t_max * ray.direction;
+
+            float area = length(cross(tri.v[1] - tri.v[0], tri.v[2] - tri.v[0]));
+            float area1 = length(cross(intersection - tri.v[0], tri.v[2] - tri.v[0])) / area;
+            float area2 = length(cross(tri.v[1] - tri.v[0], intersection - tri.v[0])) / area;
+            float area3 = 1.0f - area1 - area2;
+
+            float a = area1, b = area2, c = area3;
+
+            float u = a * uv[0].x + b * uv[1].x + c * uv[2].x;
+            float v = a * uv[0].y + b * uv[1].y + c * uv[2].y;
+
+            int texX = static_cast<int>(u * texture.width);
+            int texY = texture.height - static_cast<int>(v * texture.height);
+
+            const std::vector<uint8_t>& imageData = texture.getImage(12);
+            int pixelIndex = (texY * texture.width + texX) * 3; // 3 channels for RGB
+
+            ret.color = glm::vec<3, float>(
+                    imageData[pixelIndex] / 255.0f,
+                    imageData[pixelIndex + 1] / 255.0f,
+                    imageData[pixelIndex + 2] / 255.0f
+            );
+
             ret.depth = hit.t_max;
         } else {
-            ret.color = glm::vec<3, float>(0, 0, 0);
+            ret.color = glm::vec<3, float>(1, 1, 1);
             ret.depth = 0;
         }
         return ret;

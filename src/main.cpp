@@ -2,7 +2,7 @@
 #include <ctime>
 
 void InitCamera(Camera &camera) {
-    camera.accuracy = 0.002;
+    camera.accuracy = 0.001;
     camera.direction = glm::vec<3, float>(1/sqrt(2), 1/sqrt(2), 0);
     camera.up = glm::vec<3, float>(1/sqrt(2), -1/sqrt(2), 0);
     camera.right = glm::vec<3, float>(0, 0, 1);
@@ -15,7 +15,7 @@ int main() {
     std::cout << "O2 optimization is not enabled." << std::endl;
 #endif
     int sav = clock();
-    Renderer renderer(512, 512, "fbx/chair.fbx");
+    Renderer renderer(1024, 1024, "fbx/chair.fbx");
     InitCamera(renderer.camera);
     renderer.render();
     renderer.saveImage("test.png");
