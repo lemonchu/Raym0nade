@@ -23,9 +23,6 @@ message(STATUS "PROJECT_SOURCES: ${PROJECT_SOURCES}")
 
 add_executable(Demo src/main.cpp ${PROJECT_SOURCES})
 
-target_link_libraries(Demo PUBLIC ${SDL2_LIBRARIES})
-target_link_libraries(Demo PUBLIC assimp::assimp)
-target_link_libraries(Demo PUBLIC PNG::PNG)
-target_link_libraries(Demo PUBLIC ${ZLIB_LIBRARIES})
+target_link_libraries(Demo PUBLIC ${SDL2_LIBRARIES} assimp::assimp PNG::PNG ${ZLIB_LIBRARIES})
 
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}/glm")

@@ -40,6 +40,7 @@ public:
             aiMaterial *material = scene->mMaterials[i];
 
             for (unsigned int j = 0; j < AI_TEXTURE_TYPE_MAX; j++) {
+        if (j!=1)continue;
                 aiTextureType textureType = (aiTextureType) j;
                 unsigned int numTextures = material->GetTextureCount(textureType);
                 for (unsigned int k = 0; k < numTextures; k++) {
@@ -47,9 +48,13 @@ public:
                     if (material->GetTexture(textureType, k, &path) == AI_SUCCESS) {
                         std::cout << "Texture path (" << textureType << "): " << path.C_Str() << std::endl;
                     }
-                    std::string pathStr = path.C_Str();
+                    std::string pathStr = (std::string)"fbx/" + path.C_Str();
+#ifdef WIN32
+                    std::replace(pathStr.begin(), pathStr.end(), '/', '\\');
+#else
                     std::replace(pathStr.begin(), pathStr.end(), '\\', '/');
-                    textures[i].loadImageFormFile(j,  (std::string)"fbx/" + pathStr);
+#endif
+                    textures[i].loadImageFormFile(j,   pathStr);
                 }
             }
         }
@@ -57,6 +62,7 @@ public:
 
         textures.reserve(scene->mNumMeshes);
         for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
+            printf("Loading mesh %d\n", i);
             aiMesh *mesh = scene->mMeshes[i];
             for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
                 aiFace &face = mesh->mFaces[j];
@@ -77,7 +83,7 @@ public:
                         {glm::vec<2, float>(texCoord[0].x, texCoord[0].y),
                          glm::vec<2, float>(texCoord[1].x, texCoord[1].y),
                          glm::vec<2, float>(texCoord[2].x, texCoord[2].y)},
-                        &textures[i]
+                        &textures[mesh->mMaterialIndex]
                 });
             }
         }

@@ -14,13 +14,15 @@ struct Ray {
 
 struct Box {
     vec3 v0, v1;
+    Box() {}
+    Box(const vec3 &v0, const vec3 &v1) : v0(v0), v1(v1) {}
 };
 
 Box operator + (const Box &A, const Box &B) {
-    return (Box){
-            vec3(std::min(A.v0[0], B.v0[0]), std::min(A.v0[1], B.v0[1]), std::min(A.v0[2], B.v0[2])),
-            vec3(std::max(A.v1[0], B.v1[0]), std::max(A.v1[1], B.v1[1]), std::max(A.v1[2], B.v1[2]))
-    };
+    return Box(
+        vec3(std::min(A.v0[0], B.v0[0]), std::min(A.v0[1], B.v0[1]), std::min(A.v0[2], B.v0[2])),
+        vec3(std::max(A.v1[0], B.v1[0]), std::max(A.v1[1], B.v1[1]), std::max(A.v1[2], B.v1[2]))
+    );
 }
 
 void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR) {
@@ -53,7 +55,7 @@ struct Triangle {
     vec2 uv[3];
     Texture* texture;
     Box aabb() {
-        return (Box){
+        return Box(
             vec3(
                 std::min(v[0][0],std::min(v[1][0],v[2][0])),
                 std::min(v[0][1],std::min(v[1][1],v[2][1])),
@@ -64,7 +66,7 @@ struct Triangle {
                 std::max(v[0][1],std::max(v[1][1],v[2][1])),
                 std::max(v[0][2],std::max(v[1][2],v[2][2]))
             )
-        };
+        );
     }
 };
 

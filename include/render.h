@@ -44,7 +44,7 @@ public:
             int texX = static_cast<int>(u * texture.width);
             int texY = texture.height - static_cast<int>(v * texture.height);
 
-            const std::vector<uint8_t>& imageData = texture.getImage(12);
+            const std::vector<uint8_t>& imageData = texture.getImage(1);
             int pixelIndex = (texY * texture.width + texX) * 3; // 3 channels for RGB
 
             ret.color = glm::vec<3, float>(
@@ -54,10 +54,19 @@ public:
             );
 
             ret.depth = hit.t_max;
+
+            vec3 light = normalize(vec3(0, -1, -1));
+            float lightIntensity = 0.6;
+            float ambientIntensity = 0.4;
+            vec3 normal = normalize(cross(tri.v[1] - tri.v[0], tri.v[2] - tri.v[0]));
+            float diffuse = glm::dot(normal, light);
+
+            ret.color = ret.color * (ambientIntensity + lightIntensity * std::max(0.0f, diffuse));
         } else {
             ret.color = glm::vec<3, float>(1, 1, 1);
             ret.depth = 0;
         }
+
         return ret;
     }
 

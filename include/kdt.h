@@ -8,7 +8,6 @@ struct KDT_Node {
     Box box;
     KDT_Node *son[2];
     Triangle *triL, *triR;
-
     KDT_Node() {
         son[0] = son[1] = nullptr;
     }
@@ -43,7 +42,7 @@ public:
         if (triR - triL <= LeafBagSize) {
             u->triL = triL;
             u->triR = triR;
-            u->box = (Box){vec3(INFINITY),vec3(-INFINITY)};
+            u->box = Box(vec3(INFINITY),vec3(-INFINITY));
             for (Triangle *ptr = u->triL; ptr != u->triR; ++ptr)
                 u->box = u->box + ptr->aabb();
             return;
