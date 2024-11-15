@@ -32,17 +32,17 @@ public:
             const auto& intersection = ray.origin + hit.t_max * ray.direction;
 
             float area = length(cross(tri.v[1] - tri.v[0], tri.v[2] - tri.v[0]));
-            float area1 = length(cross(intersection - tri.v[0], tri.v[2] - tri.v[0])) / area;
             float area2 = length(cross(tri.v[1] - tri.v[0], intersection - tri.v[0])) / area;
-            float area3 = 1.0f - area1 - area2;
+            float area1 = length(cross(intersection - tri.v[0], tri.v[2] - tri.v[0])) / area;
+            float area0 = 1.0f - area1 - area2;
 
-            float a = area1, b = area2, c = area3;
+            float a = area0, b = area1, c = area2;
 
             float u = a * uv[0].x + b * uv[1].x + c * uv[2].x;
             float v = a * uv[0].y + b * uv[1].y + c * uv[2].y;
 
-            int texX = static_cast<int>(u * texture.width);
-            int texY = texture.height - static_cast<int>(v * texture.height);
+            int texX = static_cast<int>(u * texture.width + 0.5);
+            int texY = texture.height - static_cast<int>(v * texture.height + 0.5);
 
             const std::vector<uint8_t>& imageData = texture.getImage(1);
             int pixelIndex = (texY * texture.width + texX) * 3; // 3 channels for RGB

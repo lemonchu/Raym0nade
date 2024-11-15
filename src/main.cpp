@@ -2,7 +2,7 @@
 #include <ctime>
 
 void InitCamera(Camera &camera) {
-    camera.accuracy = 0.0003;
+    camera.accuracy = 0.0002;
     camera.direction = glm::vec<3, float>(1/sqrt(2), 0, 1/sqrt(2));
     camera.up = glm::vec<3, float>(0, 1, 0);
     camera.right = glm::vec<3, float>(1/sqrt(2), 0, -1/sqrt(2));
