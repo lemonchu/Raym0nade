@@ -4,25 +4,22 @@
 #include <glm/glm.hpp>
 #include "model.h"
 #include "image.h"
+#include "geometry.h"
 
-struct Camera {
-    glm::vec<3, float> position, direction, up, right;
+struct RenderArgs {
+    vec3 position, direction, up, right;
     float accuracy;     // 胶片距离为 1.0，每个像素的偏移量为 accuracy
-    int Oversampling;   // 超采样倍数
+    unsigned int oversampling, width, height;
+    std::string savePath;
 };
 
 class Renderer {
-private:
-    Model model;
-    Image image;
 public:
-    Camera camera;
-    Renderer(int width, int height, const char* model_file) : image(width, height) {
-        model.load(model_file);
-    }
+    Model *modelPtr;
+    Renderer() {}
 
     PixelData sampleRay(Ray ray, int depth = 0) {
-        HitRecord hit = model.kdt.rayHit(ray);
+        HitRecord hit = modelPtr->kdt.rayHit(ray);
         PixelData ret;
         if (hit.t_max < INFINITY) {
 
@@ -75,33 +72,38 @@ public:
         return ret;
     }
 
-    void render() {
-        for (int x = 0; x < image.width; x++)
-            for (int y = 0; y < image.height; y++) {
-                PixelData &pixel = image.buffer[y * image.width + x];
-                for (int x_os = 0; x_os < camera.Oversampling; x_os++)
-                    for (int y_os = 0; y_os < camera.Oversampling; y_os++) {
+    void render(Model &model, const RenderArgs &args) {
+        modelPtr = &model;
+        const unsigned int
+            width = args.width,
+            height = args.height,
+            Oversampling = args.oversampling;
+        const float accuracy = args.accuracy;
+        vec3
+            direction = args.direction,
+            right = args.right,
+            up = args.up,
+            position = args.position;
+        Image image(width, height);
+        for (int x = 0; x < width; x++)
+            for (int y = 0; y < height; y++) {
+                PixelData &pixel = image.buffer[y * width + x];
+                for (int x_os = 0; x_os < Oversampling; x_os++)
+                    for (int y_os = 0; y_os < Oversampling; y_os++) {
                         float
-                            rayX = x + 1.0 * x_os / camera.Oversampling - image.width / 2,
-                            rayY = y + 1.0 * y_os / camera.Oversampling - image.height / 2;
+                            rayX = x + 1.0 * x_os / Oversampling - width / 2,
+                            rayY = y + 1.0 * y_os / Oversampling - height / 2;
                         glm::vec<3, float> aim =
-                                camera.direction + camera.accuracy * (rayX * camera.right + rayY * camera.up);
+                                direction + accuracy * (rayX * right + rayY * up);
                         aim = normalize(aim);
-                        Ray ray = {camera.position, aim};
+                        Ray ray = {position, aim};
                         pixel = pixel + sampleRay(ray);
                     }
-                pixel.color /= camera.Oversampling * camera.Oversampling;
-                pixel.depth /= camera.Oversampling * camera.Oversampling;
+                pixel.color /= Oversampling * Oversampling;
+                pixel.depth /= Oversampling * Oversampling;
             }
         image.normalize();
-    }
-
-    void clearImage() {
-        image.clear();
-    }
-
-    void saveImage(const char* file_name) {
-        image.save(file_name);
+        image.save(args.savePath.c_str());
     }
 };
 

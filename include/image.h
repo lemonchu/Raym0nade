@@ -24,15 +24,12 @@ PixelData operator + (const PixelData &A, const PixelData &B) {
 
 class Image {
 public:
-    int width, height;
+    unsigned int width, height;
     PixelData* buffer;
 
-    Image(int width, int height) : width(width), height(height) {
+    Image(unsigned int width, unsigned int height) : buffer(nullptr), width(width), height(height) {
         buffer = new PixelData[width * height];
     }
-
-    int getWidth() const { return width; }
-    int getHeight() const { return height; }
 
     void save(const char* file_name) {
 

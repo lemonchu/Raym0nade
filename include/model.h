@@ -36,7 +36,6 @@ glm::mat4 aiMatrix4x4ToGlm(const aiMatrix4x4 &from) {
 
 class Model {
 private:
-    Assimp::Importer importer;
     const aiScene *scene;
 
     void processNode(aiNode *node, const aiScene *scene, const glm::mat4 &parentTransform) {
@@ -83,11 +82,14 @@ public:
     std::vector<Texture> textures;
     std::vector<Triangle> triangles;
     KDT kdt;
+    std::string model_path;
 
-    Model() {}
+    Model() = default;
 
-    int load(const char *file_name) {
-        scene = importer.ReadFile(file_name,
+    int load(std::string model_folder, std::string model_name) {
+        Assimp::Importer importer;
+        model_path = model_folder + model_name;
+        scene = importer.ReadFile(model_path.c_str(),
                                   aiProcess_CalcTangentSpace |
                                   aiProcess_Triangulate |
                                   aiProcess_JoinIdenticalVertices |
@@ -112,7 +114,7 @@ public:
                     if (material->GetTexture(textureType, k, &path) == AI_SUCCESS) {
                         std::cout << "Texture path (" << textureType << "): " << path.C_Str() << std::endl;
                     }
-                    std::string pathStr = (std::string) "fbx/" + path.C_Str();
+                    std::string pathStr = (std::string) model_folder + path.C_Str();
 #ifdef WIN32
                     std::replace(pathStr.begin(), pathStr.end(), '/', '\\');
 #else
@@ -131,9 +133,10 @@ public:
 
         kdt.build(triangles);
 
+        importer.FreeScene();
+
         return 0;
     }
-
 };
 
 #endif // MODEL_H
