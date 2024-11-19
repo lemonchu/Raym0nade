@@ -25,12 +25,13 @@ Box operator + (const Box &A, const Box &B) {
     );
 }
 
+const float eps_edge = 1e-3f;
+const float eps_zero = 1e-6f;
+
 void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR) {
 
-    const float eps = 1e-6f;
-
     for (int i = 0; i < 3; ++i) {
-        if (std::abs(ray.direction[i]) < eps) {
+        if (std::abs(ray.direction[i]) < eps_zero) {
             if (ray.origin[i] < box.v0[i] || ray.origin[i] > box.v1[i]) {
                 tR = -1.0;
                 return ;
@@ -44,6 +45,7 @@ void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR) {
                 tL = std::max(tL, (box.v1[i] - ray.origin[i]) * invD);
                 tR = std::min(tR, (box.v0[i] - ray.origin[i]) * invD);
             }
+            tR += eps_edge;
             if (tL > tR)
                 return ;
         }
@@ -70,13 +72,11 @@ struct Triangle {
     }
 };
 
-const float eps = 1e-4;
-
 struct HitRecord {
     float t_min, t_max;
     Triangle* tri;
     HitRecord(float t_min, float t_max) : t_min(t_min), t_max(t_max), tri(nullptr) {}
-    HitRecord() : t_min(eps), t_max(INFINITY), tri(nullptr) {}
+    HitRecord() : t_min(eps_zero), t_max(INFINITY), tri(nullptr) {}
 };
 
 bool RayTriangleIntersection(const Ray& ray, Triangle& tri, HitRecord &hit) {
@@ -86,20 +86,20 @@ bool RayTriangleIntersection(const Ray& ray, Triangle& tri, HitRecord &hit) {
         h = cross(ray.direction, edge2);
     float a = dot(edge1, h);
 
-    if (abs(a) < eps)
+    if (abs(a) < eps_zero)
         return false;
 
     float f = 1.0 / a;
     vec3 s = ray.origin - tri.v[0];
     float u = f * dot(s, h);
 
-    if (u < 0.0 || u > 1.0)
+    if (u < -eps_edge || u > 1.0 + eps_edge)
         return false;
 
     vec3 q = cross(s, edge1);
     float v = f * dot(ray.direction, q);
 
-    if (v < 0.0 || u + v > 1.0)
+    if (v < -eps_edge || u + v > 1.0 + eps_edge)
         return false;
 
     float t = f * dot(edge2, q);

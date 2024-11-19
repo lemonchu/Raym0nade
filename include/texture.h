@@ -4,41 +4,25 @@
 #include <cstdint>
 #include <cstdlib>
 #include <png.h>
+#include <turbojpeg.h>
 #include <stdexcept>
 #include <cstring>
 #include <vector>
 #include <iostream>
 
-#define MAX_IMAGES 30
-
 class Texture {
 public:
     int width;
     int height;
-    std::vector<uint8_t> images[MAX_IMAGES];
-    bool enabled[MAX_IMAGES]; // Array to indicate if each image is enabled
+    std::vector<uint8_t> images[AI_TEXTURE_TYPE_MAX];
+    bool enabled[AI_TEXTURE_TYPE_MAX]; // Array to indicate if each image is enabled
 
     Texture() : width(0), height(0) {
         memset(enabled, 0, sizeof(enabled));
     }
 
-    int isEnabled(int index) {
-        return enabled[index];
-    }
-
-    void addImage(int index, const std::vector<uint8_t>& imageData) {
-        if (index < 0 || index >= MAX_IMAGES) {
-            throw std::out_of_range("Index out of range");
-        }
-        if (imageData.size() != width * height * 3) {
-            throw std::invalid_argument("Image data size does not match texture dimensions");
-        }
-        images[index] = imageData;
-        enabled[index] = true; // Enable the image when added
-    }
-
     [[nodiscard]] const std::vector<uint8_t>& getImage(int index) const {
-        if (index < 0 || index >= MAX_IMAGES) {
+        if (index < 0 || index >= AI_TEXTURE_TYPE_MAX) {
             throw std::out_of_range("Index out of range");
         }
         if (!enabled[index]) {
@@ -47,10 +31,7 @@ public:
         return images[index];
     }
 
-    void loadImageFormFile(int index, const std::string& filename) {
-        if (index < 0 || index >= MAX_IMAGES) {
-            throw std::out_of_range("Index out of range");
-        }
+    bool loadImageFromPNG(std::vector<uint8_t> &imageData, const std::string& filename) {
 
         std::cout << "Loading image from file: " << filename << std::endl;
 
@@ -100,7 +81,7 @@ public:
         png_read_update_info(png, info);
 
         std::vector<png_byte> row(imgWidth * 3); // 3 bytes per pixel (RGB)
-        std::vector<uint8_t> imageData(imgWidth * imgHeight * 3);
+        imageData.resize(imgWidth * imgHeight * 3);
 
         for (int y = 0; y < imgHeight; y++) {
             png_read_row(png, row.data(), nullptr);
@@ -119,8 +100,84 @@ public:
             throw std::runtime_error("Image dimensions do not match texture requirements");
         }
 
-        images[index] = imageData;
-        enabled[index] = true; // Enable the image when loaded
+        return true;
+    }
+
+    bool loadImageFromJPG(std::vector<uint8_t> &imageData, const std::string& filename) {
+        // Open JPEG file
+        FILE* jpegFile = fopen(filename.c_str(), "rb");
+        if (!jpegFile) {
+            std::cerr << "Error opening JPEG file: " << filename << std::endl;
+            return false;
+        }
+
+        // Create TurboJPEG decompressor instance
+        tjhandle tjInstance = tjInitDecompress();
+        if (tjInstance == NULL) {
+            std::cerr << "Error initializing TurboJPEG decompressor" << std::endl;
+            fclose(jpegFile);
+            return false;
+        }
+
+        // Read JPEG file content into buffer
+        fseek(jpegFile, 0, SEEK_END);
+        unsigned long jpegSize = ftell(jpegFile);
+        fseek(jpegFile, 0, SEEK_SET);
+        unsigned char* jpegBuf = (unsigned char*)malloc(jpegSize);
+        if (jpegBuf == NULL) {
+            std::cerr << "Memory allocation failure" << std::endl;
+            tjDestroy(tjInstance);
+            fclose(jpegFile);
+            return false;
+        }
+        fread(jpegBuf, 1, jpegSize, jpegFile);
+        fclose(jpegFile); // Close file as content is already read into buffer
+
+        // Get JPEG image dimensions and components
+        int imgWidth, imgHeight, jpegSubsamp, jpegColorspace;
+        if (tjDecompressHeader3(tjInstance, jpegBuf, jpegSize, &imgWidth, &imgHeight, &jpegSubsamp, &jpegColorspace) < 0) {
+            std::cerr << "Error getting JPEG image header" << std::endl;
+            free(jpegBuf);
+            tjDestroy(tjInstance);
+            return false;
+        }
+
+        // Set output buffer size based on image dimensions and components
+        int pixelSize = tjPixelSize[jpegColorspace];
+        int pitch = imgWidth * pixelSize;
+        imageData.resize(imgHeight * pitch);
+
+        // Decompress JPEG image
+        if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData[0], imgWidth, pitch, imgHeight, jpegColorspace, TJFLAG_FASTDCT) < 0) {
+            std::cerr << "Error decompressing JPEG image" << std::endl;
+            free(jpegBuf);
+            tjDestroy(tjInstance);
+            return false;
+        }
+
+        // Free resources
+        free(jpegBuf);
+        tjDestroy(tjInstance);
+
+        if (width == 0 && height == 0) {
+            width = imgWidth;
+            height = imgHeight;
+        } else if (width != imgWidth || height != imgHeight) {
+            throw std::runtime_error("Image dimensions do not match texture requirements");
+        }
+
+        return true;
+    }
+
+    void loadImageFromFile(int index, const std::string& filename) {
+        std::string fileExtension = filename.substr(filename.find_last_of(".") + 1);
+        if (fileExtension == "png" || fileExtension == "PNG") {
+            enabled[index] = loadImageFromPNG(images[index], filename);
+        } else if (fileExtension == "jpg" || fileExtension == "jpeg" || fileExtension == "JPG" || fileExtension == "JPEG") {
+            enabled[index] = loadImageFromJPG(images[index], filename);
+        } else {
+            //throw std::runtime_error("Unsupported file format");
+        }
     }
 };
 

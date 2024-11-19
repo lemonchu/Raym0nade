@@ -105,7 +105,6 @@ public:
             aiMaterial *material = scene->mMaterials[i];
 
             for (unsigned int j = 0; j < AI_TEXTURE_TYPE_MAX; j++) {
-                if (j != 1) continue;
                 aiTextureType textureType = (aiTextureType) j;
                 unsigned int numTextures = material->GetTextureCount(textureType);
                 for (unsigned int k = 0; k < numTextures; k++) {
@@ -119,7 +118,7 @@ public:
 #else
                     std::replace(pathStr.begin(), pathStr.end(), '\\', '/');
 #endif
-                    textures[i].loadImageFormFile(j, pathStr);
+                    textures[i].loadImageFromFile(j, pathStr);
                 }
             }
         }
@@ -134,6 +133,7 @@ public:
 
         return 0;
     }
+
 };
 
 #endif // MODEL_H

@@ -12,7 +12,15 @@ struct PixelData {
         color = glm::vec<3, float>(0);
         depth = 0;
     }
+    PixelData(const glm::vec<3, float> &color, float depth) : color(color), depth(depth) {}
 };
+
+PixelData operator + (const PixelData &A, const PixelData &B) {
+    return PixelData(
+        A.color + B.color,
+        A.depth + B.depth
+    );
+}
 
 class Image {
 public:
@@ -79,6 +87,25 @@ public:
 
         fclose(fp);
         png_destroy_write_struct(&png_ptr, &info_ptr);
+    }
+
+    void clear() {
+        for (int i = 0; i < width * height; ++i)
+            buffer[i] = PixelData();
+    }
+
+    void normalize() {
+        float maxColor = -1e9 , minColor = 1e9;
+        for (int i = 0; i < width * height; ++i) {
+            if (buffer[i].depth < 1e-6) continue;
+            maxColor = std::max(maxColor, std::max(buffer[i].color[0], std::max(buffer[i].color[1], buffer[i].color[2])));
+            minColor = std::min(minColor, std::min(buffer[i].color[0], std::min(buffer[i].color[1], buffer[i].color[2])));
+        }
+        for (int i = 0; i < width * height; ++i) {
+            if (buffer[i].depth < 1e-6) continue;
+            buffer[i].color = (buffer[i].color - glm::vec<3, float>(minColor)) / (maxColor - minColor);
+        }
+
     }
 };
 
