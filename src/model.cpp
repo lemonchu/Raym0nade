@@ -67,7 +67,7 @@ void Model::processNode(aiNode *node, const aiScene *scene, const glm::mat4 &par
                  {&vData[face.mIndices[0]],
                  &vData[face.mIndices[1]],
                  &vData[face.mIndices[2]]},
-                 &textures[mesh->mMaterialIndex]
+                 &materials[mesh->mMaterialIndex]
             });
         }
     }
@@ -99,7 +99,7 @@ Model::Model(std::string model_folder, std::string model_name) {
     std::cout << "Vertices: " << vertexCnt << std::endl;
     vertexDatas.reserve(vertexCnt);
 
-    textures.resize(scene->mNumMaterials);
+    materials.resize(scene->mNumMaterials);
     for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
         std::cout << "Loading material " << i << std::endl;
         aiMaterial *material = scene->mMaterials[i];
@@ -110,7 +110,7 @@ Model::Model(std::string model_folder, std::string model_name) {
             for (unsigned int k = 0; k < numTextures; k++) {
                 aiString path;
                 if (material->GetTexture(textureType, k, &path) == AI_SUCCESS) {
-                    std::cout << "Texture path (" << textureType << "): " << path.C_Str() << std::endl;
+                    std::cout << "Material path (" << textureType << "): " << path.C_Str() << std::endl;
                 }
                 std::string pathStr = (std::string) model_folder + path.C_Str();
 #ifdef WIN32
@@ -118,11 +118,12 @@ Model::Model(std::string model_folder, std::string model_name) {
 #else
                 std::replace(pathStr.begin(), pathStr.end(), '\\', '/');
 #endif
-                textures[i].loadImageFromFile(j, pathStr);
+                materials[i].loadImageFromFile(j, pathStr);
             }
         }
+        materials[i].loadMaterialProperties(material);
     }
-    std::cout << "Materials: " << textures.size() << std::endl;
+    std::cout << "Materials: " << materials.size() << std::endl;
 
     const glm::mat4 identity = glm::mat4(1.0f);
     processNode(scene->mRootNode, scene, identity);

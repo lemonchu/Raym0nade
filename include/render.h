@@ -1,6 +1,7 @@
 #ifndef RENDER_H
 #define RENDER_H
 
+#include <iostream>
 #include "model.h"
 #include "image.h"
 #include "geometry.h"

@@ -6,11 +6,14 @@ const int TextureIdForColor = 1;
 
 vec3 getColor(const vec3& intersection, const Face& face) {
     float
-        area = length(cross(face.v[1] - face.v[0], face.v[2] - face.v[0])),
-        area2 = length(cross(face.v[1] - face.v[0], intersection - face.v[0])) / area,
-        area1 = length(cross(intersection - face.v[0], face.v[2] - face.v[0])) / area,
-        area0 = 1.0f - area1 - area2;
-    const Texture& texture = *face.texture;
+            area = length(cross(face.v[1] - face.v[0], face.v[2] - face.v[0])),
+            area2 = length(cross(face.v[1] - face.v[0], intersection - face.v[0])) / area,
+            area1 = length(cross(intersection - face.v[0], face.v[2] - face.v[0])) / area,
+            area0 = 1.0f - area1 - area2;
+    const Material& texture = *face.texture;
+
+    vec3 color(0.0f, 0.0f, 0.0f);
+
     if (texture.enabled[TextureIdForColor]) {
         vec2 texUV = area0 * face.data[0]->uv + area1 * face.data[1]->uv + area2 * face.data[2]->uv;
 
@@ -23,14 +26,29 @@ vec3 getColor(const vec3& intersection, const Face& face) {
         const std::vector<uint8_t>& imageData = texture.getImage(1);
         int pixelIndex = (texY * texture.width + texX) * 3; // 3 channels for RGB
 
-        return vec3(
+        color = vec3(
                 imageData[pixelIndex] / 255.0f,
                 imageData[pixelIndex + 1] / 255.0f,
                 imageData[pixelIndex + 2] / 255.0f
         );
     } else {
-        return area0 * face.data[0]->color + area1 * face.data[1]->color + area2 * face.data[2]->color;
+        // Default color if no texture is enabled
+        color = vec3(1.0f, 1.0f, 1.0f); // Default gray color
     }
+
+    if (texture.isDiffuseColorEnabled) {
+        color *= vec3(texture.diffuseColor.r, texture.diffuseColor.g, texture.diffuseColor.b);
+    }
+
+    if (texture.isSpecularColorEnabled) {
+        // Add specular color contribution if needed
+    }
+
+    if (texture.isAmbientColorEnabled) {
+        color += vec3(texture.ambientColor.r, texture.ambientColor.g, texture.ambientColor.b);
+    }
+
+    return color;
 }
 
 

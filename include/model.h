@@ -5,7 +5,7 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include "geometry.h"
-#include "texture.h"
+#include "material.h"
 #include "kdt.h"
 
 
@@ -17,7 +17,7 @@ private:
     void processNode(aiNode *node, const aiScene *scene, const glm::mat4 &parentTransform);
 
 public:
-    std::vector<Texture> textures;
+    std::vector<Material> materials;
     std::vector<Face> faces;
     std::vector<VertexData> vertexDatas;
     KDT kdt;

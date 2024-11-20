@@ -2,7 +2,7 @@
 #define GEOMETRY_H
 
 #include <glm/glm.hpp>
-#include "texture.h"
+#include "material.h"
 
 using vec2 = glm::vec<2, float>;
 using vec3 = glm::vec<3, float>;
@@ -34,7 +34,7 @@ struct VertexData {
 struct Face {
     vec3 v[3];
     VertexData* data[3];
-    Texture *texture;
+    Material *texture;
 
     [[nodiscard]] vec3 center() const;
     [[nodiscard]] Box aabb() const;

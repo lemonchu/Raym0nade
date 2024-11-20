@@ -7,9 +7,11 @@
 #include <cstring>
 #include <vector>
 #include <iostream>
-#include "texture.h"
+#include "material.h"
 
-Material::Material() : width(0), height(0) {
+Material::Material() : width(0), height(0), shininess(0.0f), opacity(1.0f),
+                       isNameEnabled(false), isShininessEnabled(false), isOpacityEnabled(false),
+                       isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false) {
     memset(enabled, 0, sizeof(enabled));
 }
 
@@ -170,5 +172,33 @@ void Material::loadImageFromFile(int index, const std::string& filename) {
         enabled[index] = loadImageFromJPG(texture[index], filename);
     } else {
         //throw std::runtime_error("Unsupported file format");
+    }
+}
+
+void Material::loadMaterialProperties(const aiMaterial* aiMat) {
+    aiString matName;
+    if (aiMat->Get(AI_MATKEY_NAME, matName) == AI_SUCCESS) {
+        name = matName.C_Str();
+        isNameEnabled = true;
+    }
+
+    if (aiMat->Get(AI_MATKEY_SHININESS, shininess) == AI_SUCCESS) {
+        isShininessEnabled = true;
+    }
+
+    if (aiMat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS) {
+        isOpacityEnabled = true;
+    }
+
+    if (aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, diffuseColor) == AI_SUCCESS) {
+        isDiffuseColorEnabled = true;
+    }
+
+    if (aiMat->Get(AI_MATKEY_COLOR_SPECULAR, specularColor) == AI_SUCCESS) {
+        isSpecularColorEnabled = true;
+    }
+
+    if (aiMat->Get(AI_MATKEY_COLOR_AMBIENT, ambientColor) == AI_SUCCESS) {
+        isAmbientColorEnabled = true;
     }
 }
