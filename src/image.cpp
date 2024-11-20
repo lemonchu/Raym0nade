@@ -33,7 +33,7 @@ void Image::save(const char *file_name) {
     }
 
     FILE *fp;
-    if (fopen_s(&fp, file_name, "wb") != 0) {
+    if ((fp = fopen(file_name, "wb")) == nullptr) {
         png_destroy_write_struct(&png_ptr, &info_ptr);
         std::cerr << "Could not open file for writing" << std::endl;
         return;

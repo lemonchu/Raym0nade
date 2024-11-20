@@ -10,7 +10,7 @@ PixelData Renderer::sampleRay(Ray ray, int depth = 0) {
         const auto& tri = *hit.tri;
         const auto& texture = *tri.texture;
 
-        /*if (texture.enabled[1]) {
+        if (texture.enabled[1]) {
             const auto& uv = tri.uv;
 
             const auto& intersection = ray.origin + hit.t_max * ray.direction;
@@ -36,10 +36,10 @@ PixelData Renderer::sampleRay(Ray ray, int depth = 0) {
 
         } else {
             ret.color = glm::vec<3, float>(1, 1, 1);
-        }*/
+        }
 
         ret.depth = hit.t_max;
-        ret.color = vec3(-log(ret.depth));
+        // ret.color = vec3(-log(ret.depth));
 
         /*vec3 light = normalize(vec3(0, -1, -1));
         float lightIntensity = 0.6;
@@ -87,6 +87,6 @@ void Renderer::render(Model &model, const RenderArgs &args) {
             pixel.color /= oversampleCnt;
             pixel.depth /= oversampleCnt;
         }
-    image.normalize();
+    // image.normalize();
     image.save(args.savePath.c_str());
 }

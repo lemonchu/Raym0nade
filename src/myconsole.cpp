@@ -124,9 +124,9 @@ void parseCommand(MyConsole &console, const std::string &opt) {
         iss >> type >> name;
         if (type == "model") {
             std::string model_path, model_name;
-            std::cout << "Enter model path: ";
+            std::cout << "Enter the model path (e.g., fbx/): ";
             std::cin >> model_path;
-            std::cout << "Enter model name: ";
+            std::cout << "Enter the model name (e.g., model.fbx): ";
             std::cin >> model_name;
             std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 

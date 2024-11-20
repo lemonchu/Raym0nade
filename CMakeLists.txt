@@ -17,7 +17,7 @@ include_directories(
 
 file(GLOB_RECURSE PROJECT_SOURCES "src/*.cpp")
 
-add_executable(Demo ${PROJECT_SOURCES})
+add_executable(Demo src/main.cpp ${PROJECT_SOURCES})
 
 target_link_libraries(Demo PUBLIC
         SDL2::SDL2

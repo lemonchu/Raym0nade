@@ -1,6 +1,7 @@
 #ifndef TEXTURE_H
 #define TEXTURE_H
 
+#include <vector>
 #include <assimp/material.h>
 
 class Texture {

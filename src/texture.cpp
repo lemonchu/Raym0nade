@@ -28,7 +28,7 @@ bool Texture::loadImageFromPNG(std::vector<uint8_t> &imageData, const std::strin
     std::cout << "Loading image from file: " << filename << std::endl;
 
     FILE *fp;
-    if (fopen_s(&fp,filename.c_str(), "rb") != 0)
+    if ((fp = fopen(filename.c_str(), "rb")) == nullptr)
         throw std::runtime_error("Failed to open file for reading");
 
     png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
@@ -98,15 +98,15 @@ bool Texture::loadImageFromPNG(std::vector<uint8_t> &imageData, const std::strin
 
 bool Texture::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::string& filename) {
     // Open JPEG file
-    FILE* jpegFile;
-    if (fopen_s(&jpegFile, filename.c_str(), "rb") != 0) {
+    FILE* jpegFile = fopen(filename.c_str(), "rb");
+    if (jpegFile == nullptr) {
         std::cerr << "Error opening JPEG file: " << filename << std::endl;
         return false;
     }
 
     // Create TurboJPEG decompressor instance
     tjhandle tjInstance = tjInitDecompress();
-    if (tjInstance == NULL) {
+    if (tjInstance == nullptr) {
         std::cerr << "Error initializing TurboJPEG decompressor" << std::endl;
         fclose(jpegFile);
         return false;
@@ -117,7 +117,7 @@ bool Texture::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::strin
     unsigned long jpegSize = ftell(jpegFile);
     fseek(jpegFile, 0, SEEK_SET);
     unsigned char* jpegBuf = (unsigned char*)malloc(jpegSize);
-    if (jpegBuf == NULL) {
+    if (jpegBuf == nullptr) {
         std::cerr << "Memory allocation failure" << std::endl;
         tjDestroy(tjInstance);
         fclose(jpegFile);
@@ -127,8 +127,8 @@ bool Texture::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::strin
     fclose(jpegFile); // Close file as content is already read into buffer
 
     // Get JPEG image dimensions and components
-    int imgWidth, imgHeight, jpegSubsamp, jpegColorspace;
-    if (tjDecompressHeader3(tjInstance, jpegBuf, jpegSize, &imgWidth, &imgHeight, &jpegSubsamp, &jpegColorspace) < 0) {
+    int imgWidth, imgHeight, jpegSubsamp;
+    if (tjDecompressHeader2(tjInstance, jpegBuf, jpegSize, &imgWidth, &imgHeight, &jpegSubsamp) < 0) {
         std::cerr << "Error getting JPEG image header" << std::endl;
         free(jpegBuf);
         tjDestroy(tjInstance);
@@ -136,12 +136,12 @@ bool Texture::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::strin
     }
 
     // Set output buffer size based on image dimensions and components
-    int pixelSize = tjPixelSize[jpegColorspace];
+    int pixelSize = 3; // RGB has 3 components
     int pitch = imgWidth * pixelSize;
     imageData.resize(imgHeight * pitch);
 
-    // Decompress JPEG image
-    if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData[0], imgWidth, pitch, imgHeight, jpegColorspace, TJFLAG_FASTDCT) < 0) {
+    // Decompress JPEG image to RGB format
+    if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData[0], imgWidth, pitch, imgHeight, TJPF_RGB, TJFLAG_FASTDCT) < 0) {
         std::cerr << "Error decompressing JPEG image" << std::endl;
         free(jpegBuf);
         tjDestroy(tjInstance);
