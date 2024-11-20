@@ -25,38 +25,50 @@ glm::mat4 aiMatrix4x4ToGlm(const aiMatrix4x4 &from) {
     return to;
 }
 
+unsigned int vertexCount(const aiScene *scene) {
+    unsigned int cnt = 0;
+    for (unsigned int i = 0; i < scene->mNumMeshes; i++)
+        cnt += scene->mMeshes[i]->mNumVertices;
+    return cnt;
+}
+
 void Model::processNode(aiNode *node, const aiScene *scene, const glm::mat4 &parentTransform) {
     glm::mat4 nodeTransform = parentTransform * aiMatrix4x4ToGlm(node->mTransformation);
 
     for (unsigned int i = 0; i < node->mNumMeshes; i++) {
         aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
-
+        unsigned int offset = vertexDatas.size();
+        bool hasVertexColor = mesh->HasVertexColors(0);
+        for (unsigned int j = 0; j < mesh->mNumVertices; j++) {
+            aiVector3D normal = mesh->mNormals[j];
+            aiVector3D texCoord = mesh->mTextureCoords[0][j];
+            aiColor4D color = hasVertexColor ? mesh->mColors[0][j] : aiColor4D(0.0f);
+            vertexDatas.emplace_back(
+                    vec2(texCoord.x, texCoord.y),
+                    vec3(normal.x, normal.y, normal.z),
+                    vec4(color.r, color.g, color.b, color.a)
+            );
+        }
+        VertexData *vData = &vertexDatas[offset];
         for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
             aiFace &face = mesh->mFaces[j];
-            aiVector3D vertex[3] = {
-                    mesh->mVertices[face.mIndices[0]],
-                    mesh->mVertices[face.mIndices[1]],
-                    mesh->mVertices[face.mIndices[2]]
-            };
-            aiVector3D texCoord[3] = {
-                    mesh->mTextureCoords[0][face.mIndices[0]],
-                    mesh->mTextureCoords[0][face.mIndices[1]],
-                    mesh->mTextureCoords[0][face.mIndices[2]]
-            };
 
             // Apply transformation to vertices
             glm::vec4 transformedVertex[3];
             for (int k = 0; k < 3; ++k) {
-                transformedVertex[k] = nodeTransform * glm::vec4(vertex[k].x, vertex[k].y, vertex[k].z, 1.0f);
+                aiVector3D vertex = mesh->mVertices[face.mIndices[k]];
+                transformedVertex[k] = nodeTransform * glm::vec4(vertex.x, vertex.y, vertex.z, 1.0f);
             }
 
-            triangles.push_back({{vec3(transformedVertex[0]), vec3(transformedVertex[1]),
-                                  vec3(transformedVertex[2])},
-                                 {glm::vec<2, float>(texCoord[0].x, texCoord[0].y),
-                                  glm::vec<2, float>(texCoord[1].x, texCoord[1].y),
-                                  glm::vec<2, float>(texCoord[2].x, texCoord[2].y)},
-                                 &textures[mesh->mMaterialIndex]
-                                });
+            faces.push_back({
+                {vec3(transformedVertex[0]),
+                 vec3(transformedVertex[1]),
+                 vec3(transformedVertex[2])},
+                 {&vData[face.mIndices[0]],
+                 &vData[face.mIndices[1]],
+                 &vData[face.mIndices[2]]},
+                 &textures[mesh->mMaterialIndex]
+            });
         }
     }
 
@@ -76,12 +88,16 @@ Model::Model(std::string model_folder, std::string model_name) {
                               aiProcess_Triangulate |
                               aiProcess_JoinIdenticalVertices |
                               aiProcess_SortByPType |
-                              aiProcess_GenUVCoords);
+                              aiProcess_GenUVCoords |
+                              aiProcess_GenNormals);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
         return ;
     }
+    unsigned int vertexCnt = vertexCount(scene);
+    std::cout << "Vertices: " << vertexCnt << std::endl;
+    vertexDatas.reserve(vertexCnt);
 
     textures.resize(scene->mNumMaterials);
     for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
@@ -108,12 +124,12 @@ Model::Model(std::string model_folder, std::string model_name) {
     }
     std::cout << "Materials: " << textures.size() << std::endl;
 
-    glm::mat4 identity = glm::mat4(1.0f);
+    const glm::mat4 identity = glm::mat4(1.0f);
     processNode(scene->mRootNode, scene, identity);
 
-    std::cout << "Faces: " << triangles.size() << std::endl;
-
-    kdt.build(triangles);
-
     importer.FreeScene();
+
+    std::cout << "Faces: " << faces.size() << std::endl;
+
+    kdt.build(faces);
 }

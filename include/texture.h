@@ -6,8 +6,7 @@
 
 class Texture {
 public:
-    int width;
-    int height;
+    int width, height;
     std::vector<uint8_t> images[AI_TEXTURE_TYPE_MAX];
     bool enabled[AI_TEXTURE_TYPE_MAX]; // Array to indicate if each image is enabled
 

@@ -6,14 +6,14 @@
 
 MyConsole::MyConsole() = default;
 
-void MyConsole::createModel(const std::string &model_id, const std::string &model_path, const std::string &model_name) {
+void MyConsole::createModel(const std::string &model_id, const std::string &model_floder, const std::string &model_name) {
     if (models.find(model_id) != models.end()) {
         std::cout << "Model (" << model_id << ") is already exists." << std::endl;
         return;
     }
     models.emplace(std::piecewise_construct,
                    std::forward_as_tuple(model_id),
-                   std::forward_as_tuple(model_path, model_name));
+                   std::forward_as_tuple(model_floder, model_name));
     std::cout << "Model (" << model_id << ") created." << std::endl;
 }
 
@@ -81,8 +81,9 @@ void MyConsole::viewModel(const std::string &str) {
         std::cout << "Model (" << str << ") does not exists." << std::endl;
         return;
     }
-    std::cout << "Model path: " << models[str].model_path << std::endl;
-    std::cout << "Faces: " << models[str].triangles.size() << std::endl;
+    std::cout << "Model floder: " << models[str].model_path << std::endl;
+    std::cout << "Faces: " << models[str].faces.size() << std::endl;
+    std::cout << "Vertices: " << models[str].vertexDatas.size() << std::endl;
 }
 
 void MyConsole::viewRenderArgs(const std::string &str) {
@@ -123,14 +124,14 @@ void parseCommand(MyConsole &console, const std::string &opt) {
     if (command == "create") {
         iss >> type >> name;
         if (type == "model") {
-            std::string model_path, model_name;
+            std::string model_floder, model_name;
             std::cout << "Enter the model path (e.g., fbx/): ";
-            std::cin >> model_path;
+            std::cin >> model_floder;
             std::cout << "Enter the model name (e.g., model.fbx): ";
             std::cin >> model_name;
             std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
-            console.createModel(name, model_path, model_name);
+            console.createModel(name, model_floder, model_name);
         } else if (type == "args") {
             console.createRenderArgs(name);
         }

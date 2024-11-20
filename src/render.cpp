@@ -2,44 +2,48 @@
 
 Renderer::Renderer() {}
 
+const int TextureIdForColor = 1;
+
+vec3 getColor(const vec3& intersection, const Face& face) {
+    float
+        area = length(cross(face.v[1] - face.v[0], face.v[2] - face.v[0])),
+        area2 = length(cross(face.v[1] - face.v[0], intersection - face.v[0])) / area,
+        area1 = length(cross(intersection - face.v[0], face.v[2] - face.v[0])) / area,
+        area0 = 1.0f - area1 - area2;
+    const Texture& texture = *face.texture;
+    if (texture.enabled[TextureIdForColor]) {
+        vec2 texUV = area0 * face.data[0]->uv + area1 * face.data[1]->uv + area2 * face.data[2]->uv;
+
+        int texX = lround(texUV[0] * texture.width + 0.5);
+        int texY = texture.height - lround(texUV[1] * texture.height + 0.5);
+
+        texX = std::max(0, std::min(texX, texture.width - 1));
+        texY = std::max(0, std::min(texY, texture.height - 1));
+
+        const std::vector<uint8_t>& imageData = texture.getImage(1);
+        int pixelIndex = (texY * texture.width + texX) * 3; // 3 channels for RGB
+
+        return vec3(
+                imageData[pixelIndex] / 255.0f,
+                imageData[pixelIndex + 1] / 255.0f,
+                imageData[pixelIndex + 2] / 255.0f
+        );
+    } else {
+        return area0 * face.data[0]->color + area1 * face.data[1]->color + area2 * face.data[2]->color;
+    }
+}
+
+
 PixelData Renderer::sampleRay(Ray ray, int depth = 0) {
     HitRecord hit = modelPtr->kdt.rayHit(ray);
     PixelData ret;
     if (hit.t_max < INFINITY) {
 
-        const auto& tri = *hit.tri;
-        const auto& texture = *tri.texture;
-
-        if (texture.enabled[1]) {
-            const auto& uv = tri.uv;
-
-            const auto& intersection = ray.origin + hit.t_max * ray.direction;
-
-            float
-                    area = length(cross(tri.v[1] - tri.v[0], tri.v[2] - tri.v[0])),
-                    area2 = length(cross(tri.v[1] - tri.v[0], intersection - tri.v[0])) / area,
-                    area1 = length(cross(intersection - tri.v[0], tri.v[2] - tri.v[0])) / area,
-                    area0 = 1.0f - area1 - area2;
-            vec2 texUV = area0 * uv[0] + area1 * uv[1] + area2 * uv[2];
-
-            int texX = lround(texUV[0] * texture.width + 0.5);
-            int texY = texture.height - lround(texUV[1] * texture.height + 0.5);
-
-            const std::vector<uint8_t>& imageData = texture.getImage(1);
-            int pixelIndex = (texY * texture.width + texX) * 3; // 3 channels for RGB
-
-            ret.color = glm::vec<3, float>(
-                    imageData[pixelIndex] / 255.0f,
-                    imageData[pixelIndex + 1] / 255.0f,
-                    imageData[pixelIndex + 2] / 255.0f
-            );
-
-        } else {
-            ret.color = glm::vec<3, float>(1, 1, 1);
-        }
+        const auto& face = *hit.face;
+        const auto& intersection = ray.origin + hit.t_max * ray.direction;
 
         ret.depth = hit.t_max;
-        // ret.color = vec3(-log(ret.depth));
+        ret.color = getColor(intersection, face);
 
         /*vec3 light = normalize(vec3(0, -1, -1));
         float lightIntensity = 0.6;

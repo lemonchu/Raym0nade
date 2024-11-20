@@ -8,6 +8,8 @@
 #include "texture.h"
 #include "kdt.h"
 
+
+
 class Model {
 private:
     const aiScene *scene;
@@ -16,7 +18,8 @@ private:
 
 public:
     std::vector<Texture> textures;
-    std::vector<Triangle> triangles;
+    std::vector<Face> faces;
+    std::vector<VertexData> vertexDatas;
     KDT kdt;
     std::string model_path;
 

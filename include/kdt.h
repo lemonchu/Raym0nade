@@ -6,7 +6,7 @@
 struct KDT_Node {
     Box box;
     KDT_Node *son[2];
-    Triangle *triL, *triR;
+    Face *faceL, *faceR;
     KDT_Node();
 };
 
@@ -18,9 +18,9 @@ public:
 
     KDT_Node *newNode();
 
-    void dfs_build(KDT_Node *&u, Triangle *triL, Triangle *triR);
+    void dfs_build(KDT_Node *&u, Face *faceL, Face *faceR);
 
-    void build(std::vector<Triangle> &triangles);
+    void build(std::vector<Face> &faces);
 
     HitRecord closest_hit;
     Ray ray;
