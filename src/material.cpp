@@ -9,21 +9,21 @@
 #include <iostream>
 #include "texture.h"
 
-Texture::Texture() : width(0), height(0) {
+Material::Material() : width(0), height(0) {
     memset(enabled, 0, sizeof(enabled));
 }
 
-[[nodiscard]] const std::vector<uint8_t>& Texture::getImage(int index) const {
+[[nodiscard]] const std::vector<uint8_t>& Material::getImage(int index) const {
     if (index < 0 || index >= AI_TEXTURE_TYPE_MAX) {
         throw std::out_of_range("Index out of range");
     }
     if (!enabled[index]) {
         throw std::runtime_error("Image is not enabled");
     }
-    return images[index];
+    return texture[index];
 }
 
-bool Texture::loadImageFromPNG(std::vector<uint8_t> &imageData, const std::string& filename) {
+bool Material::loadImageFromPNG(std::vector<uint8_t> &imageData, const std::string& filename) {
 
     std::cout << "Loading image from file: " << filename << std::endl;
 
@@ -96,7 +96,7 @@ bool Texture::loadImageFromPNG(std::vector<uint8_t> &imageData, const std::strin
     return true;
 }
 
-bool Texture::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::string& filename) {
+bool Material::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::string& filename) {
     // Open JPEG file
     FILE* jpegFile = fopen(filename.c_str(), "rb");
     if (jpegFile == nullptr) {
@@ -162,12 +162,12 @@ bool Texture::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::strin
     return true;
 }
 
-void Texture::loadImageFromFile(int index, const std::string& filename) {
+void Material::loadImageFromFile(int index, const std::string& filename) {
     std::string fileExtension = filename.substr(filename.find_last_of(".") + 1);
     if (fileExtension == "png" || fileExtension == "PNG") {
-        enabled[index] = loadImageFromPNG(images[index], filename);
+        enabled[index] = loadImageFromPNG(texture[index], filename);
     } else if (fileExtension == "jpg" || fileExtension == "jpeg" || fileExtension == "JPG" || fileExtension == "JPEG") {
-        enabled[index] = loadImageFromJPG(images[index], filename);
+        enabled[index] = loadImageFromJPG(texture[index], filename);
     } else {
         //throw std::runtime_error("Unsupported file format");
     }

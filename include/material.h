@@ -4,13 +4,13 @@
 #include <vector>
 #include <assimp/material.h>
 
-class Texture {
+class Material {
 public:
     int width, height;
-    std::vector<uint8_t> images[AI_TEXTURE_TYPE_MAX];
+    std::vector<uint8_t> texture[AI_TEXTURE_TYPE_MAX];
     bool enabled[AI_TEXTURE_TYPE_MAX]; // Array to indicate if each image is enabled
 
-    Texture();
+    Material();
 
     [[nodiscard]] const std::vector<uint8_t>& getImage(int index) const;
 
