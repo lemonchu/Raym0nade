@@ -1,4 +1,4 @@
-
+#include <iostream>
 #include "render.h"
 #include "myconsole.h"
 

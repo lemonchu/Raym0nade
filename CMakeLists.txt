@@ -10,16 +10,14 @@ find_package(PNG REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(libjpeg-turbo CONFIG REQUIRED)
 
-include_directories(${SDL2_INCLUDE_DIRS})
-include_directories(include)
-include_directories(${ZLIB_INCLUDE_DIRS})
-include_directories(${PNG_PNG_INCLUDE_DIR})
-include_directories(${libjpeg-turbo_INCLUDE_DIRS})
-include_directories("${CMAKE_CURRENT_SOURCE_DIR}/glm")
+include_directories(
+        include
+        "${CMAKE_CURRENT_SOURCE_DIR}/glm"
+)
 
-file(GLOB_RECURSE PROJECT_SOURCES "src/*.cpp" "src/geometry/*.cpp" "src/mathematics/*.cpp")
+file(GLOB_RECURSE PROJECT_SOURCES "src/*.cpp")
 
-add_executable(Demo src/main.cpp ${PROJECT_SOURCES})
+add_executable(Demo ${PROJECT_SOURCES})
 
 target_link_libraries(Demo PUBLIC
         SDL2::SDL2
