@@ -23,12 +23,11 @@ Box operator + (const Box &A, const Box &B);
 void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR);
 
 struct VertexData {
-    vec4 color;
     vec2 uv;
     vec3 normal;
 
     VertexData();
-    VertexData(const vec2 &uv, const vec3 &normal, const vec4 &color);
+    VertexData(const vec2 &uv, const vec3 &normal);
 };
 
 struct Face {

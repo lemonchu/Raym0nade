@@ -42,11 +42,9 @@ void Model::processNode(aiNode *node, const aiScene *scene, const glm::mat4 &par
         for (unsigned int j = 0; j < mesh->mNumVertices; j++) {
             aiVector3D normal = mesh->mNormals[j];
             aiVector3D texCoord = mesh->mTextureCoords[0][j];
-            aiColor4D color = hasVertexColor ? mesh->mColors[0][j] : aiColor4D(0.0f);
             vertexDatas.emplace_back(
                     vec2(texCoord.x, texCoord.y),
-                    vec3(normal.x, normal.y, normal.z),
-                    vec4(color.r, color.g, color.b, color.a)
+                    vec3(normal.x, normal.y, normal.z)
             );
         }
         VertexData *vData = &vertexDatas[offset];
@@ -128,9 +126,33 @@ Model::Model(std::string model_folder, std::string model_name) {
     const glm::mat4 identity = glm::mat4(1.0f);
     processNode(scene->mRootNode, scene, identity);
 
+    checkEmissiveMaterials(scene);
+    checkLightSources(scene);
+
     importer.FreeScene();
 
     std::cout << "Faces: " << faces.size() << std::endl;
 
     kdt.build(faces);
+}
+
+void checkEmissiveMaterials(const aiScene* scene) {
+    for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
+        aiMaterial* material = scene->mMaterials[i];
+        aiColor3D emissiveColor(0.0f, 0.0f, 0.0f);
+        if (AI_SUCCESS == material->Get(AI_MATKEY_COLOR_EMISSIVE, emissiveColor)) {
+            if (emissiveColor.r > 0.0f || emissiveColor.g > 0.0f || emissiveColor.b > 0.0f) {
+                std::cout << "Material " << i << " has emissive color: "
+                          << emissiveColor.r << ", " << emissiveColor.g << ", " << emissiveColor.b << std::endl;
+            }
+        }
+    }
+}
+
+void checkLightSources(const aiScene* scene) {
+    for (unsigned int i = 0; i < scene->mNumLights; i++) {
+        aiLight* light = scene->mLights[i];
+        std::cout << "Light " << i << " of type " << light->mType << " with color: "
+                  << light->mColorDiffuse.r << ", " << light->mColorDiffuse.g << ", " << light->mColorDiffuse.b << std::endl;
+    }
 }

@@ -37,7 +37,7 @@ void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR) {
 
 VertexData::VertexData() {}
 
-VertexData::VertexData(const vec2 &uv, const vec3 &normal, const vec4 &color) : uv(uv), normal(normal), color(color) {}
+VertexData::VertexData(const vec2 &uv, const vec3 &normal) : uv(uv), normal(normal) {}
 
 vec3 Face::center() const {
     return (v[0] + v[1] + v[2]) / 3.0f;

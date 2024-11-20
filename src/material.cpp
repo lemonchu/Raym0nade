@@ -190,15 +190,19 @@ void Material::loadMaterialProperties(const aiMaterial* aiMat) {
         isOpacityEnabled = true;
     }
 
-    if (aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, diffuseColor) == AI_SUCCESS) {
+    aiColor3D color;
+    if (aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, color) == AI_SUCCESS) {
+        diffuseColor = glm::vec3(color.r, color.g, color.b);
         isDiffuseColorEnabled = true;
     }
 
-    if (aiMat->Get(AI_MATKEY_COLOR_SPECULAR, specularColor) == AI_SUCCESS) {
+    if (aiMat->Get(AI_MATKEY_COLOR_SPECULAR, color) == AI_SUCCESS) {
+        specularColor = glm::vec3(color.r, color.g, color.b);
         isSpecularColorEnabled = true;
     }
 
-    if (aiMat->Get(AI_MATKEY_COLOR_AMBIENT, ambientColor) == AI_SUCCESS) {
+    if (aiMat->Get(AI_MATKEY_COLOR_AMBIENT, color) == AI_SUCCESS) {
+        ambientColor = glm::vec3(color.r, color.g, color.b);
         isAmbientColorEnabled = true;
     }
 }

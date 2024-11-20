@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <assimp/material.h>
+#include <glm/glm.hpp>
 
 class Material {
 public:
@@ -14,10 +15,9 @@ public:
     std::string name;
     float shininess;
     float opacity;
-    aiColor3D diffuseColor;
-    aiColor3D specularColor;
-    aiColor3D ambientColor;
-
+    glm::vec3 diffuseColor;
+    glm::vec3 specularColor;
+    glm::vec3 ambientColor;
     bool isNameEnabled;
     bool isShininessEnabled;
     bool isOpacityEnabled;
