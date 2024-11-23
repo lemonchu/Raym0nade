@@ -10,6 +10,10 @@ find_package(PNG REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(libjpeg-turbo CONFIG REQUIRED)
 
+find_library(FREEIMAGE_LIBRARY freeimage REQUIRED)
+find_path(FREEIMAGE_INCLUDE_DIR FreeImage.h REQUIRED)
+include_directories(${FREEIMAGE_INCLUDE_DIR})
+
 include_directories(
         include
         "${CMAKE_CURRENT_SOURCE_DIR}/glm"
@@ -25,4 +29,5 @@ target_link_libraries(Demo PUBLIC
         PNG::PNG
         ZLIB::ZLIB
         libjpeg-turbo::turbojpeg
+        ${FREEIMAGE_LIBRARY}
 )

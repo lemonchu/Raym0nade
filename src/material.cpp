@@ -45,6 +45,32 @@ int Material::isEnabled(int index) const {
     return !texture[index].data.empty();
 }
 
+bool Material::loadImageFromDDS(ImageData &imageData, const std::string& filename) {
+    FIBITMAP* bitmap = FreeImage_Load(FIF_DDS, filename.c_str(), DDS_DEFAULT);
+    if (!bitmap) {
+        std::cerr << "Error loading DDS file: " << filename << std::endl;
+        return false;
+    }
+
+    int imgWidth = FreeImage_GetWidth(bitmap);
+    int imgHeight = FreeImage_GetHeight(bitmap);
+    std::cout << "Loading DDS image: " << imgWidth << "x" << imgHeight << std::endl;
+    int pitch = imgWidth * 3; // Assuming 3 bytes per pixel (RGB)
+    imageData.data.resize(imgHeight * pitch);
+
+    for (int y = 0; y < imgHeight; y++) {
+        BYTE* bits = FreeImage_GetScanLine(bitmap, y);
+        for (int x = 0; x < imgWidth * 3; x++) {
+            imageData.data[y * pitch + x] = bits[x];
+        }
+    }
+    imageData.width = imgWidth;
+    imageData.height = imgHeight;
+
+    FreeImage_Unload(bitmap);
+    return true;
+}
+
 bool Material::loadImageFromPNG(ImageData &imageData, const std::string& filename) {
 
     std::cout << "Loading image from file: " << filename << std::endl;
@@ -180,8 +206,10 @@ void Material::loadImageFromFile(int index, const std::string& filename) {
         loadImageFromPNG(texture[index], filename);
     } else if (fileExtension == "jpg" || fileExtension == "jpeg" || fileExtension == "JPG" || fileExtension == "JPEG") {
         loadImageFromJPG(texture[index], filename);
+    } else if (fileExtension == "dds" || fileExtension == "DDS") {
+        loadImageFromDDS(texture[index], filename);
     } else {
-        //throw std::runtime_error("Unsupported file format");
+        std::cerr << "Unsupported file format: " << filename << std::endl;
     }
 }
 

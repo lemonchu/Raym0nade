@@ -5,6 +5,7 @@
 #include <string>
 #include <assimp/material.h>
 #include <glm/glm.hpp>
+#include <FreeImage.h>
 
 struct ImageData{
     int width, height;
@@ -38,6 +39,7 @@ public:
 
     int isEnabled(int index) const;
 
+    bool loadImageFromDDS(ImageData &imageData, const std::string& filename);
     bool loadImageFromPNG(ImageData &imageData, const std::string& filename);
     bool loadImageFromJPG(ImageData &imageData, const std::string& filename);
     void loadImageFromFile(int index, const std::string& filename);
