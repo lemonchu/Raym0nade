@@ -86,9 +86,7 @@ Model::Model(std::string model_folder, std::string model_name) {
                               aiProcess_Triangulate |
                               aiProcess_JoinIdenticalVertices |
                               aiProcess_SortByPType |
-                              aiProcess_GenUVCoords |
-                              aiProcess_GenNormals  |
-                              aiProcess_EmbedTextures);
+                              aiProcess_GenNormals  );
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;

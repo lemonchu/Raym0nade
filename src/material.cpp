@@ -52,16 +52,19 @@ bool Material::loadImageFromDDS(ImageData &imageData, const std::string& filenam
         return false;
     }
 
-    int imgWidth = FreeImage_GetWidth(bitmap);
-    int imgHeight = FreeImage_GetHeight(bitmap);
+    unsigned int imgWidth = FreeImage_GetWidth(bitmap);
+    unsigned int imgHeight = FreeImage_GetHeight(bitmap);
     std::cout << "Loading DDS image: " << imgWidth << "x" << imgHeight << std::endl;
-    int pitch = imgWidth * 3; // Assuming 3 bytes per pixel (RGB)
+    unsigned int pitch = imgWidth * 4; // Assuming 4 bytes per pixel (RGBA)
     imageData.data.resize(imgHeight * pitch);
 
     for (int y = 0; y < imgHeight; y++) {
         BYTE* bits = FreeImage_GetScanLine(bitmap, y);
-        for (int x = 0; x < imgWidth * 3; x++) {
-            imageData.data[y * pitch + x] = bits[x];
+        for (int x = 0; x < imgWidth; x++) {
+            imageData.data[y * pitch + 4 * x + 0] = bits[4 * x + 2]; // Red
+            imageData.data[y * pitch + 4 * x + 1] = bits[4 * x + 1]; // Green
+            imageData.data[y * pitch + 4 * x + 2] = bits[4 * x + 0]; // Blue
+            imageData.data[y * pitch + 4 * x + 3] = bits[4 * x + 3]; // Alpha
         }
     }
     imageData.width = imgWidth;

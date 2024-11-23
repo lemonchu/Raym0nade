@@ -43,21 +43,25 @@ PixelData Renderer::sampleRay(Ray ray, int depth = 0) {
 
         // Update diffuse color with texture if available
         if (texture.isEnabled(TextureIdForDiffuseColor)) {
+            int width = texture.getImage(TextureIdForDiffuseColor).width;
+            int height = texture.getImage(TextureIdForDiffuseColor).height;
             vec2 texUV = u * face.data[0]->uv + v * face.data[1]->uv + w * face.data[2]->uv;
-            int texX = lround(texUV[0] * texture.getImage(1).width + 0.5);
-            int texY = texture.getImage(1).height - lround(texUV[1] * texture.getImage(1).height + 0.5);
-            texX = std::max(0, std::min(texX, texture.getImage(1).width - 1));
-            texY = std::max(0, std::min(texY, texture.getImage(1).height - 1));
+            int texX = lround(texUV[0] * width + 0.5);
+            int texY = lround(texUV[1] * height + 0.5);
+            texX %= width;
+            if (texX < 0) texX += width;
+            texY %= height;
+            if (texY < 0) texY += width;
 
             const std::vector<uint8_t>& imageData = texture.getImage(1).data;
-            int pixelIndex = (texY * texture.getImage(1).width + texX) * 3; // 3 channels for RGB
+            int pixelIndex = (texY * texture.getImage(1).width + texX) * 4; // 4 channels for RGBA
             diffuseColor = vec3(
                     imageData[pixelIndex] / 255.0f,
                     imageData[pixelIndex + 1] / 255.0f,
                     imageData[pixelIndex + 2] / 255.0f
             );
         }
-
+/*
         // Apply lighting
         vec3 light = normalize(vec3(10, -1, -1));
         float specularIntensity = 0.7;
@@ -73,9 +77,12 @@ PixelData Renderer::sampleRay(Ray ray, int depth = 0) {
         float spec = pow(std::max(dot(viewDir, reflectDir), 0.0f), shininess);
         vec3 specularTerm = specularIntensity * spec * specularColor;
 
-        // Final color calculation
-        ret.color = diffuseTerm + specularTerm;
-        // std::cout << "Color: " << ret.color.x << " " << ret.color.y << " " << ret.color.z << std::endl;
+        // Final color calculation*/
+        ret.color = diffuseColor;//diffuseTerm + specularTerm;
+        // std::cout << "Color: " << ret.color.x << " " << ret.color.y << " " << ret.color.z << std::endl;*/
+
+        //ret.depth = hit.t_max;
+        //ret.color = - vec3(log(ret.depth));
     } else {
         ret.color = vec3(1, 0, 0); // Background color (red)
         ret.depth = 0;
@@ -115,6 +122,6 @@ void Renderer::render(Model &model, const RenderArgs &args) {
             pixel.color /= oversampleCnt;
             pixel.depth /= oversampleCnt;
         }
-    // image.normalize();
+    //image.normalize();
     image.save(args.savePath.c_str());
 }
