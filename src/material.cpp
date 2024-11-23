@@ -9,23 +9,43 @@
 #include <iostream>
 #include "material.h"
 
-Material::Material() : width(0), height(0), shininess(0.0f), opacity(1.0f),
-                       isNameEnabled(false), isShininessEnabled(false), isOpacityEnabled(false),
-                       isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false) {
-    memset(enabled, 0, sizeof(enabled));
+#include <string>
+#include <sstream>
+
+std::string urlDecode(const std::string &src) {
+    std::string decoded;
+    char ch;
+    int i, ii;
+    for (i = 0; i < src.length(); i++) {
+        if (int(src[i]) == 37) {
+            sscanf(src.substr(i + 1, 2).c_str(), "%x", &ii);
+            ch = static_cast<char>(ii);
+            decoded += ch;
+            i = i + 2;
+        } else {
+            decoded += src[i];
+        }
+    }
+    return decoded;
 }
 
-[[nodiscard]] const std::vector<uint8_t>& Material::getImage(int index) const {
-    if (index < 0 || index >= AI_TEXTURE_TYPE_MAX) {
+Material::Material() : shininess(0.0f), opacity(1.0f),
+                       isNameEnabled(false), isShininessEnabled(false), isOpacityEnabled(false),
+                       isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false) {
+}
+
+[[nodiscard]] const ImageData& Material::getImage(int index) const {
+    if (index < 0 || index >= AI_TEXTURE_TYPE_MAX + 1) {
         throw std::out_of_range("Index out of range");
-    }
-    if (!enabled[index]) {
-        throw std::runtime_error("Image is not enabled");
     }
     return texture[index];
 }
 
-bool Material::loadImageFromPNG(std::vector<uint8_t> &imageData, const std::string& filename) {
+int Material::isEnabled(int index) const {
+    return !texture[index].data.empty();
+}
+
+bool Material::loadImageFromPNG(ImageData &imageData, const std::string& filename) {
 
     std::cout << "Loading image from file: " << filename << std::endl;
 
@@ -76,29 +96,24 @@ bool Material::loadImageFromPNG(std::vector<uint8_t> &imageData, const std::stri
     png_read_update_info(png, info);
 
     std::vector<png_byte> row(imgWidth * 3); // 3 bytes per pixel (RGB)
-    imageData.resize(imgWidth * imgHeight * 3);
+    imageData.data.resize(imgWidth * imgHeight * 3);
 
     for (int y = 0; y < imgHeight; y++) {
         png_read_row(png, row.data(), nullptr);
         for (int x = 0; x < imgWidth * 3; x++) {
-            imageData[y * imgWidth * 3 + x] = row[x];
+            imageData.data[y * imgWidth * 3 + x] = row[x];
         }
     }
+    imageData.width = imgWidth;
+    imageData.height = imgHeight;
 
     fclose(fp);
     png_destroy_read_struct(&png, &info, nullptr);
 
-    if (width == 0 && height == 0) {
-        width = imgWidth;
-        height = imgHeight;
-    } else if (width != imgWidth || height != imgHeight) {
-        throw std::runtime_error("Image dimensions do not match texture requirements");
-    }
-
     return true;
 }
 
-bool Material::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::string& filename) {
+bool Material::loadImageFromJPG(ImageData &imageData, const std::string& filename) {
     // Open JPEG file
     FILE* jpegFile = fopen(filename.c_str(), "rb");
     if (jpegFile == nullptr) {
@@ -140,26 +155,21 @@ bool Material::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::stri
     // Set output buffer size based on image dimensions and components
     int pixelSize = 3; // RGB has 3 components
     int pitch = imgWidth * pixelSize;
-    imageData.resize(imgHeight * pitch);
+    imageData.data.resize(imgHeight * pitch);
 
     // Decompress JPEG image to RGB format
-    if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData[0], imgWidth, pitch, imgHeight, TJPF_RGB, TJFLAG_FASTDCT) < 0) {
+    if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData.data[0], imgWidth, pitch, imgHeight, TJPF_RGB, TJFLAG_FASTDCT) < 0) {
         std::cerr << "Error decompressing JPEG image" << std::endl;
         free(jpegBuf);
         tjDestroy(tjInstance);
         return false;
     }
+    imageData.width = imgWidth;
+    imageData.height = imgHeight;
 
     // Free resources
     free(jpegBuf);
     tjDestroy(tjInstance);
-
-    if (width == 0 && height == 0) {
-        width = imgWidth;
-        height = imgHeight;
-    } else if (width != imgWidth || height != imgHeight) {
-        throw std::runtime_error("Image dimensions do not match texture requirements");
-    }
 
     return true;
 }
@@ -167,9 +177,9 @@ bool Material::loadImageFromJPG(std::vector<uint8_t> &imageData, const std::stri
 void Material::loadImageFromFile(int index, const std::string& filename) {
     std::string fileExtension = filename.substr(filename.find_last_of(".") + 1);
     if (fileExtension == "png" || fileExtension == "PNG") {
-        enabled[index] = loadImageFromPNG(texture[index], filename);
+        loadImageFromPNG(texture[index], filename);
     } else if (fileExtension == "jpg" || fileExtension == "jpeg" || fileExtension == "JPG" || fileExtension == "JPEG") {
-        enabled[index] = loadImageFromJPG(texture[index], filename);
+        loadImageFromJPG(texture[index], filename);
     } else {
         //throw std::runtime_error("Unsupported file format");
     }

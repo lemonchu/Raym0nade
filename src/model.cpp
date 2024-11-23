@@ -87,7 +87,8 @@ Model::Model(std::string model_folder, std::string model_name) {
                               aiProcess_JoinIdenticalVertices |
                               aiProcess_SortByPType |
                               aiProcess_GenUVCoords |
-                              aiProcess_GenNormals);
+                              aiProcess_GenNormals  |
+                              aiProcess_EmbedTextures);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
@@ -108,7 +109,7 @@ Model::Model(std::string model_folder, std::string model_name) {
             for (unsigned int k = 0; k < numTextures; k++) {
                 aiString path;
                 if (material->GetTexture(textureType, k, &path) == AI_SUCCESS) {
-                    std::cout << "Material path (" << textureType << "): " << path.C_Str() << std::endl;
+                    std::cout << "- Texture path (" << textureType << "): " << urlDecode(path.C_Str()) << std::endl;
                 }
                 std::string pathStr = (std::string) model_folder + path.C_Str();
 #ifdef WIN32
@@ -116,6 +117,7 @@ Model::Model(std::string model_folder, std::string model_name) {
 #else
                 std::replace(pathStr.begin(), pathStr.end(), '\\', '/');
 #endif
+                pathStr = urlDecode(pathStr);
                 materials[i].loadImageFromFile(j, pathStr);
             }
         }

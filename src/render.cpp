@@ -42,15 +42,15 @@ PixelData Renderer::sampleRay(Ray ray, int depth = 0) {
         float shininess = texture.shininess;
 
         // Update diffuse color with texture if available
-        if (texture.enabled[TextureIdForDiffuseColor]) {
+        if (texture.isEnabled(TextureIdForDiffuseColor)) {
             vec2 texUV = u * face.data[0]->uv + v * face.data[1]->uv + w * face.data[2]->uv;
-            int texX = lround(texUV[0] * texture.width + 0.5);
-            int texY = texture.height - lround(texUV[1] * texture.height + 0.5);
-            texX = std::max(0, std::min(texX, texture.width - 1));
-            texY = std::max(0, std::min(texY, texture.height - 1));
+            int texX = lround(texUV[0] * texture.getImage(1).width + 0.5);
+            int texY = texture.getImage(1).height - lround(texUV[1] * texture.getImage(1).height + 0.5);
+            texX = std::max(0, std::min(texX, texture.getImage(1).width - 1));
+            texY = std::max(0, std::min(texY, texture.getImage(1).height - 1));
 
-            const std::vector<uint8_t>& imageData = texture.getImage(1);
-            int pixelIndex = (texY * texture.width + texX) * 3; // 3 channels for RGB
+            const std::vector<uint8_t>& imageData = texture.getImage(1).data;
+            int pixelIndex = (texY * texture.getImage(1).width + texX) * 3; // 3 channels for RGB
             diffuseColor = vec3(
                     imageData[pixelIndex] / 255.0f,
                     imageData[pixelIndex + 1] / 255.0f,

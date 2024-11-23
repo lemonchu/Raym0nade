@@ -6,11 +6,18 @@
 #include <assimp/material.h>
 #include <glm/glm.hpp>
 
+struct ImageData{
+    int width, height;
+    std::vector<uint8_t> data;
+    ImageData() : width(0), height(0) {}
+};
+
+std::string urlDecode(const std::string &src);
+
 class Material {
 public:
-    int width, height;
-    std::vector<uint8_t> texture[AI_TEXTURE_TYPE_MAX];
-    bool enabled[AI_TEXTURE_TYPE_MAX]; // Array to indicate if each texture is enabled
+
+    ImageData texture[AI_TEXTURE_TYPE_MAX + 1];
 
     std::string name;
     float shininess;
@@ -27,10 +34,12 @@ public:
 
     Material();
 
-    [[nodiscard]] const std::vector<uint8_t>& getImage(int index) const;
+    [[nodiscard]] const ImageData& getImage(int index) const;
 
-    bool loadImageFromPNG(std::vector<uint8_t> &imageData, const std::string& filename);
-    bool loadImageFromJPG(std::vector<uint8_t> &imageData, const std::string& filename);
+    int isEnabled(int index) const;
+
+    bool loadImageFromPNG(ImageData &imageData, const std::string& filename);
+    bool loadImageFromJPG(ImageData &imageData, const std::string& filename);
     void loadImageFromFile(int index, const std::string& filename);
 
     // New method to load material properties
