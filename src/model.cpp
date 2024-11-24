@@ -136,11 +136,12 @@ Model::Model(std::string model_folder, std::string model_name) {
     kdt.build(faces);
 }
 
-void checkEmissiveMaterials(const aiScene* scene) {
+void Model::checkEmissiveMaterials(const aiScene* scene) {
     for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
         aiMaterial* material = scene->mMaterials[i];
         aiColor3D emissiveColor(0.0f, 0.0f, 0.0f);
         if (AI_SUCCESS == material->Get(AI_MATKEY_COLOR_EMISSIVE, emissiveColor)) {
+            materials[i].emission = glm::vec3(emissiveColor.r, emissiveColor.g, emissiveColor.b);
             if (emissiveColor.r > 0.0f || emissiveColor.g > 0.0f || emissiveColor.b > 0.0f) {
                 std::cout << "Material " << i << " has emissive color: "
                           << emissiveColor.r << ", " << emissiveColor.g << ", " << emissiveColor.b << std::endl;

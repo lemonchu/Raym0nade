@@ -25,6 +25,7 @@ public:
 
     Model();
     Model(std::string model_folder, std::string model_name);
+    void checkEmissiveMaterials(const aiScene* scene);
 };
 
 void checkEmissiveMaterials(const aiScene* scene);

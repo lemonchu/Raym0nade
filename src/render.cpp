@@ -3,6 +3,9 @@
 Renderer::Renderer() {}
 
 const int TextureIdForDiffuseColor = 1;
+const int TextureIdForSpecularColor = 2;
+const int TextureIdForAmbientColor = 3;
+const int TextureIdForEmission = 4;
 
 glm::vec3 barycentric(const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, const glm::vec3& P) {
     glm::vec3 v0 = B - A;
@@ -20,47 +23,41 @@ glm::vec3 barycentric(const glm::vec3& A, const glm::vec3& B, const glm::vec3& C
     return glm::vec3(u, v, w);
 }
 
-PixelData Renderer::sampleRay(Ray ray, int depth = 0) {
+
+HitInfo getHitInfo(const Face& face, const glm::vec3& intersection) {
+    HitInfo hitInfo;
+    const glm::vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
+    const Material& material = *face.material;
+    vec2 texUV =
+            baryCoords[0] * face.data[0]->uv
+            + baryCoords[1] * face.data[1]->uv
+            + baryCoords[2] * face.data[2]->uv;
+    if (material.isEnabled(TextureIdForDiffuseColor))
+        hitInfo.diffuseColor = material.getImage(TextureIdForDiffuseColor).get(texUV[0], texUV[1]);
+    hitInfo.normal = normalize(
+            baryCoords[0] * face.data[0]->normal
+            + baryCoords[1] * face.data[1]->normal
+            + baryCoords[2] * face.data[2]->normal
+    );
+    hitInfo.emission = face.material->emission;
+    if (length(hitInfo.emission) > 0) {
+        vec3 emissionColor = material.getImage(TextureIdForEmission).get(texUV[0], texUV[1]);
+        hitInfo.emission *= emissionColor;
+    }
+    return hitInfo;
+}
+
+HitInfo Renderer::rayHit(Ray ray) {
     HitRecord hit = modelPtr->kdt.rayHit(ray);
-    PixelData ret;
     if (hit.t_max < INFINITY) {
         const auto& face = *hit.face;
-        const auto intersection = ray.origin + hit.t_max * ray.direction;
-        glm::vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
-        float u = baryCoords.x, v = baryCoords.y, w = baryCoords.z;
+        HitInfo hitInfo = getHitInfo(face, ray.origin + ray.direction * hit.t_max);
+        hitInfo.t = hit.t_max;
+        return hitInfo;
+    }
+    return HitInfo();
+}
 
-        const auto normal = normalize(u * face.data[0]->normal + v * face.data[1]->normal + w * face.data[2]->normal);
-        ret.depth = hit.t_max;
-        ret.color = vec3(0.0f, 0.0f, 0.0f); // Initialize default color to black
-
-        const Material& texture = *face.texture;
-
-        // Retrieve material properties
-        vec3 diffuseColor = texture.diffuseColor;
-        vec3 specularColor = texture.specularColor;
-        vec3 ambientColor = texture.ambientColor;
-        float shininess = texture.shininess;
-
-        // Update diffuse color with texture if available
-        if (texture.isEnabled(TextureIdForDiffuseColor)) {
-            int width = texture.getImage(TextureIdForDiffuseColor).width;
-            int height = texture.getImage(TextureIdForDiffuseColor).height;
-            vec2 texUV = u * face.data[0]->uv + v * face.data[1]->uv + w * face.data[2]->uv;
-            int texX = lround(texUV[0] * width + 0.5);
-            int texY = lround(texUV[1] * height + 0.5);
-            texX %= width;
-            if (texX < 0) texX += width;
-            texY %= height;
-            if (texY < 0) texY += width;
-
-            const std::vector<uint8_t>& imageData = texture.getImage(1).data;
-            int pixelIndex = (texY * texture.getImage(1).width + texX) * 4; // 4 channels for RGBA
-            diffuseColor = vec3(
-                    imageData[pixelIndex] / 255.0f,
-                    imageData[pixelIndex + 1] / 255.0f,
-                    imageData[pixelIndex + 2] / 255.0f
-            );
-        }
 /*
         // Apply lighting
         vec3 light = normalize(vec3(10, -1, -1));
@@ -77,15 +74,25 @@ PixelData Renderer::sampleRay(Ray ray, int depth = 0) {
         float spec = pow(std::max(dot(viewDir, reflectDir), 0.0f), shininess);
         vec3 specularTerm = specularIntensity * spec * specularColor;
 
-        // Final color calculation*/
+        // Final color calculation
         ret.color = diffuseColor;//diffuseTerm + specularTerm;
         // std::cout << "Color: " << ret.color.x << " " << ret.color.y << " " << ret.color.z << std::endl;*/
 
-        //ret.depth = hit.t_max;
-        //ret.color = - vec3(log(ret.depth));
-    } else {
-        ret.color = vec3(1, 0, 0); // Background color (red)
-        ret.depth = 0;
+//ret.depth = hit.t_max;
+//ret.color = - vec3(log(ret.depth)); */
+
+PixelData Renderer::sampleRay(Ray ray, int depth = 0) {
+    HitInfo info = rayHit(ray);
+    PixelData ret;
+    ret.depth = info.t;
+    if (length(info.emission) > 0)
+        ret.color = vec3(1, 0, 0);
+    else
+        ret.color = vec3(info.diffuseColor[0], info.diffuseColor[1], info.diffuseColor[2]);
+    if (depth < MAX_RAY_DEPTH && info.diffuseColor[3] < 1.0 - eps_zero) {
+        Ray ray2 = {ray.origin + ray.direction * (info.t + eps_zero), ray.direction};
+        PixelData next = sampleRay(ray2, depth + 1);
+        ret.color = info.diffuseColor[3]*ret.color + (1-info.diffuseColor[3])*next.color;
     }
     return ret;
 }

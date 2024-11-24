@@ -33,7 +33,7 @@ struct VertexData {
 struct Face {
     vec3 v[3];
     VertexData* data[3];
-    Material *texture;
+    Material *material;
 
     [[nodiscard]] vec3 center() const;
     [[nodiscard]] Box aabb() const;

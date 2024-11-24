@@ -11,6 +11,8 @@ struct ImageData{
     int width, height;
     std::vector<uint8_t> data;
     ImageData() : width(0), height(0) {}
+
+    [[nodiscard]] glm::vec4 get(float u, float v) const;
 };
 
 std::string urlDecode(const std::string &src);
@@ -26,12 +28,14 @@ public:
     glm::vec3 diffuseColor;
     glm::vec3 specularColor;
     glm::vec3 ambientColor;
+    glm::vec3 emission;
     bool isNameEnabled;
     bool isShininessEnabled;
     bool isOpacityEnabled;
     bool isDiffuseColorEnabled;
     bool isSpecularColorEnabled;
     bool isAmbientColorEnabled;
+    bool isEmissionEnabled;
 
     Material();
 

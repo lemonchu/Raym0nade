@@ -29,6 +29,21 @@ std::string urlDecode(const std::string &src) {
     return decoded;
 }
 
+glm::vec4 ImageData::get(float u, float v) const {
+    int texX = lround(u * width), texY = lround(v * height);
+    texX %= width;
+    if (texX < 0) texX += width;
+    texY %= height;
+    if (texY < 0) texY += height;
+    int pixelIndex = (texY * width + texX) * 4; // 4 channels for RGBA
+    return glm::vec4(
+            data[pixelIndex] / 255.0f,
+            data[pixelIndex + 1] / 255.0f,
+            data[pixelIndex + 2] / 255.0f,
+            data[pixelIndex + 3] / 255.0f
+    );
+}
+
 Material::Material() : shininess(0.0f), opacity(1.0f),
                        isNameEnabled(false), isShininessEnabled(false), isOpacityEnabled(false),
                        isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false) {
