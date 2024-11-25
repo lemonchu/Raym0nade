@@ -25,7 +25,7 @@ void MyConsole::createRenderArgs(const std::string &str) {
 
     vec3 direction, right, up;
     float D, R, U, accuracy;
-    unsigned int oversampling, width, height;
+    unsigned int oversampling, spp, width, height;
     std::string savePath;
 
     std::cout << "direction (x,y,z): ";
@@ -47,13 +47,16 @@ void MyConsole::createRenderArgs(const std::string &str) {
     std::cout << "Oversampling: ";
     std::cin >> oversampling;
 
+    std::cout << "spp: ";
+    std::cin >> spp;
+
     std::cout << "width, height: ";
     std::cin >> width >> height;
 
     std::cout << "savePath: ";
     std::cin >> savePath;
 
-    renderArgs[str] = {position, direction, up, right, accuracy, oversampling, width, height, savePath};
+    renderArgs[str] = {position, direction, up, right, accuracy, oversampling, spp, width, height, savePath};
     std::cout << "RenderArgs (" << str << ") created." << std::endl;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 }
@@ -99,6 +102,7 @@ void MyConsole::viewRenderArgs(const std::string &str) {
     std::cout << "position : " << args.position.x << " " << args.position.y << " " << args.position.z << std::endl;
     std::cout << "accuracy: " << args.accuracy << std::endl;
     std::cout << "Oversampling: " << args.oversampling << std::endl;
+    std::cout << "spp: " << args.spp << std::endl;
     std::cout << "width, height: " << args.width << " " << args.height << std::endl;
 }
 

@@ -1,15 +1,12 @@
 #include <assimp/material.h>
-#include <cstdint>
 #include <cstdlib>
 #include <png.h>
 #include <turbojpeg.h>
 #include <stdexcept>
-#include <cstring>
 #include <vector>
 #include <iostream>
 #include "material.h"
 
-#include <string>
 #include <sstream>
 
 std::string urlDecode(const std::string &src) {
@@ -37,16 +34,17 @@ glm::vec4 ImageData::get(float u, float v) const {
     if (texY < 0) texY += height;
     int pixelIndex = (texY * width + texX) * 4; // 4 channels for RGBA
     return glm::vec4(
-            data[pixelIndex] / 255.0f,
-            data[pixelIndex + 1] / 255.0f,
-            data[pixelIndex + 2] / 255.0f,
+            gammaMap[data[pixelIndex]],
+            gammaMap[data[pixelIndex + 1]],
+            gammaMap[data[pixelIndex + 2]],
             data[pixelIndex + 3] / 255.0f
     );
 }
 
 Material::Material() : shininess(0.0f), opacity(1.0f),
                        isNameEnabled(false), isShininessEnabled(false), isOpacityEnabled(false),
-                       isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false) {
+                       isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false),
+                       isEmissionEnabled(false) {
 }
 
 [[nodiscard]] const ImageData& Material::getImage(int index) const {
@@ -260,5 +258,11 @@ void Material::loadMaterialProperties(const aiMaterial* aiMat) {
     if (aiMat->Get(AI_MATKEY_COLOR_AMBIENT, color) == AI_SUCCESS) {
         ambientColor = glm::vec3(color.r, color.g, color.b);
         isAmbientColorEnabled = true;
+    }
+
+    if (aiMat->Get(AI_MATKEY_COLOR_EMISSIVE, color) == AI_SUCCESS) {
+        emission = glm::vec3(color.r, color.g, color.b);
+        if (color.r > 0.0f || color.g > 0.0f || color.b > 0.0f)
+            isEmissionEnabled = true;
     }
 }

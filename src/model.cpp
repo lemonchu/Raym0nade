@@ -25,6 +25,11 @@ glm::mat4 aiMatrix4x4ToGlm(const aiMatrix4x4 &from) {
     return to;
 }
 
+LightFace::LightFace(vec3 position, vec3 normal, float power) :
+        position(position), normal(normal), power(power) {}
+
+LightObject::LightObject() : center(vec3(0)), color(vec3(0)), power(0), touch(0), total(0) {}
+
 unsigned int vertexCount(const aiScene *scene) {
     unsigned int cnt = 0;
     for (unsigned int i = 0; i < scene->mNumMeshes; i++)
@@ -32,42 +37,120 @@ unsigned int vertexCount(const aiScene *scene) {
     return cnt;
 }
 
+float rnd1() {
+    return rand()%1000*1e-3;
+}
+
+const float powerAlpha = 0.25f;
+
+void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
+
+    unsigned int offset = vertexDatas.size();
+    for (unsigned int j = 0; j < mesh->mNumVertices; j++) {
+        aiVector3D normal = mesh->mNormals[j];
+        aiVector3D texCoord = mesh->mTextureCoords[0][j];
+        vertexDatas.emplace_back(
+                vec2(texCoord.x, texCoord.y),
+                vec3(0)
+        );
+    }
+
+    auto &material = materials[mesh->mMaterialIndex];
+    VertexData *vData = &vertexDatas[offset];
+    offset = faces.size();
+    for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
+        aiFace &face0 = mesh->mFaces[j];
+
+        // Apply transformation to vertices
+        glm::vec4 transformedVertex[3];
+        for (int k = 0; k < 3; ++k) {
+            aiVector3D vertex = mesh->mVertices[face0.mIndices[k]];
+            transformedVertex[k] = nodeTransform * glm::vec4(vertex.x, vertex.y, vertex.z, 1.0f);
+        }
+
+        faces.push_back({
+                {vec3(transformedVertex[0]),
+                 vec3(transformedVertex[1]),
+                 vec3(transformedVertex[2])},
+                {&vData[face0.mIndices[0]],
+                 &vData[face0.mIndices[1]],
+                 &vData[face0.mIndices[2]]},
+                &material
+        });
+
+        const Face &face = faces.back();
+
+        vec3 normal = glm::normalize(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
+        vData[face0.mIndices[0]].normal += normal;
+        vData[face0.mIndices[1]].normal += normal;
+        vData[face0.mIndices[2]].normal += normal;
+    }
+
+    for (unsigned int j = 0; j < mesh->mNumVertices; j++)
+        vData[j].normal = glm::normalize(vData[j].normal);
+
+    Face *meshFaces = &faces[offset];
+    if (material.isEmissionEnabled && material.isEnabled(TextureIdForEmission)) {
+
+        lightObjects.emplace_back();
+        auto &lightObject = lightObjects.back();
+
+        vec3 emission = material.emission;
+        lightObject.color = glm::normalize(emission);
+        /*lightObject.color = vec3(0);
+        int randcolor = rand()%3;
+        lightObject.color[randcolor] = 1.0f;*/
+
+        float totalColorPower = 0.0f;
+
+        for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
+            auto &face = meshFaces[j];
+
+            vec3 centroid = (face.v[0] + face.v[1] + face.v[2]) / 3.0f;
+            vec2 uv = (face.data[0]->uv + face.data[1]->uv + face.data[2]->uv) / 3.0f;
+            vec4 textureColor = material.getImage(TextureIdForEmission).get(uv[0], uv[1]);
+            float colorPower = glm::length(vec3(textureColor[0], textureColor[1], textureColor[2]));
+
+            if (colorPower == 0.0f)
+                continue;
+
+            float area = glm::length(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0])) / 2.0f;
+            vec3 normal = normalize(face.data[0]->normal + face.data[1]->normal + face.data[2]->normal);
+            lightObject.lightFaces.emplace_back(centroid, normal, area * colorPower);
+            totalColorPower += area * colorPower;
+        }
+
+        float powerDensity = glm::length(emission) * pow(totalColorPower, powerAlpha-1);
+        std::vector<float> faceWeights;
+        faceWeights.resize(lightObject.lightFaces.size());
+        for (unsigned int j = 0; j < lightObject.lightFaces.size(); j++) {
+            LightFace &lightFace = lightObject.lightFaces[j];
+            lightFace.power *= powerDensity;
+            faceWeights[j] = lightFace.power;
+            lightObject.power += lightFace.power;
+            lightObject.center += lightFace.position * lightFace.power;
+        }
+        lightObject.faceDist = std::discrete_distribution<int>(faceWeights.begin(), faceWeights.end());
+        lightObject.center /= lightObject.power;
+
+        if (lightObject.power == 0.0f)
+            lightObjects.pop_back();
+        else {
+            std::cout << "PowerDensity: " << powerDensity << std::endl;
+            std::cout << "Light object with power: " << lightObject.power
+                      << ", color:" << lightObject.color.x << ", " << lightObject.color.y << ", " << lightObject.color.z
+                      << ", position:" << lightObject.center.x << ", " << lightObject.center.y << ", "
+                      << lightObject.center.z << std::endl;
+        }
+    }
+}
+
 void Model::processNode(aiNode *node, const aiScene *scene, const glm::mat4 &parentTransform) {
     glm::mat4 nodeTransform = parentTransform * aiMatrix4x4ToGlm(node->mTransformation);
 
     for (unsigned int i = 0; i < node->mNumMeshes; i++) {
         aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
-        unsigned int offset = vertexDatas.size();
-        bool hasVertexColor = mesh->HasVertexColors(0);
-        for (unsigned int j = 0; j < mesh->mNumVertices; j++) {
-            aiVector3D normal = mesh->mNormals[j];
-            aiVector3D texCoord = mesh->mTextureCoords[0][j];
-            vertexDatas.emplace_back(
-                    vec2(texCoord.x, texCoord.y),
-                    vec3(normal.x, normal.y, normal.z)
-            );
-        }
-        VertexData *vData = &vertexDatas[offset];
-        for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
-            aiFace &face = mesh->mFaces[j];
-
-            // Apply transformation to vertices
-            glm::vec4 transformedVertex[3];
-            for (int k = 0; k < 3; ++k) {
-                aiVector3D vertex = mesh->mVertices[face.mIndices[k]];
-                transformedVertex[k] = nodeTransform * glm::vec4(vertex.x, vertex.y, vertex.z, 1.0f);
-            }
-
-            faces.push_back({
-                {vec3(transformedVertex[0]),
-                 vec3(transformedVertex[1]),
-                 vec3(transformedVertex[2])},
-                 {&vData[face.mIndices[0]],
-                 &vData[face.mIndices[1]],
-                 &vData[face.mIndices[2]]},
-                 &materials[mesh->mMaterialIndex]
-            });
-        }
+        processMesh(mesh, nodeTransform);
     }
 
     for (unsigned int i = 0; i < node->mNumChildren; i++) {
@@ -75,26 +158,7 @@ void Model::processNode(aiNode *node, const aiScene *scene, const glm::mat4 &par
     }
 }
 
-Model::Model() = default;
-
-Model::Model(std::string model_folder, std::string model_name) {
-
-    Assimp::Importer importer;
-    model_path = model_folder + model_name;
-    scene = importer.ReadFile(model_path.c_str(),
-                              aiProcess_CalcTangentSpace |
-                              aiProcess_Triangulate |
-                              aiProcess_JoinIdenticalVertices |
-                              aiProcess_SortByPType |
-                              aiProcess_GenNormals  );
-
-    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
-        std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
-        return ;
-    }
-    unsigned int vertexCnt = vertexCount(scene);
-    std::cout << "Vertices: " << vertexCnt << std::endl;
-    vertexDatas.reserve(vertexCnt);
+void Model::processMaterial(std::string model_folder, const aiScene *scene) {
 
     materials.resize(scene->mNumMaterials);
     for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
@@ -122,6 +186,26 @@ Model::Model(std::string model_folder, std::string model_name) {
         materials[i].loadMaterialProperties(material);
     }
     std::cout << "Materials: " << materials.size() << std::endl;
+}
+
+Model::Model() = default;
+
+Model::Model(std::string model_folder, std::string model_name) {
+
+    Assimp::Importer importer;
+    model_path = model_folder + model_name;
+    const aiScene* scene = importer.ReadFile(model_path.c_str(),
+                                             aiProcessPreset_TargetRealtime_Quality);
+
+    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
+        std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
+        return ;
+    }
+    unsigned int vertexCnt = vertexCount(scene);
+    std::cout << "Vertices: " << vertexCnt << std::endl;
+    vertexDatas.reserve(vertexCnt);
+
+    processMaterial(model_folder, scene);
 
     const glm::mat4 identity = glm::mat4(1.0f);
     processNode(scene->mRootNode, scene, identity);
@@ -139,12 +223,12 @@ Model::Model(std::string model_folder, std::string model_name) {
 void Model::checkEmissiveMaterials(const aiScene* scene) {
     for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
         aiMaterial* material = scene->mMaterials[i];
-        aiColor3D emissiveColor(0.0f, 0.0f, 0.0f);
+        aiColor4D emissiveColor(0.0f,0.0f,0.0f,0.0f);
         if (AI_SUCCESS == material->Get(AI_MATKEY_COLOR_EMISSIVE, emissiveColor)) {
             materials[i].emission = glm::vec3(emissiveColor.r, emissiveColor.g, emissiveColor.b);
             if (emissiveColor.r > 0.0f || emissiveColor.g > 0.0f || emissiveColor.b > 0.0f) {
                 std::cout << "Material " << i << " has emissive color: "
-                          << emissiveColor.r << ", " << emissiveColor.g << ", " << emissiveColor.b << std::endl;
+                          << emissiveColor.r << ", " << emissiveColor.g << ", " << emissiveColor.b << ", " << emissiveColor.a << std::endl;
             }
         }
     }

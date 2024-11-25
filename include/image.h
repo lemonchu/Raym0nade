@@ -6,8 +6,8 @@
 struct PixelData {
     vec3 color;
     float depth;
+    int cnt;
     PixelData();
-    PixelData(const vec3 &color, const float &depth);
 };
 
 PixelData operator + (const PixelData &A, const PixelData &B);

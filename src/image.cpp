@@ -5,17 +5,10 @@
 
 PixelData::PixelData() {
     color = vec3(0);
+    cnt = 0;
     depth = 0;
 }
 
-PixelData::PixelData(const vec3 &color, const float &depth) : color(color), depth(depth) {}
-
-PixelData operator+(const PixelData &A, const PixelData &B) {
-    return PixelData(
-            A.color + B.color,
-            A.depth + B.depth
-    );
-}
 
 Image::Image(unsigned int width, unsigned int height) : buffer(nullptr), width(width), height(height) {
     buffer = new PixelData[width * height];
@@ -61,8 +54,13 @@ void Image::save(const char *file_name) {
         for (unsigned int x = 0; x < width; ++x) {
             int id = y * width + x;
             png_byte *row = &image_data[id * 3];
-            for (int k = 0; k < 3; ++k)
-                row[k] = static_cast<png_byte>(buffer[id].color[k] * 255);
+            buffer[id].color /= buffer[id].cnt;
+            for (int k = 0; k < 3; ++k) {
+                float buf = std::min(std::max(buffer[id].color[k], 0.0f), 1.0f);
+                buf = std::pow(buf,1.0f / gamma);
+                row[k] = static_cast<png_byte>(buf * 255);
+            }
+
         }
 
     for (unsigned int y = 0; y < height; ++y)

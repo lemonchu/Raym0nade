@@ -28,7 +28,6 @@ void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR) {
                 tL = std::max(tL, (box.v1[i] - ray.origin[i]) * invD);
                 tR = std::min(tR, (box.v0[i] - ray.origin[i]) * invD);
             }
-            tR += eps_edge;
             if (tL > tR)
                 return ;
         }
@@ -76,18 +75,18 @@ bool RayTriangleIntersection(const Ray& ray, const Face& face, HitRecord& hit) {
     vec3 s = ray.origin - face.v[0];
     float u = f * dot(s, h);
 
-    if (u < -eps_edge || u > 1.0 + eps_edge)
+    if (u < 0.0 || u > 1.0)
         return false;
 
     vec3 q = cross(s, edge1);
     float v = f * dot(ray.direction, q);
 
-    if (v < -eps_edge || u + v > 1.0 + eps_edge)
+    if (v < 0.0 || u + v > 1.0)
         return false;
 
     float t = f * dot(edge2, q);
 
-    if (t < hit.t_max && t > hit.t_min) {
+    if (hit.t_min < t && t < hit.t_max) {
         hit.t_max = t;
         hit.face = &face;
         return true;

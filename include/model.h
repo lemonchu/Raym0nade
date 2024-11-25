@@ -4,22 +4,38 @@
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
+#include <random>
 #include "geometry.h"
 #include "material.h"
 #include "kdt.h"
 
+struct LightFace {
+    vec3 position, normal;
+    float power;
+    LightFace(vec3 position, vec3 normal, float power);
+};
 
+class LightObject {
+public:
+    vec3 center, color;
+    float power;
+    unsigned long long touch, total;
+    std::vector<LightFace> lightFaces;
+    std::discrete_distribution<int> faceDist;
+    LightObject();
+};
 
 class Model {
 private:
-    const aiScene *scene;
-
+    void processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform);
+    void processMaterial(std::string model_folder, const aiScene *scene);
     void processNode(aiNode *node, const aiScene *scene, const glm::mat4 &parentTransform);
 
 public:
     std::vector<Material> materials;
     std::vector<Face> faces;
     std::vector<VertexData> vertexDatas;
+    std::vector<LightObject> lightObjects;
     KDT kdt;
     std::string model_path;
 
