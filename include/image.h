@@ -23,4 +23,6 @@ public:
     ~Image();
 };
 
+const float gamma = 2.2f;
+
 #endif // IMAGE_H

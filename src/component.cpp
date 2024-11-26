@@ -1,0 +1,33 @@
+#include "component.h"
+
+LightFace::LightFace(glm::vec3 position, glm::vec3 normal, float power) :
+        position(position), normal(normal), power(power) {}
+
+LightObject::LightObject() : center(glm::vec3(0)), color(glm::vec3(0)), power(0) {}
+
+VertexData::VertexData() {}
+
+VertexData::VertexData(const vec2 &uv, const vec3 &normal) : uv(uv), normal(normal) {}
+
+vec3 Face::center() const {
+    return (v[0] + v[1] + v[2]) / 3.0f;
+}
+
+Box Face::aabb() const {
+    return Box(
+            vec3(
+                    std::min(v[0][0],std::min(v[1][0],v[2][0])),
+                    std::min(v[0][1],std::min(v[1][1],v[2][1])),
+                    std::min(v[0][2],std::min(v[1][2],v[2][2]))
+            ),
+            vec3(
+                    std::max(v[0][0],std::max(v[1][0],v[2][0])),
+                    std::max(v[0][1],std::max(v[1][1],v[2][1])),
+                    std::max(v[0][2],std::max(v[1][2],v[2][2]))
+            )
+    );
+}
+
+HitRecord::HitRecord() : t_min(eps_zero), t_max(INFINITY), face(nullptr) {}
+
+HitRecord::HitRecord(float t_min, float t_max) : t_min(t_min), t_max(t_max), face(nullptr) {}

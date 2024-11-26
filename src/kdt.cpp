@@ -54,8 +54,13 @@ void KDT::build(std::vector<Face> &triangles) {
 
 void KDT::dfs_rayHit(KDT_Node *u, const Ray &ray, HitRecord &closest_hit) const {
     if (u->son[0] == nullptr) {
-        for (Face *ptr = u->faceL; ptr != u->faceR; ++ptr)
-            RayTriangleIntersection(ray, *ptr, closest_hit);
+        for (Face *ptr = u->faceL; ptr != u->faceR; ++ptr) {
+            float t = RayTriangleIntersection(ray, ptr->v[0], ptr->v[1], ptr->v[2]);
+            if (closest_hit.t_min < t && t < closest_hit.t_max) {
+                closest_hit.t_max = t;
+                closest_hit.face = ptr;
+            }
+        }
         return;
     }
 
@@ -80,10 +85,8 @@ void KDT::dfs_rayHit(KDT_Node *u, const Ray &ray, HitRecord &closest_hit) const 
     }
 }
 
-HitRecord KDT::rayHit(const Ray &ray, float t_max) const {
-    HitRecord closest_hit(eps_zero, t_max);
+void KDT::rayHit(const Ray &ray, HitRecord &closest_hit) const {
     dfs_rayHit(root, ray, closest_hit);
-    return closest_hit;
 }
 
 KDT::~KDT() {

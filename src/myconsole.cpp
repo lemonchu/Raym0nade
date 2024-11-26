@@ -1,7 +1,5 @@
 #include <sstream>
 #include <iostream>
-#include <map>
-#include <string>
 #include "myconsole.h"
 
 MyConsole::MyConsole() = default;

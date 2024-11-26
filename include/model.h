@@ -4,33 +4,9 @@
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
-#include <random>
-#include "geometry.h"
 #include "material.h"
+#include "component.h"
 #include "kdt.h"
-
-struct LightFace {
-    vec3 position, normal;
-    float power;
-    LightFace(vec3 position, vec3 normal, float power);
-};
-
-class RandomNumberGenerator {
-private:
-    std::vector<float> prefixSums;
-public:
-    void Init(const std::vector<float>& distribution);
-    int operator()(std::mt19937 &gen) const;
-};
-
-class LightObject {
-public:
-    vec3 center, color;
-    float power;
-    std::vector<LightFace> lightFaces;
-    RandomNumberGenerator faceDist;
-    LightObject();
-};
 
 class Model {
 private:
@@ -51,8 +27,7 @@ public:
     void checkEmissiveMaterials(const aiScene* scene);
 };
 
-void checkEmissiveMaterials(const aiScene* scene);
-void checkLightSources(const aiScene* scene);
-glm::vec3 barycentric(const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, const glm::vec3& P);
+//void checkEmissiveMaterials(const aiScene* scene);
+//void checkLightSources(const aiScene* scene);
 
 #endif // MODEL_H

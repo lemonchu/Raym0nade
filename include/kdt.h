@@ -1,6 +1,7 @@
 #ifndef KDT_H
 #define KDT_H
 
+#include "component.h"
 #include "geometry.h"
 
 struct KDT_Node {
@@ -24,7 +25,7 @@ public:
 
     void dfs_rayHit(KDT_Node *u, const Ray &ray, HitRecord &closest_hit) const;
 
-    [[nodiscard]] HitRecord rayHit(const Ray &ray, float t_max = INFINITY) const;
+    void rayHit(const Ray &ray, HitRecord &closest_hit) const;
 
     ~KDT();
 };

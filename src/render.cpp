@@ -1,23 +1,8 @@
+#include <corecrt_math_defines.h>
 #include <thread>
 #include <random>
 #include <iostream>
 #include "render.h"
-
-glm::vec3 barycentric(const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, const glm::vec3& P) {
-    glm::vec3 v0 = B - A;
-    glm::vec3 v1 = C - A;
-    glm::vec3 v2 = P - A;
-    float d00 = glm::dot(v0, v0);
-    float d01 = glm::dot(v0, v1);
-    float d11 = glm::dot(v1, v1);
-    float d20 = glm::dot(v2, v0);
-    float d21 = glm::dot(v2, v1);
-    float denom = d00 * d11 - d01 * d01;
-    float v = (d11 * d20 - d01 * d21) / denom;
-    float w = (d00 * d21 - d01 * d20) / denom;
-    float u = 1.0f - v - w;
-    return glm::vec3(u, v, w);
-}
 
 const float areaThereshold = 5e-3; // 小面平滑插值，大面直接取法向量
 
@@ -36,8 +21,7 @@ bool TransparentTest(const Ray &ray, const HitRecord &hit) {
     return diffuseColor[3] < 0.5f;
 }
 
-HitInfo getHitInfo(const Face& face, const glm::vec3& intersection) {
-    HitInfo hitInfo;
+void getHitInfo(const Face& face, const glm::vec3& intersection, HitInfo &hitInfo) {
     const glm::vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
     const Material& material = *face.material;
     vec2 texUV =
@@ -55,49 +39,45 @@ HitInfo getHitInfo(const Face& face, const glm::vec3& intersection) {
     } else {
         hitInfo.normal = normalize(cx);
     }
-    hitInfo.emission = face.material->emission;
-    if (length(hitInfo.emission) > 0) {
-        vec3 emissionColor = material.getImage(TextureIdForEmission).get(texUV[0], texUV[1]);
-        hitInfo.emission *= emissionColor;
-    }
-    return hitInfo;
+    if (face.lightObject != nullptr) {
+        hitInfo.emission = face.lightObject->color * face.lightObject->powerDensity;
+    } else
+        hitInfo.emission = vec3(0.0f);
 }
 
-const int maxRayDepth = 8;
-
-const float eps_lightRadius = 1e-3;
+const int maxRayDepth_hit = 8;
 
 bool rayHit_test(Ray ray, const Model &model, float aimDepth) {
-    float t = 0.0;
-    for (int T = 0; T < maxRayDepth; T++) {
-        HitRecord hit = model.kdt.rayHit(ray, aimDepth + eps_zero);
-        t += hit.t_max;
-        if (t > aimDepth)
+    HitRecord hit(eps_zero, aimDepth + eps_zero);
+    for (int T = 0; T < maxRayDepth_hit; T++) {
+        model.kdt.rayHit(ray, hit);
+        if (hit.t_max > aimDepth)
             return false;
-        if (TransparentTest(ray, hit))
-            ray = {ray.origin + ray.direction * hit.t_max, ray.direction};
-        else
+        if (!TransparentTest(ray, hit))
             return true;
+        hit = HitRecord(hit.t_max + eps_zero, aimDepth + eps_zero);
     }
     return true;
 }
 
 HitInfo rayHit(Ray ray, const Model &model) {
-    float t = 0.0f;
-    for (int T = 0; T < maxRayDepth; T++) {
-        HitRecord hit = model.kdt.rayHit(ray);
-        if (hit.t_max == INFINITY)
+    HitRecord hit;
+    HitInfo hitInfo;
+    for (int T = 0; T < maxRayDepth_hit; T++) {
+        model.kdt.rayHit(ray, hit);
+        if (hit.t_max == INFINITY) {
+            hitInfo.t = INFINITY;
             break;
-        HitInfo hitInfo = getHitInfo(*hit.face, ray.origin + ray.direction * hit.t_max);
-        t += hit.t_max;
-        if (hitInfo.diffuseColor[3] == 0.0f)
-            ray = {ray.origin + ray.direction * (hit.t_max + eps_lightRadius), ray.direction};
-        else {
-            hitInfo.t = t;
+        }
+        vec3 intersection = ray.origin + ray.direction * hit.t_max;
+        getHitInfo(*hit.face, intersection, hitInfo);
+        if (hitInfo.diffuseColor[3] > 0.0f){
+            hitInfo.t = hit.t_max;
             return hitInfo;
         }
+        hit = HitRecord(hit.t_max + eps_zero, INFINITY);
     }
-    return HitInfo();
+    return hitInfo;
 }
 
 /*
@@ -124,42 +104,42 @@ HitInfo rayHit(Ray ray, const Model &model) {
 //ret.color = - vec3(log(ret.depth)); */
 
 const int maxRandomRounds = 16;
+const float eps_lightRadius = 1e-3;
+const float Ecos = 0.5f;
 
-vec4 sampleDirectLight(const vec3 &intersection, const HitInfo &info, const Model &model, std::mt19937 &gen) {
-    auto &lightObjects = model.lightObjects;
+vec4 sampleDirectLight(const vec3 &pos, const HitInfo &info, const Model &model, std::mt19937 &gen) {
 
     /*vec3 light = vec3(0.0f);
+    auto &lightObjects = model.lightObjects;
     for (const auto& lightObject : lightObjects) {
-        float distance = glm::length(lightObject.center - intersection);
-        float dot = std::max(glm::dot(normalize(lightObject.center - intersection), info.normal), 0.00f);
+        float distance = glm::length(lightObject.center - pos);
+        float dot = std::max(glm::dot(normalize(lightObject.center - pos), info.normal), 0.00f);
         light += dot * lightObject.color * lightObject.power / (distance * distance + eps_lightRadius);
     }
     return vec4(light, 1.0f);*/
 
     float totalWeight = 0.0f;
     std::vector<float> weights;
-    for (const auto& lightObject : lightObjects) {
-        float distance = glm::length(lightObject.center - intersection);
-        float dot = std::max(glm::dot(normalize(lightObject.center - intersection), info.normal), 0.05f);
+    for (const auto& lightObject : model.lightObjects) {
+        float distance = glm::length(lightObject.center - pos);
+        float dot = std::max(glm::dot(normalize(lightObject.center - pos), info.normal), 0.05f);
         float weight = dot * lightObject.power / (distance * distance * distance + eps_lightRadius);
         weights.push_back(weight);
         totalWeight += weight;
     }
     if (totalWeight == 0.0f)
         return vec4(0.0f, 0.0f, 0.0f, 1.0f);
-
-    int total = 0;
     std::discrete_distribution<int> lightDist(weights.begin(), weights.end());
     int lightIndex = lightDist(gen);
-    auto& lightObject = lightObjects[lightIndex];
+    auto& lightObject = model.lightObjects[lightIndex];
 
-    int faceIndex;
+    int total = 0, faceIndex;
     vec3 lightDir;
     float cosTheta, cosPhi;
     for (int T = 0; T < maxRandomRounds; T++) {
         faceIndex = lightObject.faceDist(gen);
         auto &lightFace = lightObject.lightFaces[faceIndex];
-        lightDir = normalize(lightFace.position - intersection);
+        lightDir = normalize(lightFace.position - pos);
         cosTheta = glm::dot(info.normal, lightDir);
         cosPhi = glm::dot(lightFace.normal, -lightDir);
         if (cosTheta > eps_zero && cosPhi > eps_zero)
@@ -169,39 +149,72 @@ vec4 sampleDirectLight(const vec3 &intersection, const HitInfo &info, const Mode
     }
     if (cosTheta < eps_zero || cosPhi < eps_zero)
         return vec4(0.0f, 0.0f, 0.0f, total);
+
     auto &lightFace = lightObject.lightFaces[faceIndex];
-    float distance = glm::length(lightFace.position - intersection);
+    float distance = glm::length(lightFace.position - pos);
 
-    Ray shadowRay = {intersection + eps_zero * lightDir, lightDir};
-    bool shadow = rayHit_test(shadowRay, model, distance - eps_lightRadius);
-
-    if (shadow)
+    if (rayHit_test({pos, lightDir}, model, distance - eps_lightRadius))
         return vec4(0.0f, 0.0f, 0.0f, total+1);
 
     float distanceSquared = distance * distance + eps_lightRadius;
     float lightObjectProbability = weights[lightIndex] / totalWeight;
     float lightFaceProbability = lightFace.power / lightObject.power;
     float pdf = lightObjectProbability * lightFaceProbability;
-    float contribution = lightFace.power * cosPhi * cosTheta / (distanceSquared * pdf);
+    float contribution = lightFace.power * cosPhi * cosTheta / (distanceSquared * M_PI * pdf);
     return vec4(lightObject.color * contribution, total+1);
 }
 
-vec4 sampleRay(Ray ray, std::mt19937 &gen, const Model &model, int depth = 0) {
-    HitInfo info = rayHit(ray, model);
-    vec3 intersection = ray.origin + ray.direction * info.t;
+vec3 randomRayDirection(const vec3 &normal, std::mt19937 &gen) {
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    float u = dist(gen), v = dist(gen) * 2.0f * M_PI;
+    float d = sqrt(u);
+    float z = sqrt(1 - d*d);
+    float x = d * cos(v), y = d * sin(v);
+    vec3 direction = vec3(x, y, z);
+    tangentTransform(normal, direction);
+    return direction;
+}
 
-    if (info.t == INFINITY)
-        return vec4(0.0f, 0.0f, 1.0f, 1.0f);
+const float StopProb = 0.36f;
+const int maxRayDepth = 16;
 
-    if (length(info.emission) > 0)
-        return vec4(2.0f, 2.0f, 2.0f, 1.0f);
-    else {
-        vec4 directLight = sampleDirectLight(intersection, info, model, gen);
-        return info.diffuseColor * directLight;
+vec4 sampleRay(Ray ray, std::mt19937 &gen, const Model &model) {
+    vec4 ret = vec4(1.0f);
+    float prob = 1.0f;
+    for (int T = 0;; T++) {
+        HitInfo info = rayHit(ray, model);
+
+        if (info.t == INFINITY)
+            return vec4(0.0f, 0.0f, 0.0f, 1.0f);
+
+        if (length(info.emission) > 0) {
+            if (T > 0)
+                return vec4(0.0f, 0.0f, 0.0f, 1.0f);
+            else
+                return vec4(info.emission, 1.0f);
+        }
+
+        vec3 intersection = ray.origin + ray.direction * info.t;
+        ret *= info.diffuseColor;
+
+        if (T == maxRayDepth || std::uniform_real_distribution<float>(0.0f, 1.0f)(gen) < StopProb) {
+            vec4 directLight = sampleDirectLight(intersection, info, model, gen);
+            ret = ret * directLight;
+            if (T < maxRayDepth)
+                prob *= StopProb;
+            ret.x /= prob;
+            ret.y /= prob;
+            ret.z /= prob;
+            return ret;
+        }
+
+        vec3 newDirection = randomRayDirection(info.normal, gen);
+        ray = {intersection, newDirection};
+        prob *= (1.0f - StopProb);
     }
 }
 
-void _render(const Model &model, const RenderArgs &args, std::mt19937 &gen, Image &image) {
+void render(const Model &model, const RenderArgs &args, std::mt19937 &gen, Image &image) {
     const unsigned int
             width = args.width,
             height = args.height,
@@ -253,7 +266,7 @@ void render_multithread(Model &model, const RenderArgs &args) {
     std::vector<std::thread> threadPool;
 
     auto renderTask = [&](int threadIndex) {
-        _render(model, args, gens[threadIndex], images[threadIndex]);
+        render(model, args, gens[threadIndex], images[threadIndex]);
     };
 
     for (unsigned int i = 0; i < threads; ++i) {

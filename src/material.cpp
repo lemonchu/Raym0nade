@@ -1,13 +1,10 @@
-#include <assimp/material.h>
 #include <cstdlib>
 #include <png.h>
 #include <turbojpeg.h>
 #include <stdexcept>
-#include <vector>
 #include <iostream>
-#include "material.h"
-
 #include <sstream>
+#include "material.h"
 
 std::string urlDecode(const std::string &src) {
     std::string decoded;

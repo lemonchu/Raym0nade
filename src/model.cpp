@@ -1,34 +1,5 @@
 #include <iostream>
-#include <assimp/Importer.hpp>
-#include <assimp/scene.h>
-#include <assimp/postprocess.h>
 #include "model.h"
-
-glm::mat4 aiMatrix4x4ToGlm(const aiMatrix4x4 &from) {
-    glm::mat4 to;
-    to[0][0] = from.a1;
-    to[0][1] = from.b1;
-    to[0][2] = from.c1;
-    to[0][3] = from.d1;
-    to[1][0] = from.a2;
-    to[1][1] = from.b2;
-    to[1][2] = from.c2;
-    to[1][3] = from.d2;
-    to[2][0] = from.a3;
-    to[2][1] = from.b3;
-    to[2][2] = from.c3;
-    to[2][3] = from.d3;
-    to[3][0] = from.a4;
-    to[3][1] = from.b4;
-    to[3][2] = from.c4;
-    to[3][3] = from.d4;
-    return to;
-}
-
-LightFace::LightFace(vec3 position, vec3 normal, float power) :
-        position(position), normal(normal), power(power) {}
-
-LightObject::LightObject() : center(vec3(0)), color(vec3(0)), power(0) {}
 
 unsigned int vertexCount(const aiScene *scene) {
     unsigned int cnt = 0;
@@ -37,18 +8,12 @@ unsigned int vertexCount(const aiScene *scene) {
     return cnt;
 }
 
-void RandomNumberGenerator::Init(const std::vector<float>& distribution) {
-    prefixSums.resize(distribution.size());
-    prefixSums[0] = distribution[0];
-    for (size_t i = 1; i < distribution.size(); ++i) {
-        prefixSums[i] = prefixSums[i - 1] + distribution[i];
-    }
-}
-
-int RandomNumberGenerator::operator()(std::mt19937 &gen) const {
-    std::uniform_real_distribution<float> dist(0.0f, prefixSums.back());
-    float randomValue = dist(gen);
-    return std::lower_bound(prefixSums.begin(), prefixSums.end(), randomValue) - prefixSums.begin();
+glm::mat4 aiMatrix4x4ToGlm(const aiMatrix4x4 &from) {
+    glm::mat4 to;
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++)
+            to[i][j] = from[j][i];
+    return to;
 }
 
 const float powerAlpha = 0.25f;
@@ -85,7 +50,8 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
                 {&vData[face0.mIndices[0]],
                  &vData[face0.mIndices[1]],
                  &vData[face0.mIndices[2]]},
-                &material
+                &material,
+                nullptr
         });
 
         const Face &face = faces.back();
@@ -96,8 +62,10 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         vData[face0.mIndices[2]].normal += normal;
     }
 
-    for (unsigned int j = 0; j < mesh->mNumVertices; j++)
+    for (unsigned int j = 0; j < mesh->mNumVertices; j++) {
         vData[j].normal = glm::normalize(vData[j].normal);
+
+    }
 
     Face *meshFaces = &faces[offset];
     if (material.isEmissionEnabled && !material.texture[TextureIdForEmission].empty()) {
@@ -108,7 +76,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         vec3 emission = material.emission;
         lightObject.color = glm::normalize(emission);
 
-        float totalColorPower = 0.0f;
+        float totalArea = 0.0f;
 
         for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
             auto &face = meshFaces[j];
@@ -123,31 +91,31 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
 
             float area = glm::length(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0])) / 2.0f;
             vec3 normal = normalize(face.data[0]->normal + face.data[1]->normal + face.data[2]->normal);
-            lightObject.lightFaces.emplace_back(centroid, normal, area * colorPower);
-            totalColorPower += area * colorPower;
+            lightObject.lightFaces.emplace_back(centroid, normal, area);
+            totalArea += area;
+            face.lightObject = &lightObject;
         }
-
-        float powerDensity = glm::length(emission) * pow(totalColorPower, powerAlpha-1);
-        std::vector<float> faceWeights;
-        faceWeights.resize(lightObject.lightFaces.size());
-        for (unsigned int j = 0; j < lightObject.lightFaces.size(); j++) {
-            LightFace &lightFace = lightObject.lightFaces[j];
-            lightFace.power *= powerDensity;
-            faceWeights[j] = lightFace.power;
-            lightObject.power += lightFace.power;
-            lightObject.center += lightFace.position * lightFace.power;
-        }
-
-        if (lightObject.power == 0.0f)
+        if (lightObject.lightFaces.empty()) {
             lightObjects.pop_back();
-        else {
-                lightObject.faceDist.Init(faceWeights);
-                lightObject.center /= lightObject.power;
+        } else {
+            lightObject.powerDensity = glm::length(emission) * pow(totalArea, powerAlpha-1);
+            std::vector<float> faceWeights;
+            faceWeights.resize(lightObject.lightFaces.size());
+            for (unsigned int j = 0; j < lightObject.lightFaces.size(); j++) {
+                LightFace &lightFace = lightObject.lightFaces[j];
+                lightFace.power *= lightObject.powerDensity;
+                faceWeights[j] = lightFace.power;
+                lightObject.power += lightFace.power;
+                lightObject.center += lightFace.position * lightFace.power;
+            }
 
-                std::cout << "Light object with power: " << lightObject.power
-                          << ", color:" << lightObject.color.x << ", " << lightObject.color.y << ", " << lightObject.color.z
-                          << ", position:" << lightObject.center.x << ", " << lightObject.center.y << ", "
-                          << lightObject.center.z << std::endl;
+            lightObject.faceDist.Init(faceWeights);
+            lightObject.center /= lightObject.power;
+
+            std::cout << "Light object with power: " << lightObject.power
+                      << ", color:" << lightObject.color.x << ", " << lightObject.color.y << ", " << lightObject.color.z
+                      << ", position:" << lightObject.center.x << ", " << lightObject.center.y << ", "
+                      << lightObject.center.z << std::endl;
         }
     }
 }
@@ -211,6 +179,7 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
     unsigned int vertexCnt = vertexCount(scene);
     std::cout << "Vertices: " << vertexCnt << std::endl;
     vertexDatas.reserve(vertexCnt);
+    lightObjects.reserve(scene->mNumMeshes);
 
     processMaterial(model_folder, scene);
 
@@ -218,7 +187,7 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
     processNode(scene->mRootNode, scene, identity);
 
     checkEmissiveMaterials(scene);
-    checkLightSources(scene);
+    //checkLightSources(scene);
 
     importer.FreeScene();
 
