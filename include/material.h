@@ -24,6 +24,8 @@ struct ImageData{
     ImageData() : width(0), height(0) {}
 
     [[nodiscard]] glm::vec4 get(float u, float v) const;
+    [[nodiscard]] bool empty() const;
+    [[nodiscard]] bool hasTransparentPart() const;
 };
 
 std::string urlDecode(const std::string &src);
@@ -47,12 +49,11 @@ public:
     bool isSpecularColorEnabled;
     bool isAmbientColorEnabled;
     bool isEmissionEnabled;
+    bool hasTransparentPart;
 
     Material();
 
     [[nodiscard]] const ImageData& getImage(int index) const;
-
-    int isEnabled(int index) const;
 
     bool loadImageFromDDS(ImageData &imageData, const std::string& filename);
     bool loadImageFromPNG(ImageData &imageData, const std::string& filename);
@@ -61,6 +62,7 @@ public:
 
     // New method to load material properties
     void loadMaterialProperties(const aiMaterial* aiMat);
+    glm::vec4 getDiffuseColor(float u, float v) const;
 };
 
 #endif // MATERIAL_H

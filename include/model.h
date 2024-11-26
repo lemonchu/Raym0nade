@@ -15,13 +15,20 @@ struct LightFace {
     LightFace(vec3 position, vec3 normal, float power);
 };
 
+class RandomNumberGenerator {
+private:
+    std::vector<float> prefixSums;
+public:
+    void Init(const std::vector<float>& distribution);
+    int operator()(std::mt19937 &gen) const;
+};
+
 class LightObject {
 public:
     vec3 center, color;
     float power;
-    unsigned long long touch, total;
     std::vector<LightFace> lightFaces;
-    std::discrete_distribution<int> faceDist;
+    RandomNumberGenerator faceDist;
     LightObject();
 };
 
@@ -40,7 +47,7 @@ public:
     std::string model_path;
 
     Model();
-    Model(std::string model_folder, std::string model_name);
+    Model(const std::string &model_folder, const std::string &model_name);
     void checkEmissiveMaterials(const aiScene* scene);
 };
 

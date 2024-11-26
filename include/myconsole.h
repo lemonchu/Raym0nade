@@ -14,7 +14,7 @@ private:
 public:
     MyConsole();
 
-    void createModel(const std::string &model_id, const std::string &model_path, const std::string &model_name);
+    void createModel(const std::string &model_id);
 
     void createRenderArgs(const std::string &str);
 

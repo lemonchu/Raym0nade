@@ -1,9 +1,7 @@
+#include <thread>
 #include <random>
-#include <corecrt_math_defines.h>
 #include <iostream>
 #include "render.h"
-
-Renderer::Renderer() {}
 
 glm::vec3 barycentric(const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, const glm::vec3& P) {
     glm::vec3 v0 = B - A;
@@ -21,7 +19,22 @@ glm::vec3 barycentric(const glm::vec3& A, const glm::vec3& B, const glm::vec3& C
     return glm::vec3(u, v, w);
 }
 
-const float areaThereshold = 1e-2;
+const float areaThereshold = 5e-3; // 小面平滑插值，大面直接取法向量
+
+bool TransparentTest(const Ray &ray, const HitRecord &hit) {
+    const Face& face = *hit.face;
+    const Material& material = *face.material;
+    if (!material.hasTransparentPart)
+        return false;
+    const vec3 intersection = ray.origin + ray.direction * hit.t_max;
+    const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
+    vec2 texUV =
+            baryCoords[0] * face.data[0]->uv
+            + baryCoords[1] * face.data[1]->uv
+            + baryCoords[2] * face.data[2]->uv;
+    vec4 diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
+    return diffuseColor[3] < 0.5f;
+}
 
 HitInfo getHitInfo(const Face& face, const glm::vec3& intersection) {
     HitInfo hitInfo;
@@ -31,8 +44,7 @@ HitInfo getHitInfo(const Face& face, const glm::vec3& intersection) {
             baryCoords[0] * face.data[0]->uv
             + baryCoords[1] * face.data[1]->uv
             + baryCoords[2] * face.data[2]->uv;
-    if (material.isEnabled(TextureIdForDiffuseColor))
-        hitInfo.diffuseColor = material.getImage(TextureIdForDiffuseColor).get(texUV[0], texUV[1]);
+    hitInfo.diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
     vec3 cx = cross(face.v[1] - face.v[0], face.v[2] - face.v[0]);
     if (length(cx) < areaThereshold) {
         hitInfo.normal = normalize(
@@ -51,15 +63,39 @@ HitInfo getHitInfo(const Face& face, const glm::vec3& intersection) {
     return hitInfo;
 }
 
-std::mt19937 gen;
+const int maxRayDepth = 8;
 
-HitInfo Renderer::rayHit(Ray ray) {
-    HitRecord hit = modelPtr->kdt.rayHit(ray);
-    if (hit.t_max < INFINITY) {
-        const auto& face = *hit.face;
-        HitInfo hitInfo = getHitInfo(face, ray.origin + ray.direction * hit.t_max);
-        hitInfo.t = hit.t_max;
-        return hitInfo;
+const float eps_lightRadius = 1e-3;
+
+bool rayHit_test(Ray ray, const Model &model, float aimDepth) {
+    float t = 0.0;
+    for (int T = 0; T < maxRayDepth; T++) {
+        HitRecord hit = model.kdt.rayHit(ray, aimDepth + eps_zero);
+        t += hit.t_max;
+        if (t > aimDepth)
+            return false;
+        if (TransparentTest(ray, hit))
+            ray = {ray.origin + ray.direction * hit.t_max, ray.direction};
+        else
+            return true;
+    }
+    return true;
+}
+
+HitInfo rayHit(Ray ray, const Model &model) {
+    float t = 0.0f;
+    for (int T = 0; T < maxRayDepth; T++) {
+        HitRecord hit = model.kdt.rayHit(ray);
+        if (hit.t_max == INFINITY)
+            break;
+        HitInfo hitInfo = getHitInfo(*hit.face, ray.origin + ray.direction * hit.t_max);
+        t += hit.t_max;
+        if (hitInfo.diffuseColor[3] == 0.0f)
+            ray = {ray.origin + ray.direction * (hit.t_max + eps_lightRadius), ray.direction};
+        else {
+            hitInfo.t = t;
+            return hitInfo;
+        }
     }
     return HitInfo();
 }
@@ -88,10 +124,8 @@ HitInfo Renderer::rayHit(Ray ray) {
 //ret.color = - vec3(log(ret.depth)); */
 
 const int maxRandomRounds = 16;
-const float eps_lightRadius = 1e-3;
-const unsigned long long minTouchSamples = 2048;
 
-vec3 sampleDirectLight(const vec3 &intersection, const HitInfo &info, Model &model) {
+vec4 sampleDirectLight(const vec3 &intersection, const HitInfo &info, const Model &model, std::mt19937 &gen) {
     auto &lightObjects = model.lightObjects;
 
     /*vec3 light = vec3(0.0f);
@@ -100,7 +134,7 @@ vec3 sampleDirectLight(const vec3 &intersection, const HitInfo &info, Model &mod
         float dot = std::max(glm::dot(normalize(lightObject.center - intersection), info.normal), 0.00f);
         light += dot * lightObject.color * lightObject.power / (distance * distance + eps_lightRadius);
     }
-    return light * 10.0f;*/
+    return vec4(light, 1.0f);*/
 
     float totalWeight = 0.0f;
     std::vector<float> weights;
@@ -108,97 +142,79 @@ vec3 sampleDirectLight(const vec3 &intersection, const HitInfo &info, Model &mod
         float distance = glm::length(lightObject.center - intersection);
         float dot = std::max(glm::dot(normalize(lightObject.center - intersection), info.normal), 0.05f);
         float weight = dot * lightObject.power / (distance * distance * distance + eps_lightRadius);
-        if (lightObject.total >= minTouchSamples)
-            weight *= 1.0f * lightObject.touch / lightObject.total;
         weights.push_back(weight);
         totalWeight += weight;
     }
-
     if (totalWeight == 0.0f)
-        return vec3(-1.0f);
+        return vec4(0.0f, 0.0f, 0.0f, 1.0f);
 
+    int total = 0;
     std::discrete_distribution<int> lightDist(weights.begin(), weights.end());
     int lightIndex = lightDist(gen);
     auto& lightObject = lightObjects[lightIndex];
-    int faceIndex = lightObject.faceDist(gen);
-    auto& lightFace = lightObject.lightFaces[faceIndex];
+
+    int faceIndex;
     vec3 lightDir;
     float cosTheta, cosPhi;
     for (int T = 0; T < maxRandomRounds; T++) {
+        faceIndex = lightObject.faceDist(gen);
+        auto &lightFace = lightObject.lightFaces[faceIndex];
         lightDir = normalize(lightFace.position - intersection);
         cosTheta = glm::dot(info.normal, lightDir);
         cosPhi = glm::dot(lightFace.normal, -lightDir);
         if (cosTheta > eps_zero && cosPhi > eps_zero)
             break;
-        faceIndex = lightObject.faceDist(gen);
-        lightFace = lightObject.lightFaces[faceIndex];
+        else
+            total++;
     }
     if (cosTheta < eps_zero || cosPhi < eps_zero)
-        return vec3(-1.0f);
+        return vec4(0.0f, 0.0f, 0.0f, total);
+    auto &lightFace = lightObject.lightFaces[faceIndex];
     float distance = glm::length(lightFace.position - intersection);
 
     Ray shadowRay = {intersection + eps_zero * lightDir, lightDir};
-    HitRecord shadowHit = model.kdt.rayHit(shadowRay);
+    bool shadow = rayHit_test(shadowRay, model, distance - eps_lightRadius);
 
-    lightObject.total++;
-
-    if (shadowHit.t_max < distance - eps_lightRadius)
-        return vec3(0.0f);
-
-    lightObject.touch++;
+    if (shadow)
+        return vec4(0.0f, 0.0f, 0.0f, total+1);
 
     float distanceSquared = distance * distance + eps_lightRadius;
     float lightObjectProbability = weights[lightIndex] / totalWeight;
     float lightFaceProbability = lightFace.power / lightObject.power;
     float pdf = lightObjectProbability * lightFaceProbability;
-    float contribution = lightFace.power * cosPhi * cosTheta / (distanceSquared * 2.0f * M_PI * pdf);
-    if (rand()%20000==0)
-        std::cout << "Contribution: " << contribution << std::endl;
-    return lightObject.color * contribution * 100.0f;
-    return contribution == 0.0 ? vec3(0.0f) : vec3(1.0);
+    float contribution = lightFace.power * cosPhi * cosTheta / (distanceSquared * pdf);
+    return vec4(lightObject.color * contribution, total+1);
 }
 
-const float transparentDepth = 1e-6;
-
-vec3 Renderer::sampleRay(Ray ray, int depth = 0) {
-    HitInfo info = rayHit(ray);
+vec4 sampleRay(Ray ray, std::mt19937 &gen, const Model &model, int depth = 0) {
+    HitInfo info = rayHit(ray, model);
     vec3 intersection = ray.origin + ray.direction * info.t;
 
     if (info.t == INFINITY)
-        return vec3(0.5);
-
-    if (depth < MAX_RAY_DEPTH && info.diffuseColor[3] == 0.0f) {
-        Ray ray2 = {ray.origin + ray.direction * (info.t + transparentDepth), ray.direction};
-        return sampleRay(ray2, depth + 1);
-    }
+        return vec4(0.0f, 0.0f, 1.0f, 1.0f);
 
     if (length(info.emission) > 0)
-        return vec3(1, 0, 0);
+        return vec4(2.0f, 2.0f, 2.0f, 1.0f);
     else {
-        vec3 color = vec3(info.diffuseColor[0], info.diffuseColor[1], info.diffuseColor[2]);
-        vec3 directLight = sampleDirectLight(intersection, info, *modelPtr);
-        if (directLight == vec3(-1.0f))
-            return vec3(-1.0f);
-        color *= sampleDirectLight(intersection, info, *modelPtr);
-        return color;
+        vec4 directLight = sampleDirectLight(intersection, info, model, gen);
+        return info.diffuseColor * directLight;
     }
 }
 
-void Renderer::render(Model &model, const RenderArgs &args) {
-    modelPtr = &model;
+void _render(const Model &model, const RenderArgs &args, std::mt19937 &gen, Image &image) {
     const unsigned int
-        width = args.width,
-        height = args.height,
-        spp = args.spp,
-        oversampling = args.oversampling;
+            width = args.width,
+            height = args.height,
+            spp = args.spp,
+            oversampling = args.oversampling;
     const float
-        accuracy = args.accuracy;
+            accuracy = args.accuracy,
+            exposure = args.exposure;
     vec3
-        direction = args.direction,
-        right = args.right,
-        up = args.up,
-        position = args.position;
-    Image image(width, height);
+            direction = args.direction,
+            right = args.right,
+            up = args.up,
+            position = args.position;
     for (unsigned int T = 0; T < spp; T++) {
         for (unsigned int x = 0; x < width; x++)
             for (unsigned int y = 0; y < height; y++) {
@@ -211,18 +227,49 @@ void Renderer::render(Model &model, const RenderArgs &args) {
                                 direction + accuracy * (rayX * right + rayY * up);
                         aim = normalize(aim);
                         Ray ray = {position, aim};
-                        vec3 color = sampleRay(ray);
-                        if (color != vec3(-1.0f)) {
-                            image.buffer[y * width + x].color += color;
-                            image.buffer[y * width + x].cnt ++;
-                        }
+                        vec4 color = sampleRay(ray, gen, model);
+                        color[3] /= exposure;
+                        image.buffer[y * width + x].color += color;
                     }
             }
+        std::cout << "Frame " << T << " completed." << std::endl;
     }
-    image.save(args.savePath.c_str());
+}
 
-    for (auto &lightObject : model.lightObjects) {
-        std::cout << "Light object " << &lightObject - &model.lightObjects[0] << " touched " << lightObject.touch << " times, total " << lightObject.total << " times." << std::endl;
-        std::cout << "Touch probability: " << 1.0f * lightObject.touch / lightObject.total << std::endl;
+void render_multithread(Model &model, const RenderArgs &args) {
+    const unsigned int
+            startTime = clock(),
+            threads = args.threads;
+    std::cout << "Rendering started with " << threads << " threads." << std::endl;
+
+    std::vector<Image> images;
+    std::vector<std::mt19937> gens;
+    images.reserve(threads);
+    gens.reserve(threads);
+    for (unsigned int i = 0; i < threads; ++i) {
+        images.emplace_back(args.width, args.height);
+        gens.emplace_back(i);
     }
+    std::vector<std::thread> threadPool;
+
+    auto renderTask = [&](int threadIndex) {
+        _render(model, args, gens[threadIndex], images[threadIndex]);
+    };
+
+    for (unsigned int i = 0; i < threads; ++i) {
+        threadPool.emplace_back(renderTask, i);
+    }
+
+    for (auto &thread : threadPool) {
+        thread.join();
+    }
+
+    Image finalImage(args.width, args.height);
+    for (const auto &image : images)
+        for (unsigned int id = 0; id < args.height * args.width; ++id)
+            finalImage.buffer[id].color += image.buffer[id].color;
+
+    finalImage.save(args.savePath.c_str());
+
+    std::cout << "Rendering completed in " << clock() - startTime << " ms." << std::endl;
 }

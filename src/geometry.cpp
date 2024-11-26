@@ -12,7 +12,6 @@ Box operator + (const Box &A, const Box &B) {
 }
 
 void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR) {
-
     for (int i = 0; i < 3; ++i) {
         if (std::abs(ray.direction[i]) < eps_zero) {
             if (ray.origin[i] < box.v0[i] || ray.origin[i] > box.v1[i]) {
@@ -28,6 +27,7 @@ void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR) {
                 tL = std::max(tL, (box.v1[i] - ray.origin[i]) * invD);
                 tR = std::min(tR, (box.v0[i] - ray.origin[i]) * invD);
             }
+            tR += eps_zero;
             if (tL > tR)
                 return ;
         }
@@ -62,31 +62,30 @@ HitRecord::HitRecord() : t_min(eps_zero), t_max(INFINITY), face(nullptr) {}
 HitRecord::HitRecord(float t_min, float t_max) : t_min(t_min), t_max(t_max), face(nullptr) {}
 
 bool RayTriangleIntersection(const Ray& ray, const Face& face, HitRecord& hit) {
-    vec3
-        edge1 = face.v[1] - face.v[0],
-        edge2 = face.v[2] - face.v[0],
-        h = cross(ray.direction, edge2);
+    vec3 edge1 = face.v[1] - face.v[0];
+    vec3 edge2 = face.v[2] - face.v[0];
+    vec3 h = cross(ray.direction, edge2);
     float a = dot(edge1, h);
 
-    if (abs(a) < eps_zero)
+    if (a <= 0.0f)
         return false;
 
-    float f = 1.0 / a;
+    float f = 1.0f / a;
     vec3 s = ray.origin - face.v[0];
     float u = f * dot(s, h);
 
-    if (u < 0.0 || u > 1.0)
+    if (u < 0.0f || u > 1.0f)
         return false;
 
     vec3 q = cross(s, edge1);
     float v = f * dot(ray.direction, q);
 
-    if (v < 0.0 || u + v > 1.0)
+    if (v < 0.0f || u + v > 1.0f)
         return false;
 
     float t = f * dot(edge2, q);
 
-    if (hit.t_min < t && t < hit.t_max) {
+    if (t > eps_zero && t < hit.t_max) {
         hit.t_max = t;
         hit.face = &face;
         return true;

@@ -28,7 +28,7 @@ glm::mat4 aiMatrix4x4ToGlm(const aiMatrix4x4 &from) {
 LightFace::LightFace(vec3 position, vec3 normal, float power) :
         position(position), normal(normal), power(power) {}
 
-LightObject::LightObject() : center(vec3(0)), color(vec3(0)), power(0), touch(0), total(0) {}
+LightObject::LightObject() : center(vec3(0)), color(vec3(0)), power(0) {}
 
 unsigned int vertexCount(const aiScene *scene) {
     unsigned int cnt = 0;
@@ -37,8 +37,18 @@ unsigned int vertexCount(const aiScene *scene) {
     return cnt;
 }
 
-float rnd1() {
-    return rand()%1000*1e-3;
+void RandomNumberGenerator::Init(const std::vector<float>& distribution) {
+    prefixSums.resize(distribution.size());
+    prefixSums[0] = distribution[0];
+    for (size_t i = 1; i < distribution.size(); ++i) {
+        prefixSums[i] = prefixSums[i - 1] + distribution[i];
+    }
+}
+
+int RandomNumberGenerator::operator()(std::mt19937 &gen) const {
+    std::uniform_real_distribution<float> dist(0.0f, prefixSums.back());
+    float randomValue = dist(gen);
+    return std::lower_bound(prefixSums.begin(), prefixSums.end(), randomValue) - prefixSums.begin();
 }
 
 const float powerAlpha = 0.25f;
@@ -90,16 +100,13 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         vData[j].normal = glm::normalize(vData[j].normal);
 
     Face *meshFaces = &faces[offset];
-    if (material.isEmissionEnabled && material.isEnabled(TextureIdForEmission)) {
+    if (material.isEmissionEnabled && !material.texture[TextureIdForEmission].empty()) {
 
         lightObjects.emplace_back();
         auto &lightObject = lightObjects.back();
 
         vec3 emission = material.emission;
         lightObject.color = glm::normalize(emission);
-        /*lightObject.color = vec3(0);
-        int randcolor = rand()%3;
-        lightObject.color[randcolor] = 1.0f;*/
 
         float totalColorPower = 0.0f;
 
@@ -130,17 +137,17 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
             lightObject.power += lightFace.power;
             lightObject.center += lightFace.position * lightFace.power;
         }
-        lightObject.faceDist = std::discrete_distribution<int>(faceWeights.begin(), faceWeights.end());
-        lightObject.center /= lightObject.power;
 
         if (lightObject.power == 0.0f)
             lightObjects.pop_back();
         else {
-            std::cout << "PowerDensity: " << powerDensity << std::endl;
-            std::cout << "Light object with power: " << lightObject.power
-                      << ", color:" << lightObject.color.x << ", " << lightObject.color.y << ", " << lightObject.color.z
-                      << ", position:" << lightObject.center.x << ", " << lightObject.center.y << ", "
-                      << lightObject.center.z << std::endl;
+                lightObject.faceDist.Init(faceWeights);
+                lightObject.center /= lightObject.power;
+
+                std::cout << "Light object with power: " << lightObject.power
+                          << ", color:" << lightObject.color.x << ", " << lightObject.color.y << ", " << lightObject.color.z
+                          << ", position:" << lightObject.center.x << ", " << lightObject.center.y << ", "
+                          << lightObject.center.z << std::endl;
         }
     }
 }
@@ -190,7 +197,7 @@ void Model::processMaterial(std::string model_folder, const aiScene *scene) {
 
 Model::Model() = default;
 
-Model::Model(std::string model_folder, std::string model_name) {
+Model::Model(const std::string &model_folder, const std::string &model_name) {
 
     Assimp::Importer importer;
     model_path = model_folder + model_name;

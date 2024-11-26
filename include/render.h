@@ -9,8 +9,8 @@
 
 struct RenderArgs {
     vec3 position, direction, up, right;
-    float accuracy;     // 胶片距离为 1.0，每个像素的偏移量为 accuracy
-    unsigned int oversampling, spp, width, height;
+    float accuracy, exposure;     // 胶片距离为 1.0，每个像素的偏移量为 accuracy
+    unsigned int width, height, oversampling, spp, threads;
     std::string savePath;
 };
 
@@ -21,15 +21,6 @@ struct HitInfo {
     HitInfo() : t(0), normal(vec3(0)), emission(vec3(0)), diffuseColor(vec4(0)) {}
 };
 
-class Renderer {
-public:
-    Model *modelPtr;
-    Renderer();
-
-    HitInfo Renderer::rayHit(Ray ray);
-    vec3 sampleRay(Ray ray, int depth);
-
-    void render(Model &model, const RenderArgs &args);
-};
+void render_multithread(Model &model, const RenderArgs &args);
 
 #endif // RENDER_H

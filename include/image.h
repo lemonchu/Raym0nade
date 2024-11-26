@@ -4,9 +4,8 @@
 #include "geometry.h"
 
 struct PixelData {
-    vec3 color;
+    vec4 color;
     float depth;
-    int cnt;
     PixelData();
 };
 
@@ -20,8 +19,6 @@ public:
     Image(unsigned int width, unsigned int height);
 
     void save(const char* file_name);
-
-    void normalize();
 
     ~Image();
 };

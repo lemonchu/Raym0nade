@@ -6,7 +6,14 @@
 
 MyConsole::MyConsole() = default;
 
-void MyConsole::createModel(const std::string &model_id, const std::string &model_floder, const std::string &model_name) {
+void MyConsole::createModel(const std::string &model_id) {
+    std::string model_floder, model_name;
+    std::cout << "Enter the model path (e.g., fbx/): ";
+    std::cin >> model_floder;
+    std::cout << "Enter the model name (e.g., model.fbx): ";
+    std::cin >> model_name;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
     if (models.find(model_id) != models.end()) {
         std::cout << "Model (" << model_id << ") is already exists." << std::endl;
         return;
@@ -24,8 +31,8 @@ void MyConsole::createRenderArgs(const std::string &str) {
     }
 
     vec3 direction, right, up;
-    float D, R, U, accuracy;
-    unsigned int oversampling, spp, width, height;
+    float D, R, U, accuracy, exposure;
+    unsigned int width, height, oversampling, spp, threads;
     std::string savePath;
 
     std::cout << "direction (x,y,z): ";
@@ -44,19 +51,25 @@ void MyConsole::createRenderArgs(const std::string &str) {
     std::cout << "accuracy: ";
     std::cin >> accuracy;
 
+    std::cout << "exposure: ";
+    std::cin >> exposure;
+
+    std::cout << "width, height: ";
+    std::cin >> width >> height;
+
     std::cout << "Oversampling: ";
     std::cin >> oversampling;
 
     std::cout << "spp: ";
     std::cin >> spp;
 
-    std::cout << "width, height: ";
-    std::cin >> width >> height;
+    std::cout << "threads: ";
+    std::cin >> threads;
 
     std::cout << "savePath: ";
     std::cin >> savePath;
 
-    renderArgs[str] = {position, direction, up, right, accuracy, oversampling, spp, width, height, savePath};
+    renderArgs[str] = {position, direction, up, right, accuracy, exposure, width, height, oversampling, spp, threads, savePath};
     std::cout << "RenderArgs (" << str << ") created." << std::endl;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 }
@@ -101,9 +114,11 @@ void MyConsole::viewRenderArgs(const std::string &str) {
     std::cout << "up : " << args.up.x << " " << args.up.y << " " << args.up.z << std::endl;
     std::cout << "position : " << args.position.x << " " << args.position.y << " " << args.position.z << std::endl;
     std::cout << "accuracy: " << args.accuracy << std::endl;
+    std::cout << "exposure: " << args.exposure << std::endl;
+    std::cout << "width, height: " << args.width << " " << args.height << std::endl;
     std::cout << "Oversampling: " << args.oversampling << std::endl;
     std::cout << "spp: " << args.spp << std::endl;
-    std::cout << "width, height: " << args.width << " " << args.height << std::endl;
+    std::cout << "threads: " << args.threads << std::endl;
 }
 
 void MyConsole::render(const std::string &model_str, const std::string &args_str) {
@@ -115,9 +130,7 @@ void MyConsole::render(const std::string &model_str, const std::string &args_str
         std::cout << "Args (" << args_str << ") does not exists." << std::endl;
         return;
     }
-    Renderer renderer;
-    renderer.render(models[model_str], renderArgs[args_str]);
-    std::cout << "Rendering completed." << std::endl;
+    render_multithread(models[model_str], renderArgs[args_str]);
 }
 
 void parseCommand(MyConsole &console, const std::string &opt) {
@@ -128,14 +141,7 @@ void parseCommand(MyConsole &console, const std::string &opt) {
     if (command == "create") {
         iss >> type >> name;
         if (type == "model") {
-            std::string model_floder, model_name;
-            std::cout << "Enter the model path (e.g., fbx/): ";
-            std::cin >> model_floder;
-            std::cout << "Enter the model name (e.g., model.fbx): ";
-            std::cin >> model_name;
-            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-
-            console.createModel(name, model_floder, model_name);
+            console.createModel(name);
         } else if (type == "args") {
             console.createRenderArgs(name);
         }

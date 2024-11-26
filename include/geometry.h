@@ -48,6 +48,6 @@ struct HitRecord {
 
 bool RayTriangleIntersection(const Ray& ray, const Face& face, HitRecord& hit);
 
-const float eps_zero = 1e-6f;
+const float eps_zero = 1e-5f;
 
 #endif // GEOMETRY_H

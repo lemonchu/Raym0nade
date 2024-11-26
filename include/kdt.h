@@ -22,12 +22,9 @@ public:
 
     void build(std::vector<Face> &faces);
 
-    HitRecord closest_hit;
-    Ray ray;
+    void dfs_rayHit(KDT_Node *u, const Ray &ray, HitRecord &closest_hit) const;
 
-    void dfs_rayHit(KDT_Node *u);
-
-    HitRecord rayHit(Ray _ray);
+    [[nodiscard]] HitRecord rayHit(const Ray &ray, float t_max = INFINITY) const;
 
     ~KDT();
 };

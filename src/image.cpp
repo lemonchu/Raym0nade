@@ -4,11 +4,9 @@
 #include "image.h"
 
 PixelData::PixelData() {
-    color = vec3(0);
-    cnt = 0;
+    color = vec4(0);
     depth = 0;
 }
-
 
 Image::Image(unsigned int width, unsigned int height) : buffer(nullptr), width(width), height(height) {
     buffer = new PixelData[width * height];
@@ -54,7 +52,7 @@ void Image::save(const char *file_name) {
         for (unsigned int x = 0; x < width; ++x) {
             int id = y * width + x;
             png_byte *row = &image_data[id * 3];
-            buffer[id].color /= buffer[id].cnt;
+            buffer[id].color /= buffer[id].color[3];
             for (int k = 0; k < 3; ++k) {
                 float buf = std::min(std::max(buffer[id].color[k], 0.0f), 1.0f);
                 buf = std::pow(buf,1.0f / gamma);
@@ -70,20 +68,6 @@ void Image::save(const char *file_name) {
 
     fclose(fp);
     png_destroy_write_struct(&png_ptr, &info_ptr);
-}
-
-
-void Image::normalize() {
-    float maxColor = -1e9, minColor = 1e9;
-    for (unsigned int i = 0; i < width * height; ++i) {
-        if (buffer[i].depth < eps_zero) continue;
-        maxColor = std::max(maxColor, std::max(buffer[i].color[0], std::max(buffer[i].color[1], buffer[i].color[2])));
-        minColor = std::min(minColor, std::min(buffer[i].color[0], std::min(buffer[i].color[1], buffer[i].color[2])));
-    }
-    for (unsigned int i = 0; i < width * height; ++i) {
-        if (buffer[i].depth < eps_zero) continue;
-        buffer[i].color = (buffer[i].color - vec3(minColor)) / (maxColor - minColor);
-    }
 }
 
 Image::~Image() {

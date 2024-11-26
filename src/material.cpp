@@ -41,6 +41,17 @@ glm::vec4 ImageData::get(float u, float v) const {
     );
 }
 
+bool ImageData::empty() const {
+    return data.empty();
+}
+
+bool ImageData::hasTransparentPart() const {
+    for (int i = 3; i < data.size(); i += 4)
+        if (data[i] < 255)
+            return true;
+    return false;
+}
+
 Material::Material() : shininess(0.0f), opacity(1.0f),
                        isNameEnabled(false), isShininessEnabled(false), isOpacityEnabled(false),
                        isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false),
@@ -52,10 +63,6 @@ Material::Material() : shininess(0.0f), opacity(1.0f),
         throw std::out_of_range("Index out of range");
     }
     return texture[index];
-}
-
-int Material::isEnabled(int index) const {
-    return !texture[index].data.empty();
 }
 
 bool Material::loadImageFromDDS(ImageData &imageData, const std::string& filename) {
@@ -265,4 +272,16 @@ void Material::loadMaterialProperties(const aiMaterial* aiMat) {
         if (color.r > 0.0f || color.g > 0.0f || color.b > 0.0f)
             isEmissionEnabled = true;
     }
+
+    if (texture[TextureIdForDiffuseColor].hasTransparentPart()) {
+        hasTransparentPart = true;
+        std::cout << "Material has transparent part" << std::endl;
+    }
+}
+
+glm::vec4 Material::getDiffuseColor(float u, float v) const {
+    if (texture[TextureIdForDiffuseColor].empty()) {
+        return glm::vec4(diffuseColor, 1.0f);
+    }
+    return texture[TextureIdForDiffuseColor].get(u, v);
 }
