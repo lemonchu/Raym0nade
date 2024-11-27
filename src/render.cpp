@@ -1,9 +1,9 @@
-#include <corecrt_math_defines.h>
 #include <thread>
 #include <random>
 #include <iostream>
 #include "render.h"
 
+const float M_PI = 3.1415926535898f;
 const float areaThereshold = 5e-3; // 小面平滑插值，大面直接取法向量
 
 bool TransparentTest(const Ray &ray, const HitRecord &hit) {
@@ -123,7 +123,7 @@ vec4 sampleDirectLight(const vec3 &pos, const HitInfo &info, const Model &model,
     for (const auto& lightObject : model.lightObjects) {
         float distance = glm::length(lightObject.center - pos);
         float dot = std::max(glm::dot(normalize(lightObject.center - pos), info.normal), 0.05f);
-        float weight = dot * lightObject.power / (distance * distance * distance + eps_lightRadius);
+        float weight = dot * lightObject.power / (distance * distance + eps_lightRadius);
         weights.push_back(weight);
         totalWeight += weight;
     }
@@ -135,20 +135,21 @@ vec4 sampleDirectLight(const vec3 &pos, const HitInfo &info, const Model &model,
 
     int total = 0, faceIndex;
     vec3 lightDir;
-    float cosTheta, cosPhi;
-    for (int T = 0; T < maxRandomRounds; T++) {
+    while(true) {
         faceIndex = lightObject.faceDist(gen);
         auto &lightFace = lightObject.lightFaces[faceIndex];
         lightDir = normalize(lightFace.position - pos);
-        cosTheta = glm::dot(info.normal, lightDir);
-        cosPhi = glm::dot(lightFace.normal, -lightDir);
-        if (cosTheta > eps_zero && cosPhi > eps_zero)
-            break;
-        else
+        float directionFactor =
+                std::max(dot(info.normal, lightDir), 0.0f)
+                * std::max(dot(lightFace.normal, -lightDir), 0.0f);
+        if (directionFactor == 0.0f || std::uniform_real_distribution<float>(0.0f, 1.0f)(gen) > directionFactor) {
             total++;
+            if (total == maxRandomRounds)
+                return vec4(0.0f, 0.0f, 0.0f, total);
+        }
+        else
+            break;
     }
-    if (cosTheta < eps_zero || cosPhi < eps_zero)
-        return vec4(0.0f, 0.0f, 0.0f, total);
 
     auto &lightFace = lightObject.lightFaces[faceIndex];
     float distance = glm::length(lightFace.position - pos);
@@ -160,7 +161,7 @@ vec4 sampleDirectLight(const vec3 &pos, const HitInfo &info, const Model &model,
     float lightObjectProbability = weights[lightIndex] / totalWeight;
     float lightFaceProbability = lightFace.power / lightObject.power;
     float pdf = lightObjectProbability * lightFaceProbability;
-    float contribution = lightFace.power * cosPhi * cosTheta / (distanceSquared * M_PI * pdf);
+    float contribution = lightFace.power / (distanceSquared * M_PI * pdf);
     return vec4(lightObject.color * contribution, total+1);
 }
 
@@ -175,7 +176,7 @@ vec3 randomRayDirection(const vec3 &normal, std::mt19937 &gen) {
     return direction;
 }
 
-const float StopProb = 0.36f;
+const float P_RR = 0.66f;
 const int maxRayDepth = 16;
 
 vec4 sampleRay(Ray ray, std::mt19937 &gen, const Model &model) {
@@ -196,12 +197,13 @@ vec4 sampleRay(Ray ray, std::mt19937 &gen, const Model &model) {
 
         vec3 intersection = ray.origin + ray.direction * info.t;
         ret *= info.diffuseColor;
+        float difffuseRate = sqrt(length(info.diffuseColor) / sqrt(3.0f));
 
-        if (T == maxRayDepth || std::uniform_real_distribution<float>(0.0f, 1.0f)(gen) < StopProb) {
+        if (T == maxRayDepth || std::uniform_real_distribution<float>(0.0f, 1.0f)(gen) > difffuseRate * P_RR) {
             vec4 directLight = sampleDirectLight(intersection, info, model, gen);
-            ret = ret * directLight;
+            ret *= directLight;
             if (T < maxRayDepth)
-                prob *= StopProb;
+                prob *= (1.0f - difffuseRate * P_RR);
             ret.x /= prob;
             ret.y /= prob;
             ret.z /= prob;
@@ -210,7 +212,7 @@ vec4 sampleRay(Ray ray, std::mt19937 &gen, const Model &model) {
 
         vec3 newDirection = randomRayDirection(info.normal, gen);
         ray = {intersection, newDirection};
-        prob *= (1.0f - StopProb);
+        prob *= difffuseRate * P_RR;
     }
 }
 
@@ -237,8 +239,7 @@ void render(const Model &model, const RenderArgs &args, std::mt19937 &gen, Image
                                 rayX = x + 1.0f * x_os / oversampling - width / 2.0f,
                                 rayY = y + 1.0f * y_os / oversampling - height / 2.0f;
                         vec3 aim =
-                                direction + accuracy * (rayX * right + rayY * up);
-                        aim = normalize(aim);
+                                normalize(direction + accuracy * (rayX * right + rayY * up));
                         Ray ray = {position, aim};
                         vec4 color = sampleRay(ray, gen, model);
                         color[3] /= exposure;
