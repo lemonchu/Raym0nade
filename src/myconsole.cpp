@@ -5,9 +5,9 @@
 MyConsole::MyConsole() = default;
 
 void MyConsole::createModel(const std::string &model_id) {
-    std::string model_floder, model_name;
+    std::string model_folder, model_name;
     std::cout << "Enter the model path (e.g., fbx/): ";
-    std::cin >> model_floder;
+    std::cin >> model_folder;
     std::cout << "Enter the model name (e.g., model.fbx): ";
     std::cin >> model_name;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
@@ -18,7 +18,7 @@ void MyConsole::createModel(const std::string &model_id) {
     }
     models.emplace(std::piecewise_construct,
                    std::forward_as_tuple(model_id),
-                   std::forward_as_tuple(model_floder, model_name));
+                   std::forward_as_tuple(model_folder, model_name));
     std::cout << "Model (" << model_id << ") created." << std::endl;
 }
 
@@ -30,7 +30,7 @@ void MyConsole::createRenderArgs(const std::string &str) {
 
     vec3 direction, right, up;
     float D, R, U, accuracy, exposure;
-    unsigned int width, height, oversampling, spp, threads;
+    unsigned int width, height, oversampling, spp, threads, probes;
     std::string savePath;
 
     std::cout << "direction (x,y,z): ";
@@ -64,10 +64,13 @@ void MyConsole::createRenderArgs(const std::string &str) {
     std::cout << "threads: ";
     std::cin >> threads;
 
+    std::cout << "probes: ";
+    std::cin >> probes;
+
     std::cout << "savePath: ";
     std::cin >> savePath;
 
-    renderArgs[str] = {position, direction, up, right, accuracy, exposure, width, height, oversampling, spp, threads, savePath};
+    renderArgs[str] = {position, direction, up, right, accuracy, exposure, width, height, oversampling, spp, threads, probes, savePath};
     std::cout << "RenderArgs (" << str << ") created." << std::endl;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 }
@@ -95,7 +98,7 @@ void MyConsole::viewModel(const std::string &str) {
         std::cout << "Model (" << str << ") does not exists." << std::endl;
         return;
     }
-    std::cout << "Model floder: " << models[str].model_path << std::endl;
+    std::cout << "Model Path: " << models[str].model_path << std::endl;
     std::cout << "Faces: " << models[str].faces.size() << std::endl;
     std::cout << "Vertices: " << models[str].vertexDatas.size() << std::endl;
 }
@@ -128,7 +131,7 @@ void MyConsole::render(const std::string &model_str, const std::string &args_str
         std::cout << "Args (" << args_str << ") does not exists." << std::endl;
         return;
     }
-    render_multithread(models[model_str], renderArgs[args_str]);
+    render_multiThread(models[model_str], renderArgs[args_str]);
 }
 
 void parseCommand(MyConsole &console, const std::string &opt) {

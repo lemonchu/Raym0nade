@@ -56,16 +56,14 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
 
         const Face &face = faces.back();
 
-        vec3 normal = glm::normalize(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
+        vec3 normal = normalize(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
         vData[face0.mIndices[0]].normal += normal;
         vData[face0.mIndices[1]].normal += normal;
         vData[face0.mIndices[2]].normal += normal;
     }
 
-    for (unsigned int j = 0; j < mesh->mNumVertices; j++) {
-        vData[j].normal = glm::normalize(vData[j].normal);
-
-    }
+    for (unsigned int j = 0; j < mesh->mNumVertices; j++)
+        vData[j].normal = normalize(vData[j].normal);
 
     Face *meshFaces = &faces[offset];
     if (material.isEmissionEnabled && !material.texture[TextureIdForEmission].empty()) {
@@ -216,4 +214,81 @@ void checkLightSources(const aiScene* scene) {
         std::cout << "Light " << i << " of type " << light->mType << " with color: "
                   << light->mColorDiffuse.r << ", " << light->mColorDiffuse.g << ", " << light->mColorDiffuse.b << std::endl;
     }
+}
+
+bool TransparentTest(const Ray &ray, const HitRecord &hit) {
+    const Face& face = *hit.face;
+    const Material& material = *face.material;
+    if (!material.hasTransparentPart)
+        return false;
+    const vec3 intersection = ray.origin + ray.direction * hit.t_max;
+    const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
+    vec2 texUV =
+            baryCoords[0] * face.data[0]->uv
+            + baryCoords[1] * face.data[1]->uv
+            + baryCoords[2] * face.data[2]->uv;
+    vec4 diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
+    return diffuseColor[3] < 0.5f;
+}
+
+const float areaThereshold = 5e-3; // 小面平滑插值，大面直接取法向量
+
+void getHitInfo(const Face& face, const glm::vec3& intersection, HitInfo &hitInfo) {
+    const glm::vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
+    const Material& material = *face.material;
+    vec2 texUV =
+            baryCoords[0] * face.data[0]->uv
+            + baryCoords[1] * face.data[1]->uv
+            + baryCoords[2] * face.data[2]->uv;
+    hitInfo.diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
+    vec3 cx = cross(face.v[1] - face.v[0], face.v[2] - face.v[0]);
+    if (length(cx) < areaThereshold) {
+        hitInfo.shapeNormal = normalize(
+                baryCoords[0] * face.data[0]->normal
+                + baryCoords[1] * face.data[1]->normal
+                + baryCoords[2] * face.data[2]->normal
+        );
+    } else {
+        hitInfo.shapeNormal = normalize(cx);
+    }
+    hitInfo.surfaceNormal = hitInfo.shapeNormal; // 暂不考虑法线贴图
+    if (face.lightObject != nullptr) {
+        hitInfo.emission = face.lightObject->color * face.lightObject->powerDensity;
+    } else
+        hitInfo.emission = vec3(0.0f);
+}
+
+const int maxRayDepth_hit = 8;
+
+bool Model::rayHit_test(Ray ray, float aimDepth) const {
+    HitRecord hit(eps_zero, aimDepth + eps_zero);
+    for (int T = 0; T < maxRayDepth_hit; T++) {
+        kdt.rayHit(ray, hit);
+        if (hit.t_max > aimDepth)
+            return false;
+        if (!TransparentTest(ray, hit))
+            return true;
+        hit = HitRecord(hit.t_max + eps_zero, aimDepth + eps_zero);
+    }
+    return true;
+}
+
+HitInfo Model::rayHit(Ray ray) const {
+    HitRecord hit;
+    HitInfo hitInfo;
+    for (int T = 0; T < maxRayDepth_hit; T++) {
+        kdt.rayHit(ray, hit);
+        if (hit.t_max == INFINITY) {
+            hitInfo.t = INFINITY;
+            break;
+        }
+        vec3 intersection = ray.origin + ray.direction * hit.t_max;
+        getHitInfo(*hit.face, intersection, hitInfo);
+        if (hitInfo.diffuseColor[3] > 0.0f){
+            hitInfo.t = hit.t_max;
+            return hitInfo;
+        }
+        hit = HitRecord(hit.t_max + eps_zero, INFINITY);
+    }
+    return hitInfo;
 }

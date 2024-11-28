@@ -8,6 +8,13 @@
 #include "component.h"
 #include "kdt.h"
 
+struct HitInfo {
+    float t;
+    vec3 shapeNormal, surfaceNormal, emission;
+    vec4 diffuseColor;
+    HitInfo() : t(0), shapeNormal(vec3(0)), surfaceNormal(vec3(0)), emission(vec3(0)), diffuseColor(vec4(0)) {}
+};
+
 class Model {
 private:
     void processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform);
@@ -25,9 +32,8 @@ public:
     Model();
     Model(const std::string &model_folder, const std::string &model_name);
     void checkEmissiveMaterials(const aiScene* scene);
+    HitInfo rayHit(Ray ray) const;
+    bool rayHit_test(Ray ray, float aimDepth) const;
 };
-
-//void checkEmissiveMaterials(const aiScene* scene);
-//void checkLightSources(const aiScene* scene);
 
 #endif // MODEL_H

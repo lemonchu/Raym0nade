@@ -4,12 +4,19 @@
 #include <random>
 #include "geometry.h"
 #include "material.h"
-#include "gen.h"
 
 struct LightFace {
     glm::vec3 position, normal;
     float power;
     LightFace(glm::vec3 position, glm::vec3 normal, float power);
+};
+
+class RandomNumberGenerator {
+private:
+    std::vector<float> prefixSums;
+public:
+    void Init(const std::vector<float>& distribution);
+    int operator()(std::mt19937 &gen) const;
 };
 
 class LightObject {
