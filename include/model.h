@@ -9,11 +9,13 @@
 #include "kdt.h"
 
 struct HitInfo {
-    float t;
     vec3 shapeNormal, surfaceNormal, emission;
     vec4 diffuseColor;
+    float t;
     HitInfo() : t(0), shapeNormal(vec3(0)), surfaceNormal(vec3(0)), emission(vec3(0)), diffuseColor(vec4(0)) {}
 };
+
+void getHitInfo(const Face& face, const glm::vec3& intersection, HitInfo &hitInfo);
 
 class Model {
 private:
@@ -32,8 +34,9 @@ public:
     Model();
     Model(const std::string &model_folder, const std::string &model_name);
     void checkEmissiveMaterials(const aiScene* scene);
-    HitInfo rayHit(Ray ray) const;
+    void rayHit(Ray ray, HitInfo &hitInfo) const;
     bool rayHit_test(Ray ray, float aimDepth) const;
+    void rayCast(Ray ray, float &depth, const Face *&face) const;
 };
 
 #endif // MODEL_H

@@ -13,7 +13,7 @@ struct KDT_Node {
 
 class KDT {
     KDT_Node *buffer, *root;
-    int cur;
+    int cur, timer;
 public:
     KDT();
 

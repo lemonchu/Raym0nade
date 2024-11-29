@@ -30,7 +30,7 @@ void MyConsole::createRenderArgs(const std::string &str) {
 
     vec3 direction, right, up;
     float D, R, U, accuracy, exposure;
-    unsigned int width, height, oversampling, spp, threads, probes;
+    unsigned int width, height, oversampling, spp, threads;
     std::string savePath;
 
     std::cout << "direction (x,y,z): ";
@@ -64,13 +64,11 @@ void MyConsole::createRenderArgs(const std::string &str) {
     std::cout << "threads: ";
     std::cin >> threads;
 
-    std::cout << "probes: ";
-    std::cin >> probes;
 
     std::cout << "savePath: ";
     std::cin >> savePath;
 
-    renderArgs[str] = {position, direction, up, right, accuracy, exposure, width, height, oversampling, spp, threads, probes, savePath};
+    renderArgs[str] = {position, direction, up, right, accuracy, exposure, width, height, oversampling, spp, threads, savePath};
     std::cout << "RenderArgs (" << str << ") created." << std::endl;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 }

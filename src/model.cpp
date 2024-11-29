@@ -231,7 +231,7 @@ bool TransparentTest(const Ray &ray, const HitRecord &hit) {
     return diffuseColor[3] < 0.5f;
 }
 
-const float areaThereshold = 5e-3; // 小面平滑插值，大面直接取法向量
+const float areaThereshold = 1e-2; // 小面平滑插值，大面直接取法向量
 
 void getHitInfo(const Face& face, const glm::vec3& intersection, HitInfo &hitInfo) {
     const glm::vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
@@ -252,7 +252,7 @@ void getHitInfo(const Face& face, const glm::vec3& intersection, HitInfo &hitInf
         hitInfo.shapeNormal = normalize(cx);
     }
     hitInfo.surfaceNormal = hitInfo.shapeNormal; // 暂不考虑法线贴图
-    if (face.lightObject != nullptr) {
+    if (face.lightObject) {
         hitInfo.emission = face.lightObject->color * face.lightObject->powerDensity;
     } else
         hitInfo.emission = vec3(0.0f);
@@ -273,9 +273,8 @@ bool Model::rayHit_test(Ray ray, float aimDepth) const {
     return true;
 }
 
-HitInfo Model::rayHit(Ray ray) const {
+void Model::rayHit(Ray ray, HitInfo &hitInfo) const {
     HitRecord hit;
-    HitInfo hitInfo;
     for (int T = 0; T < maxRayDepth_hit; T++) {
         kdt.rayHit(ray, hit);
         if (hit.t_max == INFINITY) {
@@ -284,11 +283,24 @@ HitInfo Model::rayHit(Ray ray) const {
         }
         vec3 intersection = ray.origin + ray.direction * hit.t_max;
         getHitInfo(*hit.face, intersection, hitInfo);
-        if (hitInfo.diffuseColor[3] > 0.0f){
-            hitInfo.t = hit.t_max;
-            return hitInfo;
+        hitInfo.t = hit.t_max;
+        if (hitInfo.diffuseColor[3] > 0.0f)
+            return;
+        hit = HitRecord(hit.t_max + eps_zero, INFINITY);
+    }
+}
+
+void Model::rayCast(Ray ray, float &depth, const Face *&face) const {
+    HitRecord hit(eps_zero, INFINITY);
+    for (int T = 0; T < maxRayDepth_hit; T++) {
+        kdt.rayHit(ray, hit);
+        if (hit.t_max == INFINITY)
+            return;
+        if (!TransparentTest(ray, hit)) {
+            depth = hit.t_max;
+            face = hit.face;
+            return;
         }
         hit = HitRecord(hit.t_max + eps_zero, INFINITY);
     }
-    return hitInfo;
 }

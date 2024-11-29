@@ -40,7 +40,7 @@ float RayTriangleIntersection(const Ray& ray, const vec3 &v0, const vec3 &v1, co
     vec3 h = cross(ray.direction, edge2);
     float a = dot(edge1, h);
 
-    if (a <= 0.0f)
+    if (std::abs(a) < eps_zero)
         return INFINITY;
 
     float f = 1.0f / a;
@@ -75,8 +75,6 @@ vec3 barycentric(const vec3& A, const vec3& B, const vec3& C, const vec3& P) {
     return vec3(u, v, w);
 }
 
-#include <iostream>
-
 void getTangentSpace(const vec3 &normal, vec3 &tangent, vec3 &bitangent) {
     vec3 v0 =
             abs(normal.x) < 0.8f ?
@@ -84,6 +82,18 @@ void getTangentSpace(const vec3 &normal, vec3 &tangent, vec3 &bitangent) {
             vec3(0.0f, 1.0f, 0.0f);
     tangent = normalize(cross(v0, normal));
     bitangent = cross(normal, tangent);
+}
+
+const float eps_direction = 1e-3f;
+
+void getTangentSpaceWithInDir(const vec3 &normal, const vec3 &inDir, vec3 &tangent, vec3 &bitangent) {
+    float cosTheta = dot(normal, inDir);
+    if (cosTheta < - 1.0f + eps_direction) {
+        getTangentSpace(normal, tangent, bitangent);
+        return ;
+    }
+    bitangent = normalize(cross(normal, inDir));
+    tangent = cross(bitangent, normal);
 }
 
 void tangentTransform(const vec3 &normal, vec3 &v) {

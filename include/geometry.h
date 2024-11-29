@@ -26,9 +26,9 @@ float RayTriangleIntersection(const Ray& ray, const vec3 &v0, const vec3 &v1, co
 glm::vec3 barycentric(const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, const glm::vec3& P);
 
 void getTangentSpace(const vec3 &normal, vec3 &tangent, vec3 &bitangent);
-
+void getTangentSpaceWithInDir(const vec3 &normal, const vec3 &inDir, vec3 &tangent, vec3 &bitangent);
 void tangentTransform(const vec3 &normal, vec3 &v);
 
-const float eps_zero = 5e-5f;
+const float eps_zero = 1e-5f;
 
 #endif // GEOMETRY_H
