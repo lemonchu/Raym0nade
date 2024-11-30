@@ -4,33 +4,41 @@
 #include "geometry.h"
 #include "component.h"
 
-struct PixelData {
-    vec3 inradiance, diffuseColor, shapeNormal, surfaceNormal, position, emission;
-    const Face *face;
+struct RadianceData {
+    vec3 radiance;
+    float Var;
     int sampleCount;
-    float depth, Epower2, Var;
-    PixelData();
+    RadianceData();
 };
 
-PixelData operator + (const PixelData &A, const PixelData &B);
+struct GbufferData {
+    vec3 diffuseColor, shapeNormal, surfaceNormal, position, emission;
+    const Face *face;
+    float depth;
+    GbufferData();
+};
 
 class Image {
-private:
-    void filterVar();
-    void filterInradiance(int step);
 public:
     unsigned int width, height;
-    PixelData* buffer;
-
+    GbufferData *Gbuffer;
+    RadianceData *radiance_d, *radiance_i;
+    vec3 *color;
     Image(unsigned int width, unsigned int height);
 
-    void filterInradiance();
+    void normalizeRadiance();
+
+    void filter();
+
+    void shade();
+
+    void bloom();
+
+    void gammaCorrection();
 
     void save(const char* file_name);
 
     ~Image();
 };
-
-const float gamma = 2.2f;
 
 #endif // IMAGE_H

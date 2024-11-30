@@ -7,7 +7,7 @@
 struct RenderArgs {
     vec3 position, direction, up, right;
     float accuracy, exposure; // 胶片距离为 1.0，每个像素的偏移量为 accuracy
-    unsigned int width, height, oversampling, spp, threads;
+    unsigned int width, height, spp, threads;
     std::string savePath;
 };
 

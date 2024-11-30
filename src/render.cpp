@@ -39,29 +39,28 @@ vec3 sampleRay(Ray ray, const Model &model, RenderData &renderData, int depth) {
     return (vec3)info.diffuseColor * inradiance;
 }
 
-const float P_Direct = 0.25f;
+vec3 sampleDirectLightFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDir, const Model &model, RenderData &renderData) {
 
-vec3 sampleRayFromFirstIntersection(const Face* face, const vec3 &inDir, const vec3 &intersection, const Model &model, RenderData &renderData) {
-
-    if (face == nullptr)
-        return vec3(0.0f);
-
-    HitInfo info;
-    getHitInfo(*face, intersection, info);
-
-    if (length(info.emission) > 0)
+    if (Gbuffer.face == nullptr || length(Gbuffer.emission) > 0)
         return vec3(0.0f); // 暂不计入直接光照
 
-    BRDF brdf(inDir, info.shapeNormal, info.surfaceNormal);
-    //if (std::uniform_real_distribution<float>(0.0f, 1.0f)(renderData.gen) < P_Direct)
-        return sampleDirectLight(intersection, brdf, model, renderData.gen);// / P_Direct;
+    BRDF brdf(inDir, Gbuffer.shapeNormal, Gbuffer.surfaceNormal);
+    return sampleDirectLight(Gbuffer.position, brdf, model, renderData.gen);
+}
 
-    /*float sampleFactor;
+vec3 sampleRayFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDir, const vec3 &intersection, const Model &model, RenderData &renderData) {
+
+    if (Gbuffer.face == nullptr || length(Gbuffer.emission) > 0)
+        return vec3(0.0f); // 暂不计入直接光照
+
+    BRDF brdf(inDir, Gbuffer.shapeNormal, Gbuffer.surfaceNormal);
+
+    float sampleFactor;
     vec3 newDirection = brdf.sample(renderData.gen, sampleFactor);
     if (sampleFactor == 0.0f)
         return vec3(0.0f);
     Ray ray = {intersection, newDirection};
-    return sampleRay(ray, model, renderData, 1) * sampleFactor / (1.0f - P_Direct);*/
+    return sampleRay(ray, model, renderData, 1) * sampleFactor;
 }
 
 void rayCasting(Model &model, const RenderArgs &args, Image &image) {
@@ -83,28 +82,32 @@ void rayCasting(Model &model, const RenderArgs &args, Image &image) {
                     rayY = y - height / 2.0f;
             vec3 aim = normalize(direction + accuracy * (rayX * right + rayY * up));
             Ray ray = {position, aim};
-            PixelData &pixel = image.buffer[y * width + x];
-            model.rayCast(ray, pixel.depth, pixel.face);
+            GbufferData &Gbuffer = image.Gbuffer[y * width + x];
+            model.rayCast(ray, Gbuffer.depth, Gbuffer.face);
 
-            if (pixel.face == nullptr)
-                pixel.diffuseColor = pixel.shapeNormal = vec3(0.0f);
+            if (Gbuffer.face == nullptr)
+                Gbuffer.diffuseColor = Gbuffer.shapeNormal = vec3(0.0f);
             else {
-                vec3 intersection = position + aim * pixel.depth;
+                vec3 intersection = position + aim * Gbuffer.depth;
                 HitInfo hitInfo;
-                getHitInfo(*pixel.face, intersection, hitInfo);
-                pixel.position = intersection;
-                pixel.diffuseColor = (vec3)hitInfo.diffuseColor;
-                pixel.shapeNormal = hitInfo.shapeNormal;
-                pixel.surfaceNormal = hitInfo.surfaceNormal;
-                pixel.emission = hitInfo.emission * exposure;
+                getHitInfo(*Gbuffer.face, intersection, hitInfo);
+                Gbuffer.position = intersection;
+                Gbuffer.diffuseColor = (vec3)hitInfo.diffuseColor;
+                Gbuffer.shapeNormal = hitInfo.shapeNormal;
+                Gbuffer.surfaceNormal = hitInfo.surfaceNormal;
+                Gbuffer.emission = hitInfo.emission * exposure;
             }
         }
 }
+
+const float P_Direct = 0.25f;
 
 void render(const Model &model, const RenderArgs &args, RenderData &renderData, Image &image, int xL, int xR) {
     const unsigned int
             width = args.width,
             height = args.height,
+            spp_direct = args.spp * P_Direct,
+            spp_indirect = args.spp - spp_direct,
             spp = args.spp;
     const float
             accuracy = args.accuracy,
@@ -114,7 +117,8 @@ void render(const Model &model, const RenderArgs &args, RenderData &renderData, 
             right = args.right,
             up = args.up,
             position = args.position;
-    for (int T = 0; T < spp; T++) {
+
+    for (int T = 0; T < spp_direct; T++) {
         for (unsigned int x = xL; x < xR; x++)
             for (unsigned int y = 0; y < height; y++) {
                 float
@@ -122,14 +126,36 @@ void render(const Model &model, const RenderArgs &args, RenderData &renderData, 
                         rayY = y - height / 2.0f;
                 vec3 aim = normalize(direction + accuracy * (rayX * right + rayY * up));
 
-                PixelData &pixel = image.buffer[y * width + x];
-                vec3 intersection = position + aim * pixel.depth;
-                vec3 inradiance = sampleRayFromFirstIntersection(pixel.face, aim, intersection, model, renderData) * exposure;
-                pixel.inradiance += inradiance;
-                pixel.Epower2 += dot(inradiance, inradiance);
-                pixel.sampleCount++;
+                RadianceData &radiance = image.radiance_d[y * width + x];
+                GbufferData &Gbuffer = image.Gbuffer[y * width + x];
+                vec3 intersection = position + aim * Gbuffer.depth;
+                vec3 inradiance = sampleDirectLightFromFirstIntersection(Gbuffer, aim, model, renderData);
+                inradiance *= exposure;
+                radiance.radiance += inradiance;
+                radiance.Var += dot(inradiance, inradiance);
+                radiance.sampleCount++;
             }
         std::cout << "Thread " << std::this_thread::get_id() << " progress: " << T + 1 << " / " << spp << std::endl;
+    }
+
+    for (int T = 0; T < spp_indirect; T++) {
+        for (unsigned int x = xL; x < xR; x++)
+            for (unsigned int y = 0; y < height; y++) {
+                float
+                        rayX = x - width / 2.0f,
+                        rayY = y - height / 2.0f;
+                vec3 aim = normalize(direction + accuracy * (rayX * right + rayY * up));
+
+                RadianceData &pixel = image.radiance_i[y * width + x];
+                GbufferData &Gbuffer = image.Gbuffer[y * width + x];
+                vec3 intersection = position + aim * Gbuffer.depth;
+                vec3 inradiance = sampleRayFromFirstIntersection(Gbuffer, aim, intersection, model, renderData);
+                inradiance *= exposure;
+                pixel.radiance += inradiance;
+                pixel.Var += dot(inradiance, inradiance);
+                pixel.sampleCount++;
+            }
+        std::cout << "Thread " << std::this_thread::get_id() << " progress: " << T + spp_direct + 1 << " / " << spp << std::endl;
     }
 }
 
@@ -147,7 +173,6 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     std::cout << "Rendering started with " << threads << " threads." << std::endl;
 
     Image image(width, height);
-
     rayCasting(model, args, image);
 
     std::cout << "Ray casting completed." << std::endl;
@@ -160,21 +185,27 @@ void render_multiThread(Model &model, const RenderArgs &args) {
         render(model, args, datas[threadIndex], image,
                width/threads * threadIndex, width/threads * (threadIndex+1));
     };
-    std::vector<std::thread> threadPool;
 
+    std::vector<std::thread> threadPool;
     for (unsigned int i = 0; i < threads; ++i)
         threadPool.emplace_back(renderTask, i);
     for (auto &thread : threadPool)
         thread.join();
-
-    image.filterInradiance();
-
-    image.save(args.savePath.c_str());
 
     std::cout << "Rendering completed in " << clock() - startTime << " ms." << std::endl;
 
     int T_ray = 0;
     for (auto &data : datas)
         T_ray += data.T_RayAndTexture;
+
     std::cout << "Ray intersection & Texture query time: " << T_ray << " ms*thread." << std::endl;
+
+    image.normalizeRadiance();
+    image.filter();
+    image.shade();
+    image.bloom();
+    image.gammaCorrection();
+    image.save(args.savePath.c_str());
+
+    std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;
 }

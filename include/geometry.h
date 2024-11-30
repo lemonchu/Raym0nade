@@ -29,6 +29,6 @@ void getTangentSpace(const vec3 &normal, vec3 &tangent, vec3 &bitangent);
 void getTangentSpaceWithInDir(const vec3 &normal, const vec3 &inDir, vec3 &tangent, vec3 &bitangent);
 void tangentTransform(const vec3 &normal, vec3 &v);
 
-const float eps_zero = 1e-5f;
+const float eps_zero = 5e-5f;
 
 #endif // GEOMETRY_H

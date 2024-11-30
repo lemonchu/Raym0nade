@@ -40,7 +40,7 @@ float RayTriangleIntersection(const Ray& ray, const vec3 &v0, const vec3 &v1, co
     vec3 h = cross(ray.direction, edge2);
     float a = dot(edge1, h);
 
-    if (std::abs(a) < eps_zero)
+    if (std::abs(a) / length(edge1) < eps_zero)
         return INFINITY;
 
     float f = 1.0f / a;
