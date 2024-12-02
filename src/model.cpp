@@ -209,10 +209,10 @@ bool TransparentTest(const Ray &ray, const HitRecord &hit) {
             + baryCoords[1] * face.uv[1]
             + baryCoords[2] * face.uv[2];
     vec4 diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
-    return diffuseColor[3] < 0.5f;
+    return diffuseColor[3] == 0.0f;
 }
 
-void getHitInfo(const Face& face, const glm::vec3& intersection, HitInfo &hitInfo) {
+void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, HitInfo &hitInfo) {
     const glm::vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
     const Material& material = *face.material;
     vec2 texUV =
@@ -221,6 +221,8 @@ void getHitInfo(const Face& face, const glm::vec3& intersection, HitInfo &hitInf
             + baryCoords[2] * face.uv[2];
     hitInfo.diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
     hitInfo.shapeNormal = normalize(cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
+    if (dot(hitInfo.shapeNormal, inDir) > 0.0f)
+        hitInfo.shapeNormal = -hitInfo.shapeNormal;
     hitInfo.surfaceNormal = hitInfo.shapeNormal; // 暂不考虑法线贴图
     if (face.lightObject) {
         hitInfo.emission = face.lightObject->color * face.lightObject->powerDensity;
@@ -252,7 +254,7 @@ void Model::rayHit(Ray ray, HitInfo &hitInfo) const {
             break;
         }
         vec3 intersection = ray.origin + ray.direction * hit.t_max;
-        getHitInfo(*hit.face, intersection, hitInfo);
+        getHitInfo(*hit.face, intersection, ray.direction, hitInfo);
         hitInfo.t = hit.t_max;
         if (hitInfo.diffuseColor[3] > 0.0f)
             return;

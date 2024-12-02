@@ -15,7 +15,7 @@ struct HitInfo {
     HitInfo() : t(0), shapeNormal(vec3(0)), surfaceNormal(vec3(0)), emission(vec3(0)), diffuseColor(vec4(0)) {}
 };
 
-void getHitInfo(const Face& face, const glm::vec3& intersection, HitInfo &hitInfo);
+void getHitInfo(const Face& face, const glm::vec3& intersection, const vec3 &inDir, HitInfo &hitInfo);
 
 class Model {
 private:

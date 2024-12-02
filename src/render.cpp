@@ -13,7 +13,7 @@ Generator RenderData::generator(int dimension) {
     return {&sobel, dimension};
 }
 
-const float P_RR = 0.75f;
+const float P_RR = 0.7f;
 const int maxRayDepth = 16;
 
 vec3 sampleRay(Ray ray, const Model &model, RenderData &renderData, int depth) {
@@ -115,7 +115,7 @@ void rayCasting(Model &model, const RenderArgs &args, Image &image) {
             else {
                 vec3 intersection = position + aim * Gbuffer.depth;
                 HitInfo hitInfo;
-                getHitInfo(*Gbuffer.face, intersection, hitInfo);
+                getHitInfo(*Gbuffer.face, intersection, aim, hitInfo);
                 Gbuffer.position = intersection;
                 Gbuffer.diffuseColor = (vec3)hitInfo.diffuseColor;
                 Gbuffer.shapeNormal = hitInfo.shapeNormal;
@@ -125,7 +125,7 @@ void rayCasting(Model &model, const RenderArgs &args, Image &image) {
         }
 }
 
-const float P_Direct = 0.25f;
+const float P_Direct = 0.5f;
 
 void render_pixel(const Model &model, const RenderArgs &args, RenderData &renderData, Image &image, int x, int y) {
     const unsigned int
