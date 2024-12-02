@@ -95,7 +95,6 @@ void MyConsole::viewModel(const std::string &str) {
     }
     std::cout << "Model Path: " << models[str].model_path << std::endl;
     std::cout << "Faces: " << models[str].faces.size() << std::endl;
-    std::cout << "Vertices: " << models[str].vertexDatas.size() << std::endl;
 }
 
 void MyConsole::viewRenderArgs(const std::string &str) {

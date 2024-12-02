@@ -20,19 +20,8 @@ const float powerAlpha = 0.25f;
 
 void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
 
-    unsigned int offset = vertexDatas.size();
-    for (unsigned int j = 0; j < mesh->mNumVertices; j++) {
-        aiVector3D normal = mesh->mNormals[j];
-        aiVector3D texCoord = mesh->mTextureCoords[0][j];
-        vertexDatas.emplace_back(
-                vec2(texCoord.x, texCoord.y),
-                vec3(0)
-        );
-    }
-
     auto &material = materials[mesh->mMaterialIndex];
-    VertexData *vData = &vertexDatas[offset];
-    offset = faces.size();
+    int offset = faces.size();
     for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
         aiFace &face0 = mesh->mFaces[j];
 
@@ -47,23 +36,13 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
                 {vec3(transformedVertex[0]),
                  vec3(transformedVertex[1]),
                  vec3(transformedVertex[2])},
-                {&vData[face0.mIndices[0]],
-                 &vData[face0.mIndices[1]],
-                 &vData[face0.mIndices[2]]},
+                {vec2(mesh->mTextureCoords[0][face0.mIndices[0]].x, mesh->mTextureCoords[0][face0.mIndices[0]].y),
+                 vec2(mesh->mTextureCoords[0][face0.mIndices[1]].x, mesh->mTextureCoords[0][face0.mIndices[1]].y),
+                 vec2(mesh->mTextureCoords[0][face0.mIndices[2]].x, mesh->mTextureCoords[0][face0.mIndices[2]].y)},
                 &material,
                 nullptr
         });
-
-        const Face &face = faces.back();
-
-        vec3 normal = normalize(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
-        vData[face0.mIndices[0]].normal += normal;
-        vData[face0.mIndices[1]].normal += normal;
-        vData[face0.mIndices[2]].normal += normal;
     }
-
-    for (unsigned int j = 0; j < mesh->mNumVertices; j++)
-        vData[j].normal = normalize(vData[j].normal);
 
     Face *meshFaces = &faces[offset];
     if (material.isEmissionEnabled && !material.texture[TextureIdForEmission].empty()) {
@@ -80,15 +59,16 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
             auto &face = meshFaces[j];
 
             vec3 centroid = (face.v[0] + face.v[1] + face.v[2]) / 3.0f;
-            vec2 uv = (face.data[0]->uv + face.data[1]->uv + face.data[2]->uv) / 3.0f;
+            vec2 uv = (face.uv[0] + face.uv[1] + face.uv[2]) / 3.0f;
             vec4 textureColor = material.getImage(TextureIdForEmission).get(uv[0], uv[1]);
             float colorPower = glm::length(vec3(textureColor[0], textureColor[1], textureColor[2]));
+            if (colorPower == 0.0f) continue;
 
-            if (colorPower == 0.0f)
-                continue;
+            vec3 _cross = glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0]);
+            float area = glm::length(_cross) / 2.0f;
+            if (area == 0.0f) continue;
 
-            float area = glm::length(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0])) / 2.0f;
-            vec3 normal = normalize(face.data[0]->normal + face.data[1]->normal + face.data[2]->normal);
+            vec3 normal = normalize(_cross);
             lightObject.lightFaces.emplace_back(centroid, normal, area);
             totalArea += area;
             face.lightObject = &lightObject;
@@ -168,7 +148,9 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
     Assimp::Importer importer;
     model_path = model_folder + model_name;
     const aiScene* scene = importer.ReadFile(model_path.c_str(),
-                                             aiProcessPreset_TargetRealtime_Quality);
+                                             aiProcess_Triangulate |
+                                             aiProcess_JoinIdenticalVertices |
+                                             aiProcess_ValidateDataStructure);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
@@ -176,7 +158,6 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
     }
     unsigned int vertexCnt = vertexCount(scene);
     std::cout << "Vertices: " << vertexCnt << std::endl;
-    vertexDatas.reserve(vertexCnt);
     lightObjects.reserve(scene->mNumMeshes);
 
     processMaterial(model_folder, scene);
@@ -224,33 +205,22 @@ bool TransparentTest(const Ray &ray, const HitRecord &hit) {
     const vec3 intersection = ray.origin + ray.direction * hit.t_max;
     const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
     vec2 texUV =
-            baryCoords[0] * face.data[0]->uv
-            + baryCoords[1] * face.data[1]->uv
-            + baryCoords[2] * face.data[2]->uv;
+            baryCoords[0] * face.uv[0]
+            + baryCoords[1] * face.uv[1]
+            + baryCoords[2] * face.uv[2];
     vec4 diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
     return diffuseColor[3] < 0.5f;
 }
-
-const float areaThereshold = 1e-2; // 小面平滑插值，大面直接取法向量
 
 void getHitInfo(const Face& face, const glm::vec3& intersection, HitInfo &hitInfo) {
     const glm::vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
     const Material& material = *face.material;
     vec2 texUV =
-            baryCoords[0] * face.data[0]->uv
-            + baryCoords[1] * face.data[1]->uv
-            + baryCoords[2] * face.data[2]->uv;
+            baryCoords[0] * face.uv[0]
+            + baryCoords[1] * face.uv[1]
+            + baryCoords[2] * face.uv[2];
     hitInfo.diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
-    vec3 cx = cross(face.v[1] - face.v[0], face.v[2] - face.v[0]);
-    if (length(cx) < areaThereshold) {
-        hitInfo.shapeNormal = normalize(
-                baryCoords[0] * face.data[0]->normal
-                + baryCoords[1] * face.data[1]->normal
-                + baryCoords[2] * face.data[2]->normal
-        );
-    } else {
-        hitInfo.shapeNormal = normalize(cx);
-    }
+    hitInfo.shapeNormal = normalize(cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
     hitInfo.surfaceNormal = hitInfo.shapeNormal; // 暂不考虑法线贴图
     if (face.lightObject) {
         hitInfo.emission = face.lightObject->color * face.lightObject->powerDensity;

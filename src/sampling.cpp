@@ -1,4 +1,5 @@
 #include "sampling.h"
+#include "sobel.h"
 
 const float M_PI = 3.14159265359f;
 
@@ -16,17 +17,16 @@ float BRDF::P_accept(const vec3 &outDir) const {
     return pdf(outDir) / max;
 }
 
-vec3 BRDF::sample(std::mt19937 &gen, float &P_success) const {
+vec3 BRDF::sample(Generator genU, Generator genV, float &P_success) const {
     auto sample0 = [&]() -> vec3 {
-        std::uniform_real_distribution<float> U(0.0f, 1.0f);
-        float u = U(gen), v = U(gen) * 2.0f * M_PI;
+        float u = genU(), v = genV() * 2.0f * M_PI;
         float d = sqrt(u);
         float z = sqrt(1 - d*d);
         float x = d * cos(v), y = d * sin(v);
         return x * tangent + y * bitangent + z * surfaceNormal;
     };
     vec3 direction;
-    for (int T = 1; T <= maxTrys; T++) {
+    for (int T = 1; T <= MaxTrys; T++) {
         direction = sample0();
         if (dot(direction, shapeNormal) > 0.0f) {
             P_success = 1.0f / T;
@@ -37,7 +37,16 @@ vec3 BRDF::sample(std::mt19937 &gen, float &P_success) const {
     return vec3(0.0f);
 }
 
-void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model, std::mt19937 &gen, float &prob, int &lightIndex) {
+int sample(const std::vector<float> &weights, float randomValue) {
+    float cumulativeWeight = 0.0f;
+    for (int i = 0; i < weights.size(); ++i) {
+        cumulativeWeight += weights[i];
+        if (randomValue <= cumulativeWeight)
+            return i;
+    }
+}
+
+void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model, Generator &gen, float &prob, int &lightIndex) {
     float totalWeight = 0.0f;
     std::vector<float> weights;
     for (int id = 0; id < model.lightObjects.size(); id++)  {
@@ -53,19 +62,19 @@ void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model, st
         lightIndex = -1;
         return;
     }
-    lightIndex = std::discrete_distribution<int>(weights.begin(), weights.end())(gen);
+    lightIndex = sample(weights, totalWeight * gen());
     prob = weights[lightIndex] / totalWeight;
 }
 
-void sampleLightFace(const vec3 &pos, const LightObject &lightObject, std::mt19937 &gen, float &P_success, int &faceIndex) {
+void sampleLightFace(const vec3 &pos, const LightObject &lightObject, Generator &genF, Generator &genP, float &P_success, int &faceIndex) {
     vec3 lightDir;
-    for(int T = 1; T <= maxTrys; T++) {
-        faceIndex = lightObject.faceDist(gen);
+    for(int T = 1; T <= MaxTrys; T++) {
+        faceIndex = lightObject.faceDist(genF);
         auto &lightFace = lightObject.lightFaces[faceIndex];
         lightDir = normalize(lightFace.position - pos);
         float cosPhi = dot(lightFace.normal, -lightDir);
-        if (cosPhi <= 0.0f || std::uniform_real_distribution<float>(0.0f, 1.0f)(gen) > cosPhi) {
-            if (T == maxTrys) {
+        if (cosPhi <= 0.0f || genP() > cosPhi) {
+            if (T == MaxTrys) {
                 faceIndex = -1;
                 return;
             }
@@ -77,7 +86,7 @@ void sampleLightFace(const vec3 &pos, const LightObject &lightObject, std::mt199
     }
 }
 
-vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model, std::mt19937 &gen) {
+vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model, Generator genU, Generator genV, Generator genP) {
 
     // vec3 light = vec3(0.0f);
     // auto &lightObjects = model.lightObjects;
@@ -90,14 +99,14 @@ vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model, st
 
     float P_lightObject;
     int lightIndex;
-    sampleLightObject(pos, brdf,  model, gen, P_lightObject, lightIndex);
+    sampleLightObject(pos, brdf,  model, genU, P_lightObject, lightIndex);
     if (lightIndex == -1)
         return vec3(0.0f);
     auto& lightObject = model.lightObjects[lightIndex];
 
     float P_success;
     int faceIndex;
-    sampleLightFace(pos, lightObject, gen, P_success, faceIndex);
+    sampleLightFace(pos, lightObject, genV, genP, P_success, faceIndex);
     if (faceIndex == -1)
         return vec3(0.0f);
     auto &lightFace = lightObject.lightFaces[faceIndex];

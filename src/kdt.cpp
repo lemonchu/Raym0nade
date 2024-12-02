@@ -6,8 +6,6 @@ KDT_Node::KDT_Node() {
     son[0] = son[1] = nullptr;
 }
 
-const unsigned int LeafBagSize = 16;
-
 template<int axis>
 bool cmp(const Face &A, const Face &B) {
     return A.center()[axis] < B.center()[axis];
@@ -18,6 +16,8 @@ bool (*cmpFunc[3])(const Face &, const Face &) = {cmp<0>, cmp<1>, cmp<2>};
 KDT::KDT() : buffer(nullptr), root(nullptr), cur(0) {}
 
 KDT_Node *KDT::newNode() { return buffer + (cur++); }
+
+const unsigned int LeafBagSize = 16;
 
 void KDT::dfs_build(KDT_Node *&u, Face *faceL, Face *faceR) {
     u = newNode();

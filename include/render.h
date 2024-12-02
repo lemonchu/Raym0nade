@@ -3,6 +3,7 @@
 
 #include "model.h"
 #include "geometry.h"
+#include "sobel.h"
 
 struct RenderArgs {
     vec3 position, direction, up, right;
@@ -12,9 +13,10 @@ struct RenderArgs {
 };
 
 struct RenderData {
-    std::mt19937 gen;
+    SobelGroup sobel;
     int T_RayAndTexture;
-    explicit RenderData(int seed);
+    RenderData();
+    Generator generator(int dimension = SobelGroup::groupSize);
 };
 
 void render_multiThread(Model &model, const RenderArgs &args);

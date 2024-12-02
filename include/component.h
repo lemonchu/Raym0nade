@@ -4,6 +4,7 @@
 #include <random>
 #include "geometry.h"
 #include "material.h"
+#include "sobel.h"
 
 struct LightFace {
     glm::vec3 position, normal;
@@ -11,12 +12,12 @@ struct LightFace {
     LightFace(glm::vec3 position, glm::vec3 normal, float power);
 };
 
-class RandomNumberGenerator {
+class RandomDistribution {
 private:
     std::vector<float> prefixSums;
 public:
     void Init(const std::vector<float>& distribution);
-    int operator()(std::mt19937 &gen) const;
+    int operator()(Generator &gen) const;
 };
 
 class LightObject {
@@ -24,21 +25,13 @@ public:
     glm::vec3 center, color;
     float power, powerDensity;
     std::vector<LightFace> lightFaces;
-    RandomNumberGenerator faceDist;
+    RandomDistribution faceDist;
     LightObject();
-};
-
-struct VertexData {
-    vec2 uv;
-    vec3 normal;
-
-    VertexData();
-    VertexData(const vec2 &uv, const vec3 &normal);
 };
 
 struct Face {
     vec3 v[3];
-    VertexData* data[3];
+    vec2 uv[3];
     Material *material;
     LightObject *lightObject;
 

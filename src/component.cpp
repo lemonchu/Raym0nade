@@ -3,7 +3,7 @@
 LightFace::LightFace(glm::vec3 position, glm::vec3 normal, float power) :
         position(position), normal(normal), power(power) {}
 
-void RandomNumberGenerator::Init(const std::vector<float>& distribution) {
+void RandomDistribution::Init(const std::vector<float>& distribution) {
     prefixSums.resize(distribution.size());
     prefixSums[0] = distribution[0];
     for (size_t i = 1; i < distribution.size(); ++i) {
@@ -11,17 +11,12 @@ void RandomNumberGenerator::Init(const std::vector<float>& distribution) {
     }
 }
 
-int RandomNumberGenerator::operator()(std::mt19937 &gen) const {
-    std::uniform_real_distribution<float> dist(0.0f, prefixSums.back());
-    float randomValue = dist(gen);
+int RandomDistribution::operator()(Generator &gen) const {
+    float randomValue = prefixSums.back() * gen();
     return std::lower_bound(prefixSums.begin(), prefixSums.end(), randomValue) - prefixSums.begin();
 }
 
 LightObject::LightObject() : center(glm::vec3(0)), color(glm::vec3(0)), power(0) {}
-
-VertexData::VertexData() {}
-
-VertexData::VertexData(const vec2 &uv, const vec3 &normal) : uv(uv), normal(normal) {}
 
 vec3 Face::center() const {
     return (v[0] + v[1] + v[2]) / 3.0f;

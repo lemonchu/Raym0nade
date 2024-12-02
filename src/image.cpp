@@ -29,8 +29,8 @@ Image::~Image() {
 }
 
 void filterVar(RadianceData *radiance, unsigned int width, unsigned int height) {
-    const int fliterRadius = 1;
-    const float h[3] = {0.25, 0.5, 0.25};
+    static const int fliterRadius = 1;
+    static const float h[3] = {0.25, 0.5, 0.25};
     std::vector<float> varBuffer(width * height, 0.0f);
     for (unsigned int y = 0; y < height; ++y)
         for (unsigned int x = 0; x < width; ++x)
@@ -46,10 +46,10 @@ void filterVar(RadianceData *radiance, unsigned int width, unsigned int height) 
 }
 
 float getWeight(const GbufferData &Gp, const GbufferData &Gq, const RadianceData &Lp, const RadianceData &Lq) {
-    const float
+    static const float
             sigma_z = 1.0f,
-            sigma_n = 64.0f,
-            sigma_l = 2.0f;
+            sigma_n = 128.0f,
+            sigma_l = 1.0f;
 
     if (Gq.face == nullptr)
         return 0.0f;
@@ -72,8 +72,8 @@ float getWeight(const GbufferData &Gp, const GbufferData &Gq, const RadianceData
 
 void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, unsigned int width, unsigned int height, int step) {
 
-    const int filterRadius = 2;
-    const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
+    static const int filterRadius = 2;
+    static const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
     std::vector<vec3> radianceBuffer(width * height, vec3(0.0f, 0.0f, 0.0f));
     std::vector<float> varBuffer(width * height, 0.0f);
     for (unsigned int y = 0; y < height; ++y)
@@ -143,11 +143,11 @@ void Image::shade() {
 }
 
 void Image::bloom() {
-    const int filterRadius = 2;
-    const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
+    static const int filterRadius = 2;
+    static const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
     std::vector<vec3> bloomColor(width * height);
 
-    const float omega_bloom = 0.2f, threshold = 1.5f;
+    static const float omega_bloom = 0.2f, threshold = 1.5f;
     for (int id = 0; id < width * height; ++id) {
         bloomColor[id] = glm::max(color[id] - vec3(threshold), vec3(0.0f));
         bloomColor[id] = glm::pow(bloomColor[id], vec3(omega_bloom));
