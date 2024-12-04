@@ -3,18 +3,17 @@
 
 #include "geometry.h"
 #include "component.h"
+#include "model.h"
 
 struct RadianceData {
     vec3 radiance;
-    float Spower2, Var;
-    int sampleCount;
+    float Var;
     RadianceData();
 };
 
 struct GbufferData {
-    vec3 diffuseColor, shapeNormal, surfaceNormal, position, emission;
     const Face *face;
-    float depth;
+    vec3 shapeNormal, surfaceNormal, position;
     GbufferData();
 };
 
@@ -24,19 +23,16 @@ public:
             DirectLight = 1,
             IndirectLight = 2,
             DiffuseColor = 4,
-            Emission = 8,
-            ShowVar = 16;
+            Emission = 8;
     int width, height;
     GbufferData *Gbuffer;
     RadianceData *radiance_d, *radiance_i;
     vec3 *color;
     Image(int width, int height);
 
-    void normalizeRadiance();
-
     void filter();
 
-    void shade(int options);
+    void shade(const Model &model, const vec3 &position, int options);
 
     void bloom();
 
