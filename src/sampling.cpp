@@ -1,5 +1,4 @@
 #include "sampling.h"
-#include "sobel.h"
 
 const float M_PI = 3.14159265359f;
 
@@ -17,9 +16,9 @@ float BRDF::P_accept(const vec3 &outDir) const {
     return pdf(outDir) / max;
 }
 
-vec3 BRDF::sample(Generator genU, Generator genV, float &P_success) const {
+vec3 BRDF::sample(Generator &gen, float &P_success) const {
     auto sample0 = [&]() -> vec3 {
-        float u = genU(), v = genV() * 2.0f * M_PI;
+        float u = gen(), v = gen() * 2.0f * M_PI;
         float d = sqrt(u);
         float z = sqrt(1 - d*d);
         float x = d * cos(v), y = d * sin(v);
@@ -66,14 +65,14 @@ void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model, Ge
     prob = weights[lightIndex] / totalWeight;
 }
 
-void sampleLightFace(const vec3 &pos, const LightObject &lightObject, Generator &genF, Generator &genP, float &P_success, int &faceIndex) {
+void sampleLightFace(const vec3 &pos, const LightObject &lightObject, Generator &gen, float &P_success, int &faceIndex) {
     vec3 lightDir;
     for(int T = 1; T <= MaxTrys; T++) {
-        faceIndex = lightObject.faceDist(genF);
+        faceIndex = lightObject.faceDist(gen);
         auto &lightFace = lightObject.lightFaces[faceIndex];
         lightDir = normalize(lightFace.position - pos);
         float cosPhi = dot(lightFace.normal, -lightDir);
-        if (cosPhi <= 0.0f || genP() > cosPhi) {
+        if (cosPhi <= 0.0f || gen() > cosPhi) {
             if (T == MaxTrys) {
                 faceIndex = -1;
                 return;
@@ -86,7 +85,7 @@ void sampleLightFace(const vec3 &pos, const LightObject &lightObject, Generator 
     }
 }
 
-vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model, Generator genU, Generator genV, Generator genP) {
+vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model, Generator &gen) {
 
     // vec3 light = vec3(0.0f);
     // auto &lightObjects = model.lightObjects;
@@ -99,20 +98,20 @@ vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model, Ge
 
     float P_lightObject;
     int lightIndex;
-    sampleLightObject(pos, brdf,  model, genU, P_lightObject, lightIndex);
+    sampleLightObject(pos, brdf,  model, gen, P_lightObject, lightIndex);
     if (lightIndex == -1)
         return vec3(0.0f);
     auto& lightObject = model.lightObjects[lightIndex];
 
     float P_success;
     int faceIndex;
-    sampleLightFace(pos, lightObject, genV, genP, P_success, faceIndex);
+    sampleLightFace(pos, lightObject, gen, P_success, faceIndex);
     if (faceIndex == -1)
         return vec3(0.0f);
     auto &lightFace = lightObject.lightFaces[faceIndex];
 
     vec3 lightDir = normalize(lightFace.position - pos);
-    float distance = glm::length(lightFace.position - pos);
+    float distance = length(lightFace.position - pos);
     if (model.rayHit_test({pos, lightDir}, distance - eps_lightRadius))
         return vec3(0.0f);
 

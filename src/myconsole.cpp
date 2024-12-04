@@ -29,7 +29,7 @@ void MyConsole::createRenderArgs(const std::string &str) {
     }
 
     vec3 direction, right, up;
-    float D, R, U, accuracy, exposure;
+    float D, R, U, accuracy, exposure, P_Direct;
     unsigned int width, height, spp, threads;
     std::string savePath;
 
@@ -61,11 +61,13 @@ void MyConsole::createRenderArgs(const std::string &str) {
     std::cout << "threads: ";
     std::cin >> threads;
 
+    std::cout << "P_Direct: ";
+    std::cin >> P_Direct;
 
     std::cout << "savePath: ";
     std::cin >> savePath;
 
-    renderArgs[str] = {position, direction, up, right, accuracy, exposure, width, height, spp, threads, savePath};
+    renderArgs[str] = {position, direction, up, right, accuracy, exposure, P_Direct, width, height, spp, threads, savePath};
     std::cout << "RenderArgs (" << str << ") created." << std::endl;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 }
@@ -113,6 +115,8 @@ void MyConsole::viewRenderArgs(const std::string &str) {
     std::cout << "width, height: " << args.width << " " << args.height << std::endl;
     std::cout << "spp: " << args.spp << std::endl;
     std::cout << "threads: " << args.threads << std::endl;
+    std::cout << "P_Direct: " << args.P_Direct << std::endl;
+    std::cout << "savePath: " << args.savePath << std::endl;
 }
 
 void MyConsole::render(const std::string &model_str, const std::string &args_str) {

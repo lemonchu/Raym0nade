@@ -213,7 +213,7 @@ bool TransparentTest(const Ray &ray, const HitRecord &hit) {
 }
 
 void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, HitInfo &hitInfo) {
-    const glm::vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
+    const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
     const Material& material = *face.material;
     vec2 texUV =
             baryCoords[0] * face.uv[0]
@@ -224,10 +224,9 @@ void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, H
     if (dot(hitInfo.shapeNormal, inDir) > 0.0f)
         hitInfo.shapeNormal = -hitInfo.shapeNormal;
     hitInfo.surfaceNormal = hitInfo.shapeNormal; // 暂不考虑法线贴图
-    if (face.lightObject) {
-        hitInfo.emission = face.lightObject->color * face.lightObject->powerDensity;
-    } else
-        hitInfo.emission = vec3(0.0f);
+    hitInfo.emission = (face.lightObject) ?
+            face.lightObject->color * face.lightObject->powerDensity :
+            vec3(0.0f);
 }
 
 const int maxRayDepth_hit = 8;

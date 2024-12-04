@@ -3,6 +3,12 @@
 LightFace::LightFace(glm::vec3 position, glm::vec3 normal, float power) :
         position(position), normal(normal), power(power) {}
 
+Generator::Generator(unsigned int seed) : mt(seed), U(0.0f, 1.0f) {}
+
+float Generator::operator()() {
+    return U(mt);
+}
+
 void RandomDistribution::Init(const std::vector<float>& distribution) {
     prefixSums.resize(distribution.size());
     prefixSums[0] = distribution[0];

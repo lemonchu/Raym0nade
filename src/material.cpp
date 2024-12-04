@@ -25,10 +25,14 @@ std::string urlDecode(const std::string &src) {
 
 glm::vec4 ImageData::get(float u, float v) const {
     int texX = lround(u * width), texY = lround(v * height);
-    texX %= width;
-    if (texX < 0) texX += width;
-    texY %= height;
-    if (texY < 0) texY += height;
+    if (texX < 0 || texX >= width) {
+        texX %= width;
+        if (texX < 0) texX += width;
+    }
+    if (texY < 0 || texY >= height) {
+        texY %= height;
+        if (texY < 0) texY += height;
+    }
     int pixelIndex = (texY * width + texX) * 4; // 4 channels for RGBA
     return glm::vec4(
             gammaMap[data[pixelIndex]],

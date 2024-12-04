@@ -35,6 +35,7 @@ void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR) {
 }
 
 float RayTriangleIntersection(const Ray& ray, const vec3 &v0, const vec3 &v1, const vec3 &v2) {
+    // Möller-Trumbore intersection algorithm
     vec3 edge1 = v1 - v0;
     vec3 edge2 = v2 - v0;
     vec3 h = cross(ray.direction, edge2);

@@ -4,12 +4,18 @@
 #include <random>
 #include "geometry.h"
 #include "material.h"
-#include "sobel.h"
 
 struct LightFace {
     glm::vec3 position, normal;
     float power;
     LightFace(glm::vec3 position, glm::vec3 normal, float power);
+};
+
+struct Generator {
+    std::mt19937 mt;
+    std::uniform_real_distribution<float> U;
+    Generator(unsigned int seed);
+    float operator()();
 };
 
 class RandomDistribution {

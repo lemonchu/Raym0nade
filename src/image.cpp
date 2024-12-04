@@ -5,7 +5,7 @@
 
 RadianceData::RadianceData() {
     radiance = vec3(0.0f);
-    Var = 0.0f;
+    Var = Spower2 = 0.0f;
     sampleCount = 0;
 }
 
@@ -49,7 +49,8 @@ float getWeight(const GbufferData &Gp, const GbufferData &Gq, const RadianceData
     static const float
             sigma_z = 1.0f,
             sigma_n = 128.0f,
-            sigma_l = 1.0f;
+            sigma_l = 1.0f,
+            eps = 1e-2;
 
     if (Gq.face == nullptr)
         return 0.0f;
@@ -64,7 +65,7 @@ float getWeight(const GbufferData &Gp, const GbufferData &Gq, const RadianceData
     weight *= pow(std::max(0.0f, dot(Gp.surfaceNormal, Gq.surfaceNormal)), sigma_n);
 
     float radianceDiff = length(Lp.radiance - Lq.radiance) /
-                           (sigma_l * sqrt(Lp.Var) + eps_zero);
+                           (sigma_l * sqrt(Lp.Var) + eps);
     weight *= std::exp(-radianceDiff);
 
     return weight;
@@ -108,7 +109,6 @@ void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, unsigned
 
 void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, unsigned int width, unsigned int height) {
 
-    filterVar(radiance, width, height);
     filterRadiance(radiance, Gbuffer, width, height, 1);
     filterRadiance(radiance, Gbuffer, width, height, 2);
     filterRadiance(radiance, Gbuffer, width, height, 4);
@@ -118,10 +118,15 @@ void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, unsigned
 
 void normalize(RadianceData *radiance, unsigned int width, unsigned int height) {
     for (unsigned int i = 0; i < width * height; ++i) {
+        if (radiance[i].sampleCount == 0)
+            continue;
         radiance[i].radiance /= (float) radiance[i].sampleCount;
-        radiance[i].Var /= (float) radiance[i].sampleCount;
-        radiance[i].Var -= dot(radiance[i].radiance, radiance[i].radiance);
+        radiance[i].Spower2 /= (float) radiance[i].sampleCount;
+        radiance[i].Var = radiance[i].Spower2 - dot(radiance[i].radiance, radiance[i].radiance);
+        if (radiance[i].Var < 0.0f)
+            radiance[i].Var = 0.0f;
     }
+    filterVar(radiance, width, height);
 }
 
 void Image::normalizeRadiance() {
@@ -134,12 +139,32 @@ void Image::filter() {
     filterRadiance(radiance_i, Gbuffer, width, height);
 }
 
-void Image::shade() {
+void Image::shade(unsigned int options) {
+
     for (unsigned int i = 0; i < width * height; ++i) {
         GbufferData &G = Gbuffer[i];
         RadianceData &Rd = radiance_d[i], &Ri = radiance_i[i];
-        color[i] = G.diffuseColor * (Rd.radiance + Ri.radiance) + G.emission;
+        vec3 radiance = vec3(0.0f);
+        if (options & ShowVar) {
+            if (options & DirectLight)
+                radiance += vec3(Rd.Var);
+            if (options & IndirectLight)
+                radiance += vec3(Ri.Var);
+            radiance *= 0.4f;
+        } else {
+            if (options & DirectLight)
+                radiance += Rd.radiance;
+            if (options & IndirectLight)
+                radiance += Ri.radiance;
+            if (!(options & (DirectLight | IndirectLight)))
+                radiance = vec3(1.0f);
+        }
+        vec3 diffuseColor = (options & DiffuseColor) ? G.diffuseColor : vec3(1.0f);
+        color[i] = diffuseColor * radiance;
+        if (options & Emission)
+            color[i] += G.emission;
     }
+    gammaCorrection();
 }
 
 void Image::bloom() {

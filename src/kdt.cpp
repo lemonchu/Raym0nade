@@ -17,7 +17,7 @@ KDT::KDT() : buffer(nullptr), root(nullptr), cur(0) {}
 
 KDT_Node *KDT::newNode() { return buffer + (cur++); }
 
-const unsigned int LeafBagSize = 16;
+const unsigned int LeafBagSize = 12;
 
 void KDT::dfs_build(KDT_Node *&u, Face *faceL, Face *faceR) {
     u = newNode();
