@@ -3,7 +3,7 @@
 
 unsigned int vertexCount(const aiScene *scene) {
     unsigned int cnt = 0;
-    for (unsigned int i = 0; i < scene->mNumMeshes; i++)
+    for (int i = 0; i < scene->mNumMeshes; i++)
         cnt += scene->mMeshes[i]->mNumVertices;
     return cnt;
 }
@@ -22,7 +22,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
 
     auto &material = materials[mesh->mMaterialIndex];
     int offset = faces.size();
-    for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
+    for (int j = 0; j < mesh->mNumFaces; j++) {
         aiFace &face0 = mesh->mFaces[j];
 
         // Apply transformation to vertices
@@ -55,7 +55,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
 
         float totalArea = 0.0f;
 
-        for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
+        for (int j = 0; j < mesh->mNumFaces; j++) {
             auto &face = meshFaces[j];
 
             vec3 centroid = (face.v[0] + face.v[1] + face.v[2]) / 3.0f;
@@ -79,7 +79,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
             lightObject.powerDensity = glm::length(emission) * pow(totalArea, powerAlpha-1);
             std::vector<float> faceWeights;
             faceWeights.resize(lightObject.lightFaces.size());
-            for (unsigned int j = 0; j < lightObject.lightFaces.size(); j++) {
+            for (int j = 0; j < lightObject.lightFaces.size(); j++) {
                 LightFace &lightFace = lightObject.lightFaces[j];
                 lightFace.power *= lightObject.powerDensity;
                 faceWeights[j] = lightFace.power;
@@ -101,32 +101,32 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
 void Model::processNode(aiNode *node, const aiScene *scene, const glm::mat4 &parentTransform) {
     glm::mat4 nodeTransform = parentTransform * aiMatrix4x4ToGlm(node->mTransformation);
 
-    for (unsigned int i = 0; i < node->mNumMeshes; i++) {
+    for (int i = 0; i < node->mNumMeshes; i++) {
         aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
         processMesh(mesh, nodeTransform);
     }
 
-    for (unsigned int i = 0; i < node->mNumChildren; i++) {
+    for (int i = 0; i < node->mNumChildren; i++) {
         processNode(node->mChildren[i], scene, nodeTransform);
     }
 }
 
-void Model::processMaterial(std::string model_folder, const aiScene *scene) {
+void Model::processMaterial(const std::string &model_folder, const aiScene *scene) {
 
     materials.resize(scene->mNumMaterials);
-    for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
+    for (int i = 0; i < scene->mNumMaterials; i++) {
         std::cout << "Loading material " << i << std::endl;
         aiMaterial *material = scene->mMaterials[i];
 
-        for (unsigned int j = 0; j < AI_TEXTURE_TYPE_MAX; j++) {
+        for (int j = 0; j < AI_TEXTURE_TYPE_MAX; j++) {
             aiTextureType textureType = (aiTextureType) j;
             unsigned int numTextures = material->GetTextureCount(textureType);
-            for (unsigned int k = 0; k < numTextures; k++) {
+            for (int k = 0; k < numTextures; k++) {
                 aiString path;
                 if (material->GetTexture(textureType, k, &path) == AI_SUCCESS) {
                     std::cout << "- Texture path (" << textureType << "): " << urlDecode(path.C_Str()) << std::endl;
                 }
-                std::string pathStr = (std::string) model_folder + path.C_Str();
+                std::string pathStr = model_folder + path.C_Str();
 #ifdef WIN32
                 std::replace(pathStr.begin(), pathStr.end(), '/', '\\');
 #else
@@ -176,7 +176,7 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
 }
 
 void Model::checkEmissiveMaterials(const aiScene* scene) {
-    for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
+    for (int i = 0; i < scene->mNumMaterials; i++) {
         aiMaterial* material = scene->mMaterials[i];
         aiColor4D emissiveColor(0.0f,0.0f,0.0f,0.0f);
         if (AI_SUCCESS == material->Get(AI_MATKEY_COLOR_EMISSIVE, emissiveColor)) {
@@ -190,7 +190,7 @@ void Model::checkEmissiveMaterials(const aiScene* scene) {
 }
 
 void checkLightSources(const aiScene* scene) {
-    for (unsigned int i = 0; i < scene->mNumLights; i++) {
+    for (int i = 0; i < scene->mNumLights; i++) {
         aiLight* light = scene->mLights[i];
         std::cout << "Light " << i << " of type " << light->mType << " with color: "
                   << light->mColorDiffuse.r << ", " << light->mColorDiffuse.g << ", " << light->mColorDiffuse.b << std::endl;

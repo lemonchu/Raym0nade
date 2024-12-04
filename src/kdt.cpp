@@ -2,9 +2,7 @@
 #include <iostream>
 #include "kdt.h"
 
-KDT_Node::KDT_Node() {
-    son[0] = son[1] = nullptr;
-}
+KDT_Node::KDT_Node() : faceL(nullptr), faceR(nullptr), son{nullptr, nullptr} {}
 
 template<int axis>
 bool cmp(const Face &A, const Face &B) {

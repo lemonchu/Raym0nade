@@ -48,8 +48,7 @@ int sample(const std::vector<float> &weights, float randomValue) {
 void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model, Generator &gen, float &prob, int &lightIndex) {
     float totalWeight = 0.0f;
     std::vector<float> weights;
-    for (int id = 0; id < model.lightObjects.size(); id++)  {
-        const LightObject &lightObject = model.lightObjects[id];
+    for (const auto & lightObject : model.lightObjects)  {
         vec3 lightDir = normalize(lightObject.center - pos);
         float distance = glm::length(lightObject.center - pos);
         float brdf_pdf = std::max(brdf.pdf(lightDir) + 0.1f, 0.0f);

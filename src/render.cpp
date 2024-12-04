@@ -69,7 +69,7 @@ vec3 sampleRayFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDi
 }
 
 void rayCasting(Model &model, const RenderArgs &args, Image &image) {
-    const unsigned int
+    const int
             width = args.width,
             height = args.height;
     vec3
@@ -80,8 +80,8 @@ void rayCasting(Model &model, const RenderArgs &args, Image &image) {
     const float
             accuracy = args.accuracy,
             exposure = args.exposure;
-    for (unsigned int x = 0; x < width; x++)
-        for (unsigned int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++) {
             float
                     rayX = x - width / 2.0f,
                     rayY = y - height / 2.0f;
@@ -107,7 +107,7 @@ void rayCasting(Model &model, const RenderArgs &args, Image &image) {
 
 void render_d(const Model &model, const RenderArgs &args,
             RenderData &renderData, Image &image, int xL, int xR) {
-    const unsigned int
+    const int
             width = args.width,
             height = args.height;
     const float
@@ -136,7 +136,7 @@ void render_d(const Model &model, const RenderArgs &args,
 
 void render_i(const Model &model, const RenderArgs &args,
             RenderData &renderData, Image &image, int xL, int xR) {
-    const unsigned int
+    const int
             width = args.width,
             height = args.height;
     const float
@@ -164,7 +164,7 @@ void render_i(const Model &model, const RenderArgs &args,
 }
 
 void render_multiThread(Model &model, const RenderArgs &args) {
-    const unsigned int
+    const int
             startTime = clock(),
             width = args.width,
             height = args.height,
@@ -191,6 +191,7 @@ void render_multiThread(Model &model, const RenderArgs &args) {
 
     for (int T = 0; T < spp_direct; T++) {
         std::vector<std::thread> threadPool;
+        threadPool.resize(threads);
         for (int i = 0; i < threads; i++)
             threadPool.emplace_back([&](int index) {
                 render_d(model, args, datas[index], image,
@@ -206,6 +207,7 @@ void render_multiThread(Model &model, const RenderArgs &args) {
 
     for (int T = 0; T < spp_indirect; T++) {
         std::vector<std::thread> threadPool;
+        threadPool.resize(threads);
         for (int i = 0; i < threads; i++)
             threadPool.emplace_back([&](int index) {
                 render_i(model, args, datas[index], image,

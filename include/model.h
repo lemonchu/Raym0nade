@@ -20,7 +20,7 @@ void getHitInfo(const Face& face, const glm::vec3& intersection, const vec3 &inD
 class Model {
 private:
     void processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform);
-    void processMaterial(std::string model_folder, const aiScene *scene);
+    void processMaterial(const std::string &model_folder, const aiScene *scene);
     void processNode(aiNode *node, const aiScene *scene, const glm::mat4 &parentTransform);
 
 public:

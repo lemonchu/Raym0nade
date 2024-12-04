@@ -20,23 +20,23 @@ struct GbufferData {
 
 class Image {
 public:
-    static const unsigned int
+    static const int
             DirectLight = 1,
             IndirectLight = 2,
             DiffuseColor = 4,
             Emission = 8,
             ShowVar = 16;
-    unsigned int width, height;
+    int width, height;
     GbufferData *Gbuffer;
     RadianceData *radiance_d, *radiance_i;
     vec3 *color;
-    Image(unsigned int width, unsigned int height);
+    Image(int width, int height);
 
     void normalizeRadiance();
 
     void filter();
 
-    void shade(unsigned int options);
+    void shade(int options);
 
     void bloom();
 

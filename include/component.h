@@ -14,7 +14,7 @@ struct LightFace {
 struct Generator {
     std::mt19937 mt;
     std::uniform_real_distribution<float> U;
-    Generator(unsigned int seed);
+    explicit Generator(unsigned int seed);
     float operator()();
 };
 

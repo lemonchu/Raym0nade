@@ -30,7 +30,7 @@ void MyConsole::createRenderArgs(const std::string &str) {
 
     vec3 direction, right, up;
     float D, R, U, accuracy, exposure, P_Direct;
-    unsigned int width, height, spp, threads;
+    int width, height, spp, threads;
     std::string savePath;
 
     std::cout << "direction (x,y,z): ";

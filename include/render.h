@@ -7,14 +7,14 @@
 struct RenderArgs {
     vec3 position, direction, up, right;
     float accuracy, exposure, P_Direct; // 胶片距离为 1.0，每个像素的偏移量为 accuracy
-    unsigned int width, height, spp, threads;
+    int width, height, spp, threads;
     std::string savePath;
 };
 
 struct RenderData {
     Generator gen;
     int T_RayAndTexture, C_lightSamples;
-    RenderData(int seed);
+    explicit RenderData(int seed);
 };
 
 void render_multiThread(Model &model, const RenderArgs &args);

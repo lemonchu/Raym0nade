@@ -34,7 +34,7 @@ glm::vec4 ImageData::get(float u, float v) const {
         if (texY < 0) texY += height;
     }
     int pixelIndex = (texY * width + texX) * 4; // 4 channels for RGBA
-    return glm::vec4(
+    return vec4(
             gammaMap[data[pixelIndex]],
             gammaMap[data[pixelIndex + 1]],
             gammaMap[data[pixelIndex + 2]],
@@ -56,8 +56,7 @@ bool ImageData::hasTransparentPart() const {
 Material::Material() : shininess(0.0f), opacity(1.0f),
                        isNameEnabled(false), isShininessEnabled(false), isOpacityEnabled(false),
                        isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false),
-                       isEmissionEnabled(false) {
-}
+                       isEmissionEnabled(false) {}
 
 [[nodiscard]] const ImageData& Material::getImage(int index) const {
     if (index < 0 || index >= AI_TEXTURE_TYPE_MAX + 1) {
@@ -281,8 +280,7 @@ void Material::loadMaterialProperties(const aiMaterial* aiMat) {
 }
 
 glm::vec4 Material::getDiffuseColor(float u, float v) const {
-    if (texture[TextureIdForDiffuseColor].empty()) {
-        return glm::vec4(diffuseColor, 1.0f);
-    }
+    if (texture[TextureIdForDiffuseColor].empty())
+        return vec4(diffuseColor, 1.0f);
     return texture[TextureIdForDiffuseColor].get(u, v);
 }

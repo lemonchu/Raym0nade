@@ -51,9 +51,9 @@ public:
 
     [[nodiscard]] const ImageData& getImage(int index) const;
 
-    bool loadImageFromDDS(ImageData &imageData, const std::string& filename);
-    bool loadImageFromPNG(ImageData &imageData, const std::string& filename);
-    bool loadImageFromJPG(ImageData &imageData, const std::string& filename);
+    static bool loadImageFromDDS(ImageData &imageData, const std::string& filename);
+    static bool loadImageFromPNG(ImageData &imageData, const std::string& filename);
+    static bool loadImageFromJPG(ImageData &imageData, const std::string& filename);
     void loadImageFromFile(int index, const std::string& filename);
 
     // New method to load material properties

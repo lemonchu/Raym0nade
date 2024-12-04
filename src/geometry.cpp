@@ -1,6 +1,6 @@
 #include "geometry.h"
 
-Box::Box() {}
+Box::Box() = default;
 
 Box::Box(const vec3 &v0, const vec3 &v1) : v0(v0), v1(v1) {}
 

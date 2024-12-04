@@ -3,19 +3,12 @@
 #include <iostream>
 #include "image.h"
 
-RadianceData::RadianceData() {
-    radiance = vec3(0.0f);
-    Var = Spower2 = 0.0f;
-    sampleCount = 0;
-}
+RadianceData::RadianceData() : radiance(vec3(0.0f)), Spower2(0.0f), Var(0.0f), sampleCount(0) {}
 
-GbufferData::GbufferData() {
-    diffuseColor = shapeNormal = surfaceNormal = position = emission = vec3(0.0f);
-    face = nullptr;
-    depth = 0.0f;
-}
+GbufferData::GbufferData() : diffuseColor(vec3(0.0f)), shapeNormal(vec3(0.0f)), surfaceNormal(vec3(0.0f)),
+                             position(vec3(0.0f)), emission(vec3(0.0f)), face(nullptr), depth(0.0f) {}
 
-Image::Image(unsigned int width, unsigned int height) : width(width), height(height) {
+Image::Image(int width, int height) : width(width), height(height) {
     Gbuffer = new GbufferData[width * height];
     radiance_d = new RadianceData[width * height];
     radiance_i = new RadianceData[width * height];
@@ -28,12 +21,12 @@ Image::~Image() {
     delete[] radiance_i;
 }
 
-void filterVar(RadianceData *radiance, unsigned int width, unsigned int height) {
+void filterVar(RadianceData *radiance, int width, int height) {
     static const int fliterRadius = 1;
     static const float h[3] = {0.25, 0.5, 0.25};
     std::vector<float> varBuffer(width * height, 0.0f);
-    for (unsigned int y = 0; y < height; ++y)
-        for (unsigned int x = 0; x < width; ++x)
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
             for (int dy = -fliterRadius; dy <= fliterRadius; ++dy)
                 for (int dx = -fliterRadius; dx <= fliterRadius; ++dx) {
                     int nx = x + dx, ny = y + dy;
@@ -41,7 +34,7 @@ void filterVar(RadianceData *radiance, unsigned int width, unsigned int height) 
                         continue;
                     varBuffer[y * width + nx] += radiance[ny * width + nx].Var * h[dx + fliterRadius] * h[dy + fliterRadius];
                 }
-    for (unsigned int i = 0; i < width * height; ++i)
+    for (int i = 0; i < width * height; ++i)
         radiance[i].Var = varBuffer[i];
 }
 
@@ -71,14 +64,14 @@ float getWeight(const GbufferData &Gp, const GbufferData &Gq, const RadianceData
     return weight;
 }
 
-void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, unsigned int width, unsigned int height, int step) {
+void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, int width, int height, int step) {
 
     static const int filterRadius = 2;
     static const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
     std::vector<vec3> radianceBuffer(width * height, vec3(0.0f, 0.0f, 0.0f));
     std::vector<float> varBuffer(width * height, 0.0f);
-    for (unsigned int y = 0; y < height; ++y)
-        for (unsigned int x = 0; x < width; ++x) {
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
             float weightSum = 0.0f;
             RadianceData &Lp = radiance[y * width + x];
             const GbufferData &Gp = Gbuffer[y * width + x];
@@ -101,13 +94,13 @@ void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, unsigned
             radianceBuffer[y * width + x] /= weightSum;
             varBuffer[y * width + x] /= weightSum * weightSum;
         }
-    for (unsigned int i = 0; i < width * height; ++i) {
+    for (int i = 0; i < width * height; ++i) {
         radiance[i].radiance = radianceBuffer[i];
         radiance[i].Var = varBuffer[i];
     }
 }
 
-void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, unsigned int width, unsigned int height) {
+void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, int width, int height) {
 
     filterRadiance(radiance, Gbuffer, width, height, 1);
     filterRadiance(radiance, Gbuffer, width, height, 2);
@@ -116,8 +109,8 @@ void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, unsigned
     filterRadiance(radiance, Gbuffer, width, height, 16);
 }
 
-void normalize(RadianceData *radiance, unsigned int width, unsigned int height) {
-    for (unsigned int i = 0; i < width * height; ++i) {
+void normalize(RadianceData *radiance, int width, int height) {
+    for (int i = 0; i < width * height; ++i) {
         if (radiance[i].sampleCount == 0)
             continue;
         radiance[i].radiance /= (float) radiance[i].sampleCount;
@@ -139,9 +132,9 @@ void Image::filter() {
     filterRadiance(radiance_i, Gbuffer, width, height);
 }
 
-void Image::shade(unsigned int options) {
+void Image::shade(int options) {
 
-    for (unsigned int i = 0; i < width * height; ++i) {
+    for (int i = 0; i < width * height; ++i) {
         GbufferData &G = Gbuffer[i];
         RadianceData &Rd = radiance_d[i], &Ri = radiance_i[i];
         vec3 radiance = vec3(0.0f);
@@ -192,7 +185,7 @@ void Image::bloom() {
                         col += tempBloomColor[ny * width + nx] * h[ky + 2] * h[kx + 2];
                     }
             }
-        for (unsigned int id = 0; id < width * height; ++id)
+        for (int id = 0; id < width * height; ++id)
             color[id] += bloomColor[id] / 8.0f;
     }
 }
@@ -200,7 +193,7 @@ void Image::bloom() {
 const float gamma = 2.2f;
 
 void Image::gammaCorrection() {
-    for (unsigned int i = 0; i < width * height; ++i) {
+    for (int i = 0; i < width * height; ++i) {
         color[i] = glm::min(glm::max(color[i], vec3(0.0f) ), vec3(1.0f));
         color[i] = glm::pow(color[i], vec3(1.0f / gamma));
     }
@@ -242,15 +235,15 @@ void Image::save(const char *file_name) {
 
     std::vector<png_byte> image_data;
     image_data.resize(width * height * 3);
-    for (unsigned int y = 0; y < height; ++y)
-        for (unsigned int x = 0; x < width; ++x) {
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
             int id = y * width + x;
             png_byte *row = &image_data[id * 3];
             for (int k = 0; k < 3; ++k)
                 row[k] = static_cast<png_byte>(color[id][k] * 255);
         }
 
-    for (unsigned int y = 0; y < height; ++y)
+    for (int y = 0; y < height; ++y)
         png_write_row(png_ptr, &image_data[y * width * 3]);
 
     png_write_end(png_ptr, nullptr);
