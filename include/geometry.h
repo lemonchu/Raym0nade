@@ -2,6 +2,7 @@
 #define GEOMETRY_H
 
 #include <glm/glm.hpp>
+#include <cmath>
 
 using vec2 = glm::vec<2, float>;
 using vec3 = glm::vec<3, float>;

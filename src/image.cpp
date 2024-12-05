@@ -170,12 +170,12 @@ void Image::bloom() {
     }
 }
 
-const float gamma = 2.2f;
+const float GammaFactor = 2.2f;
 
 void Image::gammaCorrection() {
     for (int i = 0; i < width * height; ++i) {
         color[i] = glm::min(glm::max(color[i], vec3(0.0f) ), vec3(1.0f));
-        color[i] = glm::pow(color[i], vec3(1.0f / gamma));
+        color[i] = glm::pow(color[i], vec3(1.0f / GammaFactor));
     }
 }
 

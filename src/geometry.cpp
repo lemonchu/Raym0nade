@@ -6,8 +6,8 @@ Box::Box(const vec3 &v0, const vec3 &v1) : v0(v0), v1(v1) {}
 
 Box operator + (const Box &A, const Box &B) {
     return Box(
-            vec3(std::min(A.v0[0], B.v0[0]), std::min(A.v0[1], B.v0[1]), std::min(A.v0[2], B.v0[2])),
-            vec3(std::max(A.v1[0], B.v1[0]), std::max(A.v1[1], B.v1[1]), std::max(A.v1[2], B.v1[2]))
+            vec3(std::fmin(A.v0[0], B.v0[0]), std::fmin(A.v0[1], B.v0[1]), std::fmin(A.v0[2], B.v0[2])),
+            vec3(std::fmax(A.v1[0], B.v1[0]), std::fmax(A.v1[1], B.v1[1]), std::fmax(A.v1[2], B.v1[2]))
     );
 }
 
@@ -21,11 +21,11 @@ void rayInBox(const Ray &ray, const Box &box, float &tL, float &tR) {
         } else {
             float invD = 1.0f / ray.direction[i];
             if (invD >= 0) {
-                tL = std::max(tL, (box.v0[i] - ray.origin[i]) * invD);
-                tR = std::min(tR, (box.v1[i] - ray.origin[i]) * invD);
+                tL = std::fmax(tL, (box.v0[i] - ray.origin[i]) * invD);
+                tR = std::fmin(tR, (box.v1[i] - ray.origin[i]) * invD);
             } else {
-                tL = std::max(tL, (box.v1[i] - ray.origin[i]) * invD);
-                tR = std::min(tR, (box.v0[i] - ray.origin[i]) * invD);
+                tL = std::fmax(tL, (box.v1[i] - ray.origin[i]) * invD);
+                tR = std::fmin(tR, (box.v0[i] - ray.origin[i]) * invD);
             }
             tR += eps_zero;
             if (tL > tR)

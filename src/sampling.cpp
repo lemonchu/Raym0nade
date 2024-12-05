@@ -1,6 +1,8 @@
 #include "sampling.h"
 
+#ifndef M_PI
 const float M_PI = 3.14159265359f;
+#endif
 
 BRDF::BRDF(const vec3 &inDir, const vec3 &shapeNormal, const vec3 &surfaceNormal) :
         inDir(inDir), shapeNormal(shapeNormal), surfaceNormal(surfaceNormal), roughness(1.0f), max(1.0f) {
