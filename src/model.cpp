@@ -139,6 +139,11 @@ void Model::processMaterial(const std::string &model_folder, const aiScene *scen
         materials[i].loadMaterialProperties(material);
     }
     std::cout << "Materials: " << materials.size() << std::endl;
+
+    // Finalize Python
+    if (Py_IsInitialized()) {
+        Py_Finalize();
+    }
 }
 
 Model::Model() = default;

@@ -120,3 +120,7 @@ __pycache__/
 CMakeLists.txt
 /glm/
 /Documents/
+
+# Model and working files
+bistro/
+Demo

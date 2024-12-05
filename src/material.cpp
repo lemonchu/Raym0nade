@@ -6,6 +6,9 @@
 #include <sstream>
 #include "material.h"
 
+#include <Python.h>
+#include <string>
+
 std::string urlDecode(const std::string &src) {
     std::string decoded;
     char ch;
@@ -23,7 +26,25 @@ std::string urlDecode(const std::string &src) {
     return decoded;
 }
 
-glm::vec4 ImageData::get(float u, float v) const {
+glm::vec3 ImageData::get3(float u, float v) const {
+    int texX = lround(u * width), texY = lround(v * height);
+    if (texX < 0 || texX >= width) {
+        texX %= width;
+        if (texX < 0) texX += width;
+    }
+    if (texY < 0 || texY >= height) {
+        texY %= height;
+        if (texY < 0) texY += height;
+    }
+    int pixelIndex = (texY * width + texX) * 3; // 4 channels for RGBA
+    return {
+            static_cast<double>(data[pixelIndex]) / 255.0f,
+            static_cast<double>(data[pixelIndex + 1]) / 255.0f,
+            static_cast<double>(data[pixelIndex + 2]) / 255.0f
+    };
+}
+
+glm::vec4 ImageData::get4(float u, float v) const {
     int texX = lround(u * width), texY = lround(v * height);
     if (texX < 0 || texX >= width) {
         texX %= width;
@@ -34,12 +55,31 @@ glm::vec4 ImageData::get(float u, float v) const {
         if (texY < 0) texY += height;
     }
     int pixelIndex = (texY * width + texX) * 4; // 4 channels for RGBA
-    return vec4(
-            gammaMap[data[pixelIndex]],
-            gammaMap[data[pixelIndex + 1]],
-            gammaMap[data[pixelIndex + 2]],
-            data[pixelIndex + 3] / 255.0f
-    );
+    return {
+            static_cast<double>(data[pixelIndex]) / 255.0f,
+            static_cast<double>(data[pixelIndex + 1]) / 255.0f,
+            static_cast<double>(data[pixelIndex + 2]) / 255.0f,
+            static_cast<double>(data[pixelIndex + 3]) / 255.0f
+    };
+}
+
+glm::vec4 ImageData::get4_with_gamma(float u, float v) const {
+    int texX = lround(u * width), texY = lround(v * height);
+    if (texX < 0 || texX >= width) {
+        texX %= width;
+        if (texX < 0) texX += width;
+    }
+    if (texY < 0 || texY >= height) {
+        texY %= height;
+        if (texY < 0) texY += height;
+    }
+    int pixelIndex = (texY * width + texX) * 4; // 4 channels for RGBA
+    return {
+            gammaMap[static_cast<int>(data[pixelIndex])],
+            gammaMap[static_cast<int>(data[pixelIndex + 1])],
+            gammaMap[static_cast<int>(data[pixelIndex + 2])],
+            static_cast<double>(data[pixelIndex + 3]) / 255.0f
+    };
 }
 
 bool ImageData::empty() const {
@@ -58,43 +98,84 @@ Material::Material() : shininess(0.0f), opacity(1.0f),
                        isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false),
                        isEmissionEnabled(false) {}
 
-[[nodiscard]] const ImageData& Material::getImage(int index) const {
+[[nodiscard]] const ImageData &Material::getImage(int index) const {
     if (index < 0 || index >= AI_TEXTURE_TYPE_MAX + 1) {
         throw std::out_of_range("Index out of range");
     }
     return texture[index];
 }
 
-bool Material::loadImageFromDDS(ImageData &imageData, const std::string& filename) {
-    FIBITMAP* bitmap = FreeImage_Load(FIF_DDS, filename.c_str(), DDS_DEFAULT);
-    if (!bitmap) {
-        std::cerr << "Error loading DDS file: " << filename << std::endl;
+PyObject *call_dds_to_array(const std::string &filename) {
+    static bool isInitialized = false;
+
+    // Initialize the Python interpreter only once
+    if (!isInitialized) {
+        Py_Initialize();
+        isInitialized = true;
+
+        // Add the scripts directory to the Python path
+        PyObject *sysPath = PySys_GetObject("path");
+        PyObject *path = PyUnicode_DecodeFSDefault("scripts");
+        PyList_Append(sysPath, path);
+        Py_DECREF(path);
+    }
+
+    PyObject *pName = PyUnicode_DecodeFSDefault("dds_to_array");
+    PyObject *pModule = PyImport_Import(pName);
+    Py_DECREF(pName);
+
+    if (pModule != nullptr) {
+        PyObject *pFunc = PyObject_GetAttrString(pModule, "dds_to_array");
+        if (PyCallable_Check(pFunc)) {
+            PyObject *pArgs = PyTuple_Pack(1, PyUnicode_FromString(filename.c_str()));
+            PyObject *pValue = PyObject_CallObject(pFunc, pArgs);
+            Py_DECREF(pArgs);
+            Py_XDECREF(pFunc);
+            Py_DECREF(pModule);
+            return pValue;
+        } else {
+            PyErr_Print();
+            Py_XDECREF(pFunc);
+            Py_DECREF(pModule);
+        }
+    } else {
+        PyErr_Print();
+    }
+
+    return nullptr;
+}
+
+bool Material::loadImageFromDDS(ImageData &imageData, const std::string &filename) {
+    PyObject *pValue = call_dds_to_array(filename);
+
+    if (pValue != nullptr) {
+        PyObject *pWidth = PyTuple_GetItem(pValue, 0);
+        PyObject *pHeight = PyTuple_GetItem(pValue, 1);
+        PyObject *pChannels = PyTuple_GetItem(pValue, 2);
+        PyObject *pData = PyTuple_GetItem(pValue, 3);
+
+        if (pWidth != Py_None && pHeight != Py_None && pChannels != Py_None && pData != Py_None) {
+            imageData.width = PyLong_AsLong(pWidth);
+            imageData.height = PyLong_AsLong(pHeight);
+            imageData.channels = PyLong_AsLong(pChannels);
+
+            Py_buffer view;
+            if (PyObject_GetBuffer(pData, &view, PyBUF_SIMPLE) == 0) {
+                uint8_t *buffer = static_cast<uint8_t *>(view.buf);
+                imageData.data.assign(buffer, buffer + view.len);
+                PyBuffer_Release(&view);
+            }
+        }
+        Py_DECREF(pValue);
+    } else {
+        PyErr_Print();
         return false;
     }
 
-    unsigned int imgWidth = FreeImage_GetWidth(bitmap);
-    unsigned int imgHeight = FreeImage_GetHeight(bitmap);
-    std::cout << "Loading DDS image: " << imgWidth << "x" << imgHeight << std::endl;
-    unsigned int pitch = imgWidth * 4; // Assuming 4 bytes per pixel (RGBA)
-    imageData.data.resize(imgHeight * pitch);
-
-    for (int y = 0; y < imgHeight; y++) {
-        BYTE* bits = FreeImage_GetScanLine(bitmap, y);
-        for (int x = 0; x < imgWidth; x++) {
-            imageData.data[y * pitch + 4 * x + 0] = bits[4 * x + 2]; // Red
-            imageData.data[y * pitch + 4 * x + 1] = bits[4 * x + 1]; // Green
-            imageData.data[y * pitch + 4 * x + 2] = bits[4 * x + 0]; // Blue
-            imageData.data[y * pitch + 4 * x + 3] = bits[4 * x + 3]; // Alpha
-        }
-    }
-    imageData.width = imgWidth;
-    imageData.height = imgHeight;
-
-    FreeImage_Unload(bitmap);
     return true;
 }
 
-bool Material::loadImageFromPNG(ImageData &imageData, const std::string& filename) {
+bool Material::loadImageFromPNG(ImageData &imageData, const std::string &filename) {
 
     std::cout << "Loading image from file: " << filename << std::endl;
 
@@ -162,9 +243,9 @@ bool Material::loadImageFromPNG(ImageData &imageData, const std::string& filenam
     return true;
 }
 
-bool Material::loadImageFromJPG(ImageData &imageData, const std::string& filename) {
+bool Material::loadImageFromJPG(ImageData &imageData, const std::string &filename) {
     // Open JPEG file
-    FILE* jpegFile = fopen(filename.c_str(), "rb");
+    FILE *jpegFile = fopen(filename.c_str(), "rb");
     if (jpegFile == nullptr) {
         std::cerr << "Error opening JPEG file: " << filename << std::endl;
         return false;
@@ -182,7 +263,7 @@ bool Material::loadImageFromJPG(ImageData &imageData, const std::string& filenam
     fseek(jpegFile, 0, SEEK_END);
     unsigned long jpegSize = ftell(jpegFile);
     fseek(jpegFile, 0, SEEK_SET);
-    unsigned char* jpegBuf = (unsigned char*)malloc(jpegSize);
+    unsigned char *jpegBuf = (unsigned char *) malloc(jpegSize);
     if (jpegBuf == nullptr) {
         std::cerr << "Memory allocation failure" << std::endl;
         tjDestroy(tjInstance);
@@ -207,7 +288,8 @@ bool Material::loadImageFromJPG(ImageData &imageData, const std::string& filenam
     imageData.data.resize(imgHeight * pitch);
 
     // Decompress JPEG image to RGB format
-    if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData.data[0], imgWidth, pitch, imgHeight, TJPF_RGB, TJFLAG_FASTDCT) < 0) {
+    if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData.data[0], imgWidth, pitch, imgHeight, TJPF_RGB,
+                      TJFLAG_FASTDCT) < 0) {
         std::cerr << "Error decompressing JPEG image" << std::endl;
         free(jpegBuf);
         tjDestroy(tjInstance);
@@ -223,7 +305,7 @@ bool Material::loadImageFromJPG(ImageData &imageData, const std::string& filenam
     return true;
 }
 
-void Material::loadImageFromFile(int index, const std::string& filename) {
+void Material::loadImageFromFile(int index, const std::string &filename) {
     std::string fileExtension = filename.substr(filename.find_last_of(".") + 1);
     if (fileExtension == "png" || fileExtension == "PNG") {
         loadImageFromPNG(texture[index], filename);
@@ -236,7 +318,7 @@ void Material::loadImageFromFile(int index, const std::string& filename) {
     }
 }
 
-void Material::loadMaterialProperties(const aiMaterial* aiMat) {
+void Material::loadMaterialProperties(const aiMaterial *aiMat) {
     aiString matName;
     if (aiMat->Get(AI_MATKEY_NAME, matName) == AI_SUCCESS) {
         name = matName.C_Str();
@@ -282,5 +364,11 @@ void Material::loadMaterialProperties(const aiMaterial* aiMat) {
 glm::vec4 Material::getDiffuseColor(float u, float v) const {
     if (texture[TextureIdForDiffuseColor].empty())
         return vec4(diffuseColor, 1.0f);
-    return texture[TextureIdForDiffuseColor].get(u, v);
+    return texture[TextureIdForDiffuseColor].get4_with_gamma(u, v);
+}
+
+glm::vec4 Material::getNormal(float u, float v) const {
+    if (texture[aiTextureType_NORMALS].empty())
+        return vec4(0.5f, 0.5f, 1.0f, 0.0f);
+    return texture[aiTextureType_NORMALS].get4(u, v);
 }

@@ -7,6 +7,7 @@
 #include "material.h"
 #include "component.h"
 #include "kdt.h"
+#include <Python.h>
 
 struct HitInfo {
     vec3 shapeNormal, surfaceNormal, emission;
