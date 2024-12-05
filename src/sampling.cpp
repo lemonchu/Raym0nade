@@ -11,7 +11,7 @@ BRDF::BRDF(const vec3 &inDir, const vec3 &shapeNormal, const vec3 &surfaceNormal
 }
 
 float BRDF::pdf(const vec3 &outDir) const {
-    return dot(outDir,surfaceNormal) <= 0.0f ? 0.0f : std::max(dot(outDir, surfaceNormal), 0.0f);
+    return dot(outDir,shapeNormal) <= 0.0f ? 0.0f : std::max(dot(outDir, surfaceNormal), 0.0f);
 }
 
 float BRDF::P_accept(const vec3 &outDir) const {

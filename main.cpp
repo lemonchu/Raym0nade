@@ -1,7 +1,6 @@
 #include <iostream>
 #include "render.h"
 #include "myconsole.h"
-#include <FreeImage.h>
 
 int main() {
 #if defined(__OPTIMIZE__) && !defined(__OPTIMIZE_SIZE__)
@@ -11,7 +10,6 @@ int main() {
 #endif
     MyConsole console;
     std::string opt;
-    FreeImage_Initialise();
     while (true) {
         std::cout << "> ";
         std::getline(std::cin, opt);
@@ -23,6 +21,5 @@ int main() {
         }
         parseCommand(console, opt);
     }
-    FreeImage_DeInitialise();
     return 0;
 }

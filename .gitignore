@@ -110,6 +110,7 @@ CMakeUserPresets.json
 *.lock
 *.sublime-project
 *.sublime-workspace
+*.pdb
 
 # macOS local library
 __pycache__/
@@ -122,5 +123,7 @@ CMakeLists.txt
 /Documents/
 
 # Model and working files
-bistro/
+image/
+output/
+model/
 Demo

@@ -27,6 +27,7 @@ private:
 public:
     std::vector<Material> materials;
     std::vector<Face> faces;
+    std::vector<VertexData> vertexDatas;
     std::vector<LightObject> lightObjects;
     KDT kdt;
     std::string model_path;

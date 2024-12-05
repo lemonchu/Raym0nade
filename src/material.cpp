@@ -5,9 +5,7 @@
 #include <iostream>
 #include <sstream>
 #include "material.h"
-
 #include <Python.h>
-#include <string>
 
 std::string urlDecode(const std::string &src) {
     std::string decoded;
@@ -26,7 +24,8 @@ std::string urlDecode(const std::string &src) {
     return decoded;
 }
 
-glm::vec3 ImageData::get3(float u, float v) const {
+int ImageData::getPixelIndex(float u, float v, int bitDepth) const {
+    v = 1.0f - v;
     int texX = lround(u * width), texY = lround(v * height);
     if (texX < 0 || texX >= width) {
         texX %= width;
@@ -36,49 +35,35 @@ glm::vec3 ImageData::get3(float u, float v) const {
         texY %= height;
         if (texY < 0) texY += height;
     }
-    int pixelIndex = (texY * width + texX) * 3; // 4 channels for RGBA
+    return (texY * width + texX) * bitDepth;
+}
+
+glm::vec3 ImageData::get3(float u, float v) const {
+    int pixelIndex = getPixelIndex(u, v, 3);
     return {
-            static_cast<double>(data[pixelIndex]) / 255.0f,
-            static_cast<double>(data[pixelIndex + 1]) / 255.0f,
-            static_cast<double>(data[pixelIndex + 2]) / 255.0f
+            static_cast<float>(data[pixelIndex]) / 255.0f,
+            static_cast<float>(data[pixelIndex + 1]) / 255.0f,
+            static_cast<float>(data[pixelIndex + 2]) / 255.0f
     };
 }
 
 glm::vec4 ImageData::get4(float u, float v) const {
-    int texX = lround(u * width), texY = lround(v * height);
-    if (texX < 0 || texX >= width) {
-        texX %= width;
-        if (texX < 0) texX += width;
-    }
-    if (texY < 0 || texY >= height) {
-        texY %= height;
-        if (texY < 0) texY += height;
-    }
-    int pixelIndex = (texY * width + texX) * 4; // 4 channels for RGBA
+    int pixelIndex = getPixelIndex(u, v, 4);
     return {
-            static_cast<double>(data[pixelIndex]) / 255.0f,
-            static_cast<double>(data[pixelIndex + 1]) / 255.0f,
-            static_cast<double>(data[pixelIndex + 2]) / 255.0f,
-            static_cast<double>(data[pixelIndex + 3]) / 255.0f
+            static_cast<float>(data[pixelIndex]) / 255.0f,
+            static_cast<float>(data[pixelIndex + 1]) / 255.0f,
+            static_cast<float>(data[pixelIndex + 2]) / 255.0f,
+            static_cast<float>(data[pixelIndex + 3]) / 255.0f
     };
 }
 
 glm::vec4 ImageData::get4_with_gamma(float u, float v) const {
-    int texX = lround(u * width), texY = lround(v * height);
-    if (texX < 0 || texX >= width) {
-        texX %= width;
-        if (texX < 0) texX += width;
-    }
-    if (texY < 0 || texY >= height) {
-        texY %= height;
-        if (texY < 0) texY += height;
-    }
-    int pixelIndex = (texY * width + texX) * 4; // 4 channels for RGBA
+    int pixelIndex = getPixelIndex(u, v, 4); // 4 channels for RGBA
     return {
-            gammaMap[static_cast<int>(data[pixelIndex])],
-            gammaMap[static_cast<int>(data[pixelIndex + 1])],
-            gammaMap[static_cast<int>(data[pixelIndex + 2])],
-            static_cast<double>(data[pixelIndex + 3]) / 255.0f
+            gammaMap[data[pixelIndex]],
+            gammaMap[data[pixelIndex + 1]],
+            gammaMap[data[pixelIndex + 2]],
+            static_cast<float>(data[pixelIndex + 3]) / 255.0f
     };
 }
 
@@ -355,20 +340,20 @@ void Material::loadMaterialProperties(const aiMaterial *aiMat) {
             isEmissionEnabled = true;
     }
 
-    if (texture[TextureIdForDiffuseColor].hasTransparentPart()) {
+    if (texture[aiTextureType_DIFFUSE].hasTransparentPart()) {
         hasTransparentPart = true;
         std::cout << "Material has transparent part" << std::endl;
     }
 }
 
 glm::vec4 Material::getDiffuseColor(float u, float v) const {
-    if (texture[TextureIdForDiffuseColor].empty())
+    if (texture[aiTextureType_DIFFUSE].empty())
         return vec4(diffuseColor, 1.0f);
-    return texture[TextureIdForDiffuseColor].get4_with_gamma(u, v);
+    return texture[aiTextureType_DIFFUSE].get4_with_gamma(u, v);
 }
 
-glm::vec4 Material::getNormal(float u, float v) const {
+glm::vec3 Material::getNormal(float u, float v) const {
     if (texture[aiTextureType_NORMALS].empty())
-        return vec4(0.5f, 0.5f, 1.0f, 0.0f);
-    return texture[aiTextureType_NORMALS].get4(u, v);
+        return vec3(0.0f, 0.0f, 1.0f);
+    return 1.0f - texture[aiTextureType_NORMALS].get3(u, v) * 2.0f;
 }

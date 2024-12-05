@@ -35,9 +35,17 @@ public:
     LightObject();
 };
 
+struct VertexData {
+    vec2 uv;
+    vec3 normal;
+
+    VertexData();
+    VertexData(const vec2 &uv, const vec3 &normal);
+};
+
 struct Face {
     vec3 v[3];
-    vec2 uv[3];
+    VertexData *data[3];
     Material *material;
     LightObject *lightObject;
 

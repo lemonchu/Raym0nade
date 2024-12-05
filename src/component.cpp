@@ -24,6 +24,10 @@ int RandomDistribution::operator()(Generator &gen) const {
 
 LightObject::LightObject() : center(glm::vec3(0)), color(glm::vec3(0)), power(0) {}
 
+VertexData::VertexData() {}
+
+VertexData::VertexData(const vec2 &uv, const vec3 &normal) : uv(uv), normal(normal) {}
+
 vec3 Face::center() const {
     return (v[0] + v[1] + v[2]) / 3.0f;
 }
