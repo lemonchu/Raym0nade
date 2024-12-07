@@ -108,6 +108,10 @@ void normalize(RadianceData &radiance, int spp) {
     radiance.Var -= dot(radiance.radiance, radiance.radiance);
     if (radiance.Var < 0.0f)
         radiance.Var = 0.0f;
+    if (isinf(radiance.radiance.x) || isinf(radiance.radiance.y) || isinf(radiance.radiance.z)) {
+        std::cout << "Inf detected." << std::endl;
+        radiance.radiance = vec3(0.0f);
+    }
 }
 
 void renderPixel(const Model &model, const RenderArgs &args,
@@ -169,6 +173,8 @@ void render_multiThread(Model &model, const RenderArgs &args) {
             width = args.width,
             height = args.height,
             threads = args.threads;
+    const vec3 position = args.position;
+    const float exposure = args.exposure;
 
     std::cout << "Rendering started with " << threads << " threads." << std::endl;
 
@@ -177,8 +183,12 @@ void render_multiThread(Model &model, const RenderArgs &args) {
 
     std::cout << "Ray casting completed. (" << clock()-startTime << " ms)"<< std::endl;
 
-    image.shade(args.position, Image::DiffuseColor);
+    image.shade(position, exposure, Image::DiffuseColor);
     image.save((args.savePath+"(DiffuseColor).png").c_str());
+    image.shade(position, exposure, Image::shapeNormal);
+    image.save((args.savePath+"(shapeNormal).png").c_str());
+    image.shade(position, exposure, Image::surfaceNormal);
+    image.save((args.savePath+"(surfaceNormal).png").c_str());
 
     std::atomic<int> renderedPixels(0);
     std::vector<RenderData> datas;
@@ -208,18 +218,19 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     std::cout << "Ray intersection & Texture query time: " << T_ray << " ms*thread." << std::endl;
     std::cout << "Direct light samples: " << C_lightSamples << std::endl;
 
-    image.shade(args.position, Image::DirectLight);
+
+    image.shade(position, exposure, Image::DirectLight);
     image.save((args.savePath+"(DirectLight).png").c_str());
-    image.shade(args.position, Image::IndirectLight);
+    image.shade(position, exposure, Image::IndirectLight);
     image.save((args.savePath+"(IndirectLight).png").c_str());
-    image.shade(args.position, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
+    image.shade(position, exposure, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
     image.save((args.savePath+"(raw).png").c_str());
     image.filter();
-    image.shade(args.position, Image::DirectLight);
+    image.shade(position, exposure, Image::DirectLight);
     image.save((args.savePath+"(DirectLight.filtered).png").c_str());
-    image.shade(args.position, Image::IndirectLight);
+    image.shade(position, exposure, Image::IndirectLight);
     image.save((args.savePath+"(IndirectLight.filtered).png").c_str());
-    image.shade(args.position, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
+    image.shade(position, exposure, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
     image.save((args.savePath+"(filtered).png").c_str());
 
     std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;

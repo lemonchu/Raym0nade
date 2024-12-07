@@ -23,7 +23,9 @@ public:
             DirectLight = 1,
             IndirectLight = 2,
             DiffuseColor = 4,
-            Emission = 8;
+            Emission = 8,
+            shapeNormal = 16,
+            surfaceNormal = 32;
     int width, height;
     GbufferData *Gbuffer;
     RadianceData *radiance_d, *radiance_i;
@@ -32,7 +34,7 @@ public:
 
     void filter();
 
-    void shade(const vec3 &position, int options);
+    void shade(const vec3 &position, float exposure, int options);
 
     void bloom();
 

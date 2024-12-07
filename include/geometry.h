@@ -8,6 +8,8 @@ using vec2 = glm::vec<2, float>;
 using vec3 = glm::vec<3, float>;
 using vec4 = glm::vec<4, float>;
 
+bool isnan(vec3 v);
+
 struct Ray {
     vec3 origin, direction;
 };

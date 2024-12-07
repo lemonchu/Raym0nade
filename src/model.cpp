@@ -112,6 +112,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
             lightObject.center /= lightObject.power;
 
             std::cout << "Light object with power: " << lightObject.power
+                      << ", power density: " << lightObject.powerDensity
                       << ", color:" << lightObject.color.x << ", " << lightObject.color.y << ", " << lightObject.color.z
                       << ", position:" << lightObject.center.x << ", " << lightObject.center.y << ", "
                       << lightObject.center.z << std::endl;
@@ -238,6 +239,10 @@ bool TransparentTest(const Ray &ray, const HitRecord &hit) {
     return diffuseColor[3] == 0.0f;
 }
 
+void reverseCheck(vec3 &v, const vec3 &Dir) {
+    if (dot(v, Dir) < 0.0f)
+        v *= -1.0f;
+}
 
 void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, HitInfo &hitInfo) {
     const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
@@ -246,39 +251,46 @@ void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, H
             baryCoords[0] * face.data[0]->uv
             + baryCoords[1] * face.data[1]->uv
             + baryCoords[2] * face.data[2]->uv;
+
     hitInfo.diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
+
     vec3 edge1 = face.v[1] - face.v[0];
     vec3 edge2 = face.v[2] - face.v[0];
     hitInfo.shapeNormal = normalize(cross(edge1, edge2));
-    const vec3 &normalV0 = face.data[0]->normal;
-    const vec3 &normalV1 = face.data[1]->normal;
-    const vec3 &normalV2 = face.data[2]->normal;
+    reverseCheck(hitInfo.shapeNormal, -inDir);
+
+    vec3 normalV0 = face.data[0]->normal;
+    vec3 normalV1 = face.data[1]->normal;
+    vec3 normalV2 = face.data[2]->normal;
+    reverseCheck(normalV0, hitInfo.shapeNormal);
+    reverseCheck(normalV1, hitInfo.shapeNormal);
+    reverseCheck(normalV2, hitInfo.shapeNormal);
     static const float threshold = 0.8f;
     hitInfo.surfaceNormal = normalize(
             baryCoords[0] * (dot(normalV0, hitInfo.shapeNormal) > threshold ? normalV0 : hitInfo.shapeNormal)
             + baryCoords[1] * (dot(normalV1, hitInfo.shapeNormal) > threshold ? normalV1 : hitInfo.shapeNormal)
             + baryCoords[2] * (dot(normalV2, hitInfo.shapeNormal) > threshold ? normalV2 : hitInfo.shapeNormal)
     );
-    if (isnan(hitInfo.surfaceNormal.x) || isnan(hitInfo.surfaceNormal.y) || isnan(hitInfo.surfaceNormal.z))
+
+    vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv;
+    vec2 deltaUV2 = face.data[2]->uv - face.data[0]->uv;
+    float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+    vec3 tangent = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
+    vec3 bitangent = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
+    tangent = normalize(tangent - hitInfo.shapeNormal * dot(hitInfo.shapeNormal, tangent));
+    bitangent = normalize(bitangent - hitInfo.shapeNormal * dot(hitInfo.shapeNormal, bitangent) - tangent * dot(tangent, bitangent));
+    vec3 normalMap = material.getNormal(texUV[0], texUV[1]);
+    normalMap.z = 1.0f;
+    hitInfo.surfaceNormal = normalize(
+            tangent * normalMap.x
+            + bitangent * normalMap.y
+            + hitInfo.surfaceNormal * normalMap.z
+    );
+    if (isnan(hitInfo.surfaceNormal))
         hitInfo.surfaceNormal = hitInfo.shapeNormal;
-    /*if (abs(deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y) > eps_zero) {
-        vec3 tangent, bitangent;
-        tangent = normalize(edge1 * deltaUV2.y - edge2 * deltaUV1.y);
-        bitangent = normalize(edge2 * deltaUV1.x - edge1 * deltaUV2.x);
-        vec3 normalMap = material.getNormal(texUV[0], texUV[1]);
-        hitInfo.surfaceNormal = normalize(
-                tangent * normalMap.x
-                + bitangent * normalMap.y
-                + hitInfo.surfaceNormal * normalMap.z
-        );
-    }*/
-    if (dot(hitInfo.shapeNormal, inDir) > 0.0f) {
-        hitInfo.shapeNormal *= -1.0f;
-        hitInfo.surfaceNormal *= -1.0f;
-    }
     hitInfo.emission = (face.lightObject) ?
-            face.lightObject->color * face.lightObject->powerDensity :
-            vec3(0.0f);
+            material.getEmissiveColor(texUV[0], texUV[1]) * face.lightObject->powerDensity
+            : vec3(0.0f);
 }
 
 const int maxRayDepth_hit = 8;

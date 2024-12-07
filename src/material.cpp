@@ -69,7 +69,7 @@ vec4 get4(const std::vector<uint8_t> &data, int index) {
 vec4 ImageData::get4(float u, float v, bool gammaFlag) const {
     v = 1.0f - v;
     float x = u * width, y = v * height;
-    int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
+    int x0 = floor(x), y0 = floor(y);
     float dx = x - x0, dy = y - y0;
     _mod(x0, width);
     _mod(y0, height);
@@ -80,13 +80,14 @@ vec4 ImageData::get4(float u, float v, bool gammaFlag) const {
     vec4 c11 = ::get4(data, (y1 * width + x1) * 4);
     vec4 c0 = c00 * (1.0f - dx) + c01 * dx;
     vec4 c1 = c10 * (1.0f - dx) + c11 * dx;
-    vec4 c = c0 * (1.0f - dy) + c1 * dy;
+    vec4 c = (c0 * (1.0f - dy) + c1 * dy) / 255.0f;
+    static const float gamma = 2.2f;
     return (gammaFlag) ? vec4(
-            gammaMap[static_cast<int>(c[0])],
-            gammaMap[static_cast<int>(c[1])],
-            gammaMap[static_cast<int>(c[2])],
-            c[3] / 255.0f
-    ) : c / 255.0f;
+            pow(c[0], gamma),
+            pow(c[1], gamma),
+            pow(c[2], gamma),
+            c[3]
+    ) : c;
 }
 
 bool ImageData::empty() const {
@@ -377,7 +378,7 @@ vec4 Material::getDiffuseColor(float u, float v) const {
 vec3 Material::getNormal(float u, float v) const {
     if (texture[aiTextureType_NORMALS].empty())
         return vec3(0.0f, 0.0f, 1.0f);
-    return 1.0f - texture[aiTextureType_NORMALS].get3(u, v) * 2.0f;
+    return texture[aiTextureType_NORMALS].get3(u, v) * 2.0f - 1.0f;
 }
 
 vec3 Material::getEmissiveColor(float u, float v) const {

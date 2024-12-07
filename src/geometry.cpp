@@ -1,5 +1,10 @@
 #include "geometry.h"
 
+bool isnan(vec3 v) {
+    return std::isnan(v.x) || std::isnan(v.y) || std::isnan(v.z);
+}
+
+
 Box::Box() = default;
 
 Box::Box(const vec3 &v0, const vec3 &v1) : v0(v0), v1(v1) {}
@@ -60,20 +65,12 @@ float RayTriangleIntersection(const Ray& ray, const vec3 &v0, const vec3 &v1, co
     return f * dot(edge2, q);
 }
 
-vec3 barycentric(const vec3& A, const vec3& B, const vec3& C, const vec3& P) {
-    vec3 v0 = B - A;
-    vec3 v1 = C - A;
-    vec3 v2 = P - A;
-    float d00 = dot(v0, v0);
-    float d01 = dot(v0, v1);
-    float d11 = dot(v1, v1);
-    float d20 = dot(v2, v0);
-    float d21 = dot(v2, v1);
-    float denom = d00 * d11 - d01 * d01;
-    float v = (d11 * d20 - d01 * d21) / denom;
-    float w = (d00 * d21 - d01 * d20) / denom;
-    float u = 1.0f - v - w;
-    return vec3(u, v, w);
+vec3 barycentric(const vec3& v0, const vec3& v1, const vec3& v2, const vec3& P) {
+    vec3 v0P = P - v0, v01 = v1 - v0, v02 = v2 - v0;
+    float area = length(cross(v01, v02));
+    float alpha = length(cross(v0P, v02)) / area;
+    float beta = length(cross(v01, v0P)) / area;
+    return vec3(1.0f - alpha - beta, alpha, beta);
 }
 
 void getTangentSpace(const vec3 &normal, vec3 &tangent, vec3 &bitangent) {
