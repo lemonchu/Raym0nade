@@ -32,7 +32,7 @@ public:
 
     void filter();
 
-    void shade(const Model &model, const vec3 &position, int options);
+    void shade(const vec3 &position, int options);
 
     void bloom();
 

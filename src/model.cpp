@@ -16,8 +16,6 @@ glm::mat4 aiMatrix4x4ToGlm(const aiMatrix4x4 &from) {
     return to;
 }
 
-const float powerAlpha = 0.25f;
-
 void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
 
     unsigned int offset = vertexDatas.size();
@@ -71,32 +69,35 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         lightObjects.emplace_back();
         auto &lightObject = lightObjects.back();
 
-        vec3 emission = material.emission;
-        lightObject.color = glm::normalize(emission);
-
-        float totalArea = 0.0f;
+        float totalPower = 0.0f;
+        vec3 color = vec3(0.0f);
 
         for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
             auto &face = meshFaces[j];
 
             vec3 centroid = (face.v[0] + face.v[1] + face.v[2]) / 3.0f;
             vec2 uv = (face.data[0]->uv + face.data[1]->uv + face.data[2]->uv) / 3.0f;
-            vec4 textureColor = material.getImage(aiTextureType_EMISSIVE).get4(uv[0], uv[1]);
-            float colorPower = glm::length(vec3(textureColor[0], textureColor[1], textureColor[2]));
+            vec3 textureColor = material.getEmissiveColor(uv[0], uv[1]);
 
+            float colorPower = glm::length(textureColor);
             if (colorPower == 0.0f)
                 continue;
-
-            float area = glm::length(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0])) / 2.0f;
-            vec3 normal = normalize(face.data[0]->normal + face.data[1]->normal + face.data[2]->normal);
-            lightObject.lightFaces.emplace_back(centroid, normal, area);
-            totalArea += area;
+            vec3 normal = cross(face.v[1] - face.v[0], face.v[2] - face.v[0]);
+            float area = length(normal) / 2.0f;
+            if (area < eps_zero)
+                continue;
+            normal = normalize(normal);
+            color += textureColor * area;
+            totalPower += area * colorPower;
+            lightObject.lightFaces.emplace_back(centroid, normal, area * colorPower);
             face.lightObject = &lightObject;
         }
         if (lightObject.lightFaces.empty()) {
             lightObjects.pop_back();
         } else {
-            lightObject.powerDensity = glm::length(emission) * pow(totalArea, powerAlpha-1);
+            static const float powerAlpha = 0.75f;
+            lightObject.powerDensity = pow(totalPower, powerAlpha-1);
+            lightObject.color = normalize(color);
             std::vector<float> faceWeights;
             faceWeights.resize(lightObject.lightFaces.size());
             for (unsigned int j = 0; j < lightObject.lightFaces.size(); j++) {
@@ -174,8 +175,7 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
     model_path = model_folder + model_name;
     const aiScene* scene = importer.ReadFile(model_path.c_str(),
                                              aiProcess_Triangulate |
-                                             aiProcess_JoinIdenticalVertices |
-                                             aiProcess_ValidateDataStructure);
+                                             aiProcess_JoinIdenticalVertices);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
@@ -250,18 +250,18 @@ void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, H
     vec3 edge1 = face.v[1] - face.v[0];
     vec3 edge2 = face.v[2] - face.v[0];
     hitInfo.shapeNormal = normalize(cross(edge1, edge2));
-    vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv;
-    vec2 deltaUV2 = face.data[2]->uv - face.data[0]->uv;
     const vec3 &normalV0 = face.data[0]->normal;
     const vec3 &normalV1 = face.data[1]->normal;
     const vec3 &normalV2 = face.data[2]->normal;
-    static const float threshold = 0.0f;
+    static const float threshold = 0.8f;
     hitInfo.surfaceNormal = normalize(
             baryCoords[0] * (dot(normalV0, hitInfo.shapeNormal) > threshold ? normalV0 : hitInfo.shapeNormal)
             + baryCoords[1] * (dot(normalV1, hitInfo.shapeNormal) > threshold ? normalV1 : hitInfo.shapeNormal)
             + baryCoords[2] * (dot(normalV2, hitInfo.shapeNormal) > threshold ? normalV2 : hitInfo.shapeNormal)
     );
-    if (abs(deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y) > eps_zero) {
+    if (isnan(hitInfo.surfaceNormal.x) || isnan(hitInfo.surfaceNormal.y) || isnan(hitInfo.surfaceNormal.z))
+        hitInfo.surfaceNormal = hitInfo.shapeNormal;
+    /*if (abs(deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y) > eps_zero) {
         vec3 tangent, bitangent;
         tangent = normalize(edge1 * deltaUV2.y - edge2 * deltaUV1.y);
         bitangent = normalize(edge2 * deltaUV1.x - edge1 * deltaUV2.x);
@@ -271,13 +271,7 @@ void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, H
                 + bitangent * normalMap.y
                 + hitInfo.surfaceNormal * normalMap.z
         );
-        /*if (rand() % 20000 == 0) {
-            std::cout << normalMap.x << ", " << normalMap.y << ", " << normalMap.z << std::endl;
-            std::cout << hitInfo.shapeNormal.x << ", " << hitInfo.shapeNormal.y << ", " << hitInfo.shapeNormal.z << std::endl;
-            std::cout << hitInfo.surfaceNormal.x << ", " << hitInfo.surfaceNormal.y << ", " << hitInfo.surfaceNormal.z << std::endl;
-            std::cout << std::endl;
-        }*/
-    }
+    }*/
     if (dot(hitInfo.shapeNormal, inDir) > 0.0f) {
         hitInfo.shapeNormal *= -1.0f;
         hitInfo.surfaceNormal *= -1.0f;

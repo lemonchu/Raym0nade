@@ -17,8 +17,7 @@ public:
     ImageData() : width(0), height(0), channels(0) {}
 
     [[nodiscard]] glm::vec3 get3(float u, float v) const;
-    [[nodiscard]] glm::vec4 get4(float u, float v) const;
-    [[nodiscard]] glm::vec4 get4_with_gamma(float u, float v) const;
+    [[nodiscard]] glm::vec4 get4(float u, float v, bool gammaFlag) const;
     [[nodiscard]] bool empty() const;
     [[nodiscard]] bool hasTransparentPart() const;
 };
@@ -59,6 +58,7 @@ public:
     void loadMaterialProperties(const aiMaterial* aiMat);
     [[nodiscard]] vec4 getDiffuseColor(float u, float v) const;
     [[nodiscard]] vec3 getNormal(float u, float v) const;
+    [[nodiscard]] vec3 getEmissiveColor(float u, float v) const;
 };
 
 #endif // MATERIAL_H

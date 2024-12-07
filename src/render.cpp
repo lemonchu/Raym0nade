@@ -177,7 +177,7 @@ void render_multiThread(Model &model, const RenderArgs &args) {
 
     std::cout << "Ray casting completed. (" << clock()-startTime << " ms)"<< std::endl;
 
-    image.shade(model, args.position, Image::DiffuseColor);
+    image.shade(args.position, Image::DiffuseColor);
     image.save((args.savePath+"(DiffuseColor).png").c_str());
 
     std::atomic<int> renderedPixels(0);
@@ -208,18 +208,18 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     std::cout << "Ray intersection & Texture query time: " << T_ray << " ms*thread." << std::endl;
     std::cout << "Direct light samples: " << C_lightSamples << std::endl;
 
-    image.shade(model, args.position, Image::DirectLight);
+    image.shade(args.position, Image::DirectLight);
     image.save((args.savePath+"(DirectLight).png").c_str());
-    image.shade(model, args.position, Image::IndirectLight);
+    image.shade(args.position, Image::IndirectLight);
     image.save((args.savePath+"(IndirectLight).png").c_str());
-    image.shade(model, args.position, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
+    image.shade(args.position, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
     image.save((args.savePath+"(raw).png").c_str());
     image.filter();
-    image.shade(model, args.position, Image::DirectLight);
+    image.shade(args.position, Image::DirectLight);
     image.save((args.savePath+"(DirectLight.filtered).png").c_str());
-    image.shade(model, args.position, Image::IndirectLight);
+    image.shade(args.position, Image::IndirectLight);
     image.save((args.savePath+"(IndirectLight.filtered).png").c_str());
-    image.shade(model, args.position, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
+    image.shade(args.position, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
     image.save((args.savePath+"(filtered).png").c_str());
 
     std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;

@@ -112,7 +112,7 @@ void Image::filter() {
     filterRadiance(radiance_i, Gbuffer, width, height);
 }
 
-void Image::shade(const Model &model, const vec3 &position, int options) {
+void Image::shade(const vec3 &position, int options) {
     HitInfo hitInfo;
     for (int i = 0; i < width * height; ++i) {
         GbufferData &G = Gbuffer[i];

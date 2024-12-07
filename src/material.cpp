@@ -24,47 +24,69 @@ std::string urlDecode(const std::string &src) {
     return decoded;
 }
 
-int ImageData::getPixelIndex(float u, float v, int bitDepth) const {
+void _mod(int &x, int m) {
+    if (x < 0 || x >= m) {
+        x %= m;
+        if (x < 0) x += m;
+    }
+}
+
+vec3 get3(const std::vector<uint8_t> &data, int index) {
+    return {
+            static_cast<float>(data[index]),
+            static_cast<float>(data[index + 1]),
+            static_cast<float>(data[index + 2])
+    };
+}
+
+vec3 ImageData::get3(float u, float v) const {
     v = 1.0f - v;
-    int texX = lround(u * width), texY = lround(v * height);
-    if (texX < 0 || texX >= width) {
-        texX %= width;
-        if (texX < 0) texX += width;
-    }
-    if (texY < 0 || texY >= height) {
-        texY %= height;
-        if (texY < 0) texY += height;
-    }
-    return (texY * width + texX) * bitDepth;
+    float x = u * width, y = v * height;
+    int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
+    float dx = x - x0, dy = y - y0;
+    _mod(x0, width);
+    _mod(y0, height);
+    int x1 = (x0 + 1) % width, y1 = (y0 + 1) % height;
+    vec3 c00 = ::get3(data, (y0 * width + x0) * 3);
+    vec3 c01 = ::get3(data, (y0 * width + x1) * 3);
+    vec3 c10 = ::get3(data, (y1 * width + x0) * 3);
+    vec3 c11 = ::get3(data, (y1 * width + x1) * 3);
+    vec3 c0 = c00 * (1.0f - dx) + c01 * dx;
+    vec3 c1 = c10 * (1.0f - dx) + c11 * dx;
+    vec3 c = c0 * (1.0f - dy) + c1 * dy;
+    return c / 255.0f;
 }
 
-glm::vec3 ImageData::get3(float u, float v) const {
-    int pixelIndex = getPixelIndex(u, v, 3);
+vec4 get4(const std::vector<uint8_t> &data, int index) {
     return {
-            static_cast<float>(data[pixelIndex]) / 255.0f,
-            static_cast<float>(data[pixelIndex + 1]) / 255.0f,
-            static_cast<float>(data[pixelIndex + 2]) / 255.0f
+            static_cast<float>(data[index]),
+            static_cast<float>(data[index + 1]),
+            static_cast<float>(data[index + 2]),
+            static_cast<float>(data[index + 3])
     };
 }
 
-glm::vec4 ImageData::get4(float u, float v) const {
-    int pixelIndex = getPixelIndex(u, v, 4);
-    return {
-            static_cast<float>(data[pixelIndex]) / 255.0f,
-            static_cast<float>(data[pixelIndex + 1]) / 255.0f,
-            static_cast<float>(data[pixelIndex + 2]) / 255.0f,
-            static_cast<float>(data[pixelIndex + 3]) / 255.0f
-    };
-}
-
-glm::vec4 ImageData::get4_with_gamma(float u, float v) const {
-    int pixelIndex = getPixelIndex(u, v, 4); // 4 channels for RGBA
-    return {
-            gammaMap[data[pixelIndex]],
-            gammaMap[data[pixelIndex + 1]],
-            gammaMap[data[pixelIndex + 2]],
-            static_cast<float>(data[pixelIndex + 3]) / 255.0f
-    };
+vec4 ImageData::get4(float u, float v, bool gammaFlag) const {
+    v = 1.0f - v;
+    float x = u * width, y = v * height;
+    int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
+    float dx = x - x0, dy = y - y0;
+    _mod(x0, width);
+    _mod(y0, height);
+    int x1 = (x0 + 1) % width, y1 = (y0 + 1) % height;
+    vec4 c00 = ::get4(data, (y0 * width + x0) * 4);
+    vec4 c01 = ::get4(data, (y0 * width + x1) * 4);
+    vec4 c10 = ::get4(data, (y1 * width + x0) * 4);
+    vec4 c11 = ::get4(data, (y1 * width + x1) * 4);
+    vec4 c0 = c00 * (1.0f - dx) + c01 * dx;
+    vec4 c1 = c10 * (1.0f - dx) + c11 * dx;
+    vec4 c = c0 * (1.0f - dy) + c1 * dy;
+    return (gammaFlag) ? vec4(
+            gammaMap[static_cast<int>(c[0])],
+            gammaMap[static_cast<int>(c[1])],
+            gammaMap[static_cast<int>(c[2])],
+            c[3] / 255.0f
+    ) : c / 255.0f;
 }
 
 bool ImageData::empty() const {
@@ -346,14 +368,20 @@ void Material::loadMaterialProperties(const aiMaterial *aiMat) {
     }
 }
 
-glm::vec4 Material::getDiffuseColor(float u, float v) const {
+vec4 Material::getDiffuseColor(float u, float v) const {
     if (texture[aiTextureType_DIFFUSE].empty())
         return vec4(diffuseColor, 1.0f);
-    return texture[aiTextureType_DIFFUSE].get4_with_gamma(u, v);
+    return texture[aiTextureType_DIFFUSE].get4(u, v, true);
 }
 
-glm::vec3 Material::getNormal(float u, float v) const {
+vec3 Material::getNormal(float u, float v) const {
     if (texture[aiTextureType_NORMALS].empty())
         return vec3(0.0f, 0.0f, 1.0f);
     return 1.0f - texture[aiTextureType_NORMALS].get3(u, v) * 2.0f;
+}
+
+vec3 Material::getEmissiveColor(float u, float v) const {
+    if (texture[aiTextureType_EMISSIVE].empty())
+        return emission;
+    return texture[aiTextureType_EMISSIVE].get4(u, v, false);
 }
