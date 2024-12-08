@@ -1,4 +1,5 @@
 #include "sampling.h"
+#include "disney/disney.h"
 
 #ifndef M_PI
 const float M_PI = 3.14159265359f;
@@ -8,6 +9,7 @@ BRDF::BRDF(const vec3 &inDir, const vec3 &shapeNormal, const vec3 &surfaceNormal
         inDir(inDir), shapeNormal(shapeNormal), surfaceNormal(surfaceNormal), roughness(1.0f), max(1.0f) {
     getTangentSpaceWithInDir(surfaceNormal, inDir, tangent, bitangent);
     EP_accept = 0.5;
+    worldToTangent = glm::mat3(tangent, bitangent, surfaceNormal);
 }
 
 float BRDF::pdf(const vec3 &outDir) const {

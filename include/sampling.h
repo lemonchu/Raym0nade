@@ -8,8 +8,25 @@
 class BRDF {
 public:
     vec3 inDir, shapeNormal, surfaceNormal, tangent, bitangent;
-    float max, EP_accept, roughness;
+    glm::mat3 worldToTangent;
+    float max, EP_accept;
+    vec3 baseColor;
+    vec3 transmittanceColor;
+
+    float sheen, sheenTint;
+    float clearcoat, clearcoatGloss;
+    float metallic;
+    float specTrans, diffTrans;
+    float flatness;
+    float anisotropic;
+    float relativeIOR;
+    float specularTint;
+    float roughness;
+    float scatterDistance;
+    float ior;
+
     BRDF(const vec3 &inDir, const vec3 &shapeNormal, const vec3 &surfaceNormal);
+
     vec3 sample(Generator &gen, float &P_success) const;
     [[nodiscard]] float pdf(const vec3 &outDir) const;
     [[nodiscard]] float P_accept(const vec3 &outDir) const;
