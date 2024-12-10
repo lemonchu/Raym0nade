@@ -9,15 +9,19 @@ GbufferData::GbufferData() :  shapeNormal(vec3(0.0f)), surfaceNormal(vec3(0.0f))
 
 Image::Image(int width, int height) : width(width), height(height) {
     Gbuffer = new GbufferData[width * height];
-    radiance_d = new RadianceData[width * height];
-    radiance_i = new RadianceData[width * height];
+    radiance_Dd = new RadianceData[width * height];
+    radiance_Ds = new RadianceData[width * height];
+    radiance_Id = new RadianceData[width * height];
+    radiance_Is = new RadianceData[width * height];
     color = new vec3[width * height];
 }
 
 Image::~Image() {
     delete[] Gbuffer;
-    delete[] radiance_d;
-    delete[] radiance_i;
+    delete[] radiance_Dd;
+    delete[] radiance_Ds;
+    delete[] radiance_Id;
+    delete[] radiance_Is;
 }
 
 void filterVar(RadianceData *radiance, int width, int height) {
@@ -109,8 +113,10 @@ void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, int widt
 }
 
 void Image::filter() {
-    filterRadiance(radiance_d, Gbuffer, width, height);
-    filterRadiance(radiance_i, Gbuffer, width, height);
+    filterRadiance(radiance_Dd, Gbuffer, width, height);
+    filterRadiance(radiance_Ds, Gbuffer, width, height);
+    filterRadiance(radiance_Id, Gbuffer, width, height);
+    filterRadiance(radiance_Is, Gbuffer, width, height);
 }
 
 void Image::shade(const vec3 &position, float exposure, int options) {
@@ -129,20 +135,27 @@ void Image::shade(const vec3 &position, float exposure, int options) {
             color[i] = (G.surfaceNormal + vec3(1.0f)) / 2.0f;
             continue;
         }
-        if (options & (DiffuseColor | Emission)) {
+        if (options & (BaseColor | Emission)) {
             const GbufferData &G = Gbuffer[i];
             getHitInfo(*G.face, G.position, normalize(G.position - position), hitInfo);
         }
-        RadianceData &Rd = radiance_d[i], &Ri = radiance_i[i];
-        vec3 radiance = vec3(0.0f);
-        if (options & DirectLight)
-            radiance += Rd.radiance;
-        if (options & IndirectLight)
-            radiance += Ri.radiance;
+        vec3 radiance_d = vec3(0.0f), radiance_s = vec3(0.0f);
+        if (options & DirectLight) {
+            if (options & Diffuse)
+                radiance_d += radiance_Dd[i].radiance;
+            if (options & Specular)
+                radiance_s += radiance_Ds[i].radiance;
+        }
+        if (options & IndirectLight) {
+            if (options & Diffuse)
+                radiance_d += radiance_Id[i].radiance;
+            if (options & Specular)
+                radiance_s += radiance_Is[i].radiance;
+        }
         if (!(options & (DirectLight | IndirectLight)))
-            radiance = vec3(1.0f);
-        vec3 diffuseColor = (options & DiffuseColor) ? hitInfo.diffuseColor : vec3(1.0f);
-        color[i] = diffuseColor * radiance;
+            radiance_d = vec3(1.0f);
+        vec3 diffuseColor = (options & BaseColor) ? hitInfo.baseColor : vec3(1.0f);
+        color[i] = diffuseColor * radiance_d + radiance_s;
         if (options & Emission)
             color[i] += hitInfo.emission * exposure;
     }

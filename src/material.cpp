@@ -101,10 +101,7 @@ bool ImageData::hasTransparentPart() const {
     return false;
 }
 
-Material::Material() : shininess(0.0f), opacity(1.0f),
-                       isNameEnabled(false), isShininessEnabled(false), isOpacityEnabled(false),
-                       isDiffuseColorEnabled(false), isSpecularColorEnabled(false), isAmbientColorEnabled(false),
-                       isEmissionEnabled(false) {}
+Material::Material() : hasTransparentPart(false) {}
 
 [[nodiscard]] const ImageData &Material::getImage(int index) const {
     if (index < 0 || index >= AI_TEXTURE_TYPE_MAX + 1) {
@@ -330,48 +327,46 @@ void Material::loadMaterialProperties(const aiMaterial *aiMat) {
     aiString matName;
     if (aiMat->Get(AI_MATKEY_NAME, matName) == AI_SUCCESS) {
         name = matName.C_Str();
-        isNameEnabled = true;
-    }
-
-    if (aiMat->Get(AI_MATKEY_SHININESS, shininess) == AI_SUCCESS) {
-        isShininessEnabled = true;
-    }
-
-    if (aiMat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS) {
-        isOpacityEnabled = true;
-    }
-
-    aiColor3D color;
-    if (aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, color) == AI_SUCCESS) {
-        diffuseColor = glm::vec3(color.r, color.g, color.b);
-        isDiffuseColorEnabled = true;
-    }
-
-    if (aiMat->Get(AI_MATKEY_COLOR_SPECULAR, color) == AI_SUCCESS) {
-        specularColor = glm::vec3(color.r, color.g, color.b);
-        isSpecularColorEnabled = true;
-    }
-
-    if (aiMat->Get(AI_MATKEY_COLOR_AMBIENT, color) == AI_SUCCESS) {
-        ambientColor = glm::vec3(color.r, color.g, color.b);
-        isAmbientColorEnabled = true;
-    }
-
-    if (aiMat->Get(AI_MATKEY_COLOR_EMISSIVE, color) == AI_SUCCESS) {
-        emission = glm::vec3(color.r, color.g, color.b);
-        if (color.r > 0.0f || color.g > 0.0f || color.b > 0.0f)
-            isEmissionEnabled = true;
     }
 
     if (texture[aiTextureType_DIFFUSE].hasTransparentPart()) {
         hasTransparentPart = true;
         std::cout << "Material has transparent part" << std::endl;
     }
+/*
+    float clearcoat, clearcoatRoughness, specularColor,
+            specular, roughness, specularFactor;
+
+    if (aiMat->Get(AI_MATKEY_CLEARCOAT_FACTOR, clearcoat) != AI_SUCCESS) {
+        std::cerr << "Failed to get clearcoat factor" << std::endl;
+    } else {
+        std::cout << "Clearcoat: " << clearcoat << std::endl;
+    }
+    if (aiMat->Get(AI_MATKEY_CLEARCOAT_ROUGHNESS_FACTOR, clearcoatRoughness) != AI_SUCCESS) {
+        std::cerr << "Failed to get clearcoat roughness factor" << std::endl;
+    } else {
+        std::cout << "Clearcoat roughness: " << clearcoatRoughness << std::endl;
+    }
+    if (aiMat->Get(AI_MATKEY_COLOR_SPECULAR, specularColor) != AI_SUCCESS) {
+        std::cerr << "Failed to get specular color" << std::endl;
+    } else {
+        std::cout << "Specular color: " << specularColor << std::endl;
+    }
+    if (aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness) != AI_SUCCESS) {
+        std::cerr << "Failed to get roughness factor" << std::endl;
+    } else {
+        std::cout << "Roughness: " << roughness << std::endl;
+    }
+    if (aiMat->Get(AI_MATKEY_SPECULAR_FACTOR, specularFactor) != AI_SUCCESS) {
+        std::cerr << "Failed to get specular factor" << std::endl;
+    } else {
+        std::cout << "Specular factor: " << specularFactor << std::endl;
+    }*/
 }
 
 vec4 Material::getDiffuseColor(float u, float v) const {
     if (texture[aiTextureType_DIFFUSE].empty())
-        return vec4(diffuseColor, 1.0f);
+        return vec4(0.5f, 0.5f, 0.5f, 1.0f);
     return texture[aiTextureType_DIFFUSE].get4(u, v, true);
 }
 
@@ -383,6 +378,17 @@ vec3 Material::getNormal(float u, float v) const {
 
 vec3 Material::getEmissiveColor(float u, float v) const {
     if (texture[aiTextureType_EMISSIVE].empty())
-        return emission;
-    return texture[aiTextureType_EMISSIVE].get4(u, v, false);
+        return vec3(0.0f);
+    return texture[aiTextureType_EMISSIVE].get4(u, v, true);
+}
+
+void Material::getSurfaceData(float u, float v, float &rouguness, float &metallic) const {
+    if (texture[aiTextureType_SPECULAR].empty()) {
+        rouguness = 1.0f;
+        metallic = 0.0f;
+        return;
+    }
+    vec4 data = texture[aiTextureType_SPECULAR].get4(u, v, false);
+    rouguness = data[1];
+    metallic = data[2];
 }

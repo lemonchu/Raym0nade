@@ -8,6 +8,10 @@ using vec2 = glm::vec<2, float>;
 using vec3 = glm::vec<3, float>;
 using vec4 = glm::vec<4, float>;
 
+#ifndef M_PI
+const float M_PI = 3.14159265359f;
+#endif
+
 bool isnan(vec3 v);
 
 struct Ray {

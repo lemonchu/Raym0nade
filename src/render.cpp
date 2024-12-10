@@ -15,57 +15,68 @@ const int maxRayDepth = 16;
 vec3 sampleRay(Ray ray, const Model &model, RenderData &renderData, int depth) {
 
     renderData.T_RayAndTexture -= clock();
-    HitInfo info;
-    model.rayHit(ray, info);
+    BRDF brdf(-ray.direction);
+    model.rayHit(ray, brdf.surface);
     renderData.T_RayAndTexture += clock();
 
-    if (info.t == INFINITY)
+    if (brdf.surface.t == INFINITY)
         return vec3(0.0f);
 
-    if (length(info.emission) > 0)
+    if (length(brdf.surface.emission) > 0)
         return vec3(0.0f); // 不再计算直接光照
 
-    vec3 intersection = ray.origin + ray.direction * info.t;
-    BRDF brdf(ray.direction, info.shapeNormal, info.surfaceNormal);
-
+    vec3 intersection = ray.origin + ray.direction * brdf.surface.t;
     if (depth == maxRayDepth || renderData.gen() > P_RR) {
         renderData.C_lightSamples++;
         vec3 light = sampleDirectLight(intersection, brdf, model, renderData.gen);
-        return (vec3)info.diffuseColor * light / ((depth < maxRayDepth) ? (1.0f - P_RR) : 1.0f);
+        return light / ((depth < maxRayDepth) ? (1.0f - P_RR) : 1.0f);
         // RR 停止时，用光源重要性采样计算直接光照
     }
 
-    float sampleFactor;
-    vec3 newDirection = brdf.sample(renderData.gen, sampleFactor);
-    if (sampleFactor == 0.0f)
+    brdf.genTangentSpace();
+    vec3 newDirection, brdfPdf;
+    brdf.sample(renderData.gen, newDirection, brdfPdf);
+    if (newDirection == vec3(0.0f))
         return vec3(0.0f);
     ray = {intersection, newDirection};
-    vec3 inradiance = sampleRay(ray, model, renderData, depth + 1) * sampleFactor / P_RR;
-    return (vec3)info.diffuseColor * inradiance;
+    vec3 inradiance = sampleRay(ray, model, renderData, depth + 1) / P_RR;
+    return brdfPdf * inradiance;
 }
 
-vec3 sampleDirectLightFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDir, const vec3 &emission, const Model &model, RenderData &renderData) {
-
-    if (Gbuffer.face == nullptr || length(emission) > 0)
-        return vec3(0.0f); // 暂不计入直接光照
-
-    BRDF brdf(inDir, Gbuffer.shapeNormal, Gbuffer.surfaceNormal);
-    return sampleDirectLight(Gbuffer.position, brdf, model, renderData.gen);
+void add(RadianceData &radiance, vec3 inradiance) {
+    radiance.radiance += inradiance;
+    radiance.Var += dot(inradiance, inradiance);
 }
 
-vec3 sampleRayFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDir, const vec3 &emission, const Model &model, RenderData &renderData) {
+void sampleDirectLightFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDir, const vec3 &emission, const Model &model,
+                                            RenderData &renderData, RadianceData &radiance_Dd, RadianceData &radiance_Ds) {
 
     if (Gbuffer.face == nullptr || length(emission) > 0)
-        return vec3(0.0f); // 暂不计入直接光照
+        return; // 暂不计入直接光照
 
-    BRDF brdf(inDir, Gbuffer.shapeNormal, Gbuffer.surfaceNormal);
+    BRDF brdf(-inDir);
+    getHitInfo(*Gbuffer.face, Gbuffer.position, inDir, brdf.surface);
+    brdf.genTangentSpace();
+    vec3 light = sampleDirectLight(Gbuffer.position, brdf, model, renderData.gen);
+    add(radiance_Dd, light);
+}
 
-    float sampleFactor;
-    vec3 newDirection = brdf.sample(renderData.gen, sampleFactor);
-    if (sampleFactor == 0.0f)
-        return vec3(0.0f);
+void sampleRayFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDir, const vec3 &emission, const Model &model,
+                                    RenderData &renderData, RadianceData &radiance_Id, RadianceData &radiance_Is) {
+
+    if (Gbuffer.face == nullptr || length(emission) > 0)
+        return; // 暂不计入直接光照
+
+    BRDF brdf(-inDir);
+    getHitInfo(*Gbuffer.face, Gbuffer.position, inDir, brdf.surface);
+    brdf.genTangentSpace();
+    vec3 newDirection, brdfPdf;
+    brdf.sample(renderData.gen, newDirection, brdfPdf);
+    if (newDirection == vec3(0.0f))
+        return;
     Ray ray = {Gbuffer.position, newDirection};
-    return sampleRay(ray, model, renderData, 1) * sampleFactor;
+    vec3 light = sampleRay(ray, model, renderData, 1);
+    add(radiance_Id, light);
 }
 
 void rayCasting(Model &model, const RenderArgs &args, Image &image) {
@@ -102,16 +113,14 @@ void rayCasting(Model &model, const RenderArgs &args, Image &image) {
         }
 }
 
-void normalize(RadianceData &radiance, int spp) {
+void normalize(RadianceData &radiance, float exposure, int spp) {
+    radiance.radiance *= exposure;
+    radiance.Var *= exposure * exposure;
     radiance.radiance /= (float) spp;
     radiance.Var /= (float) spp;
     radiance.Var -= dot(radiance.radiance, radiance.radiance);
     if (radiance.Var < 0.0f)
         radiance.Var = 0.0f;
-    if (isinf(radiance.radiance.x) || isinf(radiance.radiance.y) || isinf(radiance.radiance.z)) {
-        std::cout << "Inf detected." << std::endl;
-        radiance.radiance = vec3(0.0f);
-    }
 }
 
 void renderPixel(const Model &model, const RenderArgs &args,
@@ -125,24 +134,23 @@ void renderPixel(const Model &model, const RenderArgs &args,
     const float
             exposure = args.exposure;
     vec3 aim = normalize(Gbuffer.position - args.position);
-    RadianceData &radiance_d = image.radiance_d[id];
-    RadianceData &radiance_i = image.radiance_i[id];
+    RadianceData
+            &radiance_Dd = image.radiance_Dd[id],
+            &radiance_Ds = image.radiance_Ds[id],
+            &radiance_Id = image.radiance_Id[id],
+            &radiance_Is = image.radiance_Is[id];
     HitInfo hitInfo;
     getHitInfo(*Gbuffer.face, Gbuffer.position, aim, hitInfo);
-    for (int T = 0; T < spp_direct; T++) {
-        vec3 inradiance_d = sampleDirectLightFromFirstIntersection(Gbuffer, aim, hitInfo.emission, model, renderData);
-        inradiance_d *= exposure;
-        radiance_d.radiance += inradiance_d;
-        radiance_d.Var += dot(inradiance_d, inradiance_d);
-    }
-    normalize(radiance_d, spp_direct);
-    for (int T = 0; T < spp_indirect; T++) {
-        vec3 inradiance_i = sampleRayFromFirstIntersection(Gbuffer, aim, hitInfo.emission, model, renderData);
-        inradiance_i *= exposure;
-        radiance_i.radiance += inradiance_i;
-        radiance_i.Var += dot(inradiance_i, inradiance_i);
-    }
-    normalize(radiance_i, spp_indirect);
+    for (int T = 0; T < spp_direct; T++)
+        sampleDirectLightFromFirstIntersection(Gbuffer, aim, hitInfo.emission, model,
+                                               renderData, radiance_Dd, radiance_Ds);
+    normalize(radiance_Dd, exposure, spp_direct);
+    normalize(radiance_Ds, exposure, spp_direct);
+    for (int T = 0; T < spp_indirect; T++)
+        sampleRayFromFirstIntersection(Gbuffer, aim, hitInfo.emission, model,
+                                       renderData, radiance_Id, radiance_Is);
+    normalize(radiance_Id, exposure, spp_indirect);
+    normalize(radiance_Is, exposure, spp_indirect);
 }
 
 void render(const Model &model, const RenderArgs &args,
@@ -183,7 +191,7 @@ void render_multiThread(Model &model, const RenderArgs &args) {
 
     std::cout << "Ray casting completed. (" << clock()-startTime << " ms)"<< std::endl;
 
-    image.shade(position, exposure, Image::DiffuseColor);
+    image.shade(position, exposure, Image::BaseColor);
     image.save((args.savePath+"(DiffuseColor).png").c_str());
     image.shade(position, exposure, Image::shapeNormal);
     image.save((args.savePath+"(shapeNormal).png").c_str());
@@ -219,19 +227,33 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     std::cout << "Direct light samples: " << C_lightSamples << std::endl;
 
 
-    image.shade(position, exposure, Image::DirectLight);
-    image.save((args.savePath+"(DirectLight).png").c_str());
-    image.shade(position, exposure, Image::IndirectLight);
-    image.save((args.savePath+"(IndirectLight).png").c_str());
-    image.shade(position, exposure, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
+    image.shade(position, exposure, Image::DirectLight | Image::Diffuse);
+    image.save((args.savePath+"(Direct_Diffuse).png").c_str());
+    image.shade(position, exposure, Image::DirectLight | Image::Specular);
+    image.save((args.savePath+"(Direct_Specular).png").c_str());
+    image.shade(position, exposure, Image::IndirectLight | Image::Diffuse);
+    image.save((args.savePath+"(Indirect_Diffuse).png").c_str());
+    image.shade(position, exposure, Image::IndirectLight | Image::Specular);
+    image.save((args.savePath+"(Indirect_Specular).png").c_str());
+    image.shade(position, exposure,
+                Image::DirectLight | Image::IndirectLight |
+                Image::Diffuse | Image::Specular |
+                Image::Emission | Image::BaseColor);
     image.save((args.savePath+"(raw).png").c_str());
     image.filter();
-    image.shade(position, exposure, Image::DirectLight);
-    image.save((args.savePath+"(DirectLight.filtered).png").c_str());
-    image.shade(position, exposure, Image::IndirectLight);
-    image.save((args.savePath+"(IndirectLight.filtered).png").c_str());
-    image.shade(position, exposure, Image::DirectLight | Image::IndirectLight | Image::Emission | Image::DiffuseColor);
-    image.save((args.savePath+"(filtered).png").c_str());
+    image.shade(position, exposure, Image::DirectLight | Image::Diffuse);
+    image.save((args.savePath+"(Direct_Diffuse_Filter).png").c_str());
+    image.shade(position, exposure, Image::DirectLight | Image::Specular);
+    image.save((args.savePath+"(Direct_Specular_Filter).png").c_str());
+    image.shade(position, exposure, Image::IndirectLight | Image::Diffuse);
+    image.save((args.savePath+"(Indirect_Diffuse_Filter).png").c_str());
+    image.shade(position, exposure, Image::IndirectLight | Image::Specular);
+    image.save((args.savePath+"(Indirect_Specular_Filter).png").c_str());
+    image.shade(position, exposure,
+                Image::DirectLight | Image::IndirectLight |
+                Image::Diffuse | Image::Specular |
+                Image::Emission | Image::BaseColor);
+    image.save((args.savePath+"(Filter).png").c_str());
 
     std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;
 }

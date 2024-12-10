@@ -30,19 +30,6 @@ public:
     ImageData texture[AI_TEXTURE_TYPE_MAX + 1];
 
     std::string name;
-    float shininess;
-    float opacity;
-    vec3 diffuseColor;
-    vec3 specularColor;
-    vec3 ambientColor;
-    vec3 emission;
-    bool isNameEnabled;
-    bool isShininessEnabled;
-    bool isOpacityEnabled;
-    bool isDiffuseColorEnabled;
-    bool isSpecularColorEnabled;
-    bool isAmbientColorEnabled;
-    bool isEmissionEnabled;
     bool hasTransparentPart;
 
     Material();
@@ -59,6 +46,7 @@ public:
     [[nodiscard]] vec4 getDiffuseColor(float u, float v) const;
     [[nodiscard]] vec3 getNormal(float u, float v) const;
     [[nodiscard]] vec3 getEmissiveColor(float u, float v) const;
+    void getSurfaceData(float u, float v, float &rouguness, float &metallic) const;
 };
 
 #endif // MATERIAL_H

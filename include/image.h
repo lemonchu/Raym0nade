@@ -22,13 +22,15 @@ public:
     static const int
             DirectLight = 1,
             IndirectLight = 2,
-            DiffuseColor = 4,
+            BaseColor = 4,
             Emission = 8,
             shapeNormal = 16,
-            surfaceNormal = 32;
+            surfaceNormal = 32,
+            Diffuse = 64,
+            Specular = 128;
     int width, height;
     GbufferData *Gbuffer;
-    RadianceData *radiance_d, *radiance_i;
+    RadianceData *radiance_Dd, *radiance_Ds, *radiance_Id, *radiance_Is;
     vec3 *color;
     Image(int width, int height);
 

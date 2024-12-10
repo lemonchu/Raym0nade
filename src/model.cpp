@@ -64,7 +64,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         vData[j].normal = normalize(vData[j].normal);
 
     Face *meshFaces = &faces[offset];
-    if (material.isEmissionEnabled && !material.texture[aiTextureType_EMISSIVE].empty()) {
+    if (!material.texture[aiTextureType_EMISSIVE].empty()) {
 
         lightObjects.emplace_back();
         auto &lightObject = lightObjects.back();
@@ -95,7 +95,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         if (lightObject.lightFaces.empty()) {
             lightObjects.pop_back();
         } else {
-            static const float powerAlpha = 0.75f;
+            static const float powerAlpha = 0.125f;
             lightObject.powerDensity = pow(totalPower, powerAlpha-1);
             lightObject.color = normalize(color);
             std::vector<float> faceWeights;
@@ -203,7 +203,7 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
 }
 
 void Model::checkEmissiveMaterials(const aiScene* scene) {
-    for (int i = 0; i < scene->mNumMaterials; i++) {
+    /*for (int i = 0; i < scene->mNumMaterials; i++) {
         aiMaterial* material = scene->mMaterials[i];
         aiColor4D emissiveColor(0.0f,0.0f,0.0f,0.0f);
         if (AI_SUCCESS == material->Get(AI_MATKEY_COLOR_EMISSIVE, emissiveColor)) {
@@ -213,7 +213,7 @@ void Model::checkEmissiveMaterials(const aiScene* scene) {
                           << emissiveColor.r << ", " << emissiveColor.g << ", " << emissiveColor.b << ", " << emissiveColor.a << std::endl;
             }
         }
-    }
+    }*/
 }
 
 void checkLightSources(const aiScene* scene) {
@@ -252,7 +252,7 @@ void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, H
             + baryCoords[1] * face.data[1]->uv
             + baryCoords[2] * face.data[2]->uv;
 
-    hitInfo.diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
+    hitInfo.baseColor = material.getDiffuseColor(texUV[0], texUV[1]);
 
     vec3 edge1 = face.v[1] - face.v[0];
     vec3 edge2 = face.v[2] - face.v[0];
@@ -291,6 +291,7 @@ void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, H
     hitInfo.emission = (face.lightObject) ?
             material.getEmissiveColor(texUV[0], texUV[1]) * face.lightObject->powerDensity
             : vec3(0.0f);
+    material.getSurfaceData(texUV[0], texUV[1], hitInfo.roughness, hitInfo.metallic);
 }
 
 const int maxRayDepth_hit = 8;
@@ -319,7 +320,7 @@ void Model::rayHit(Ray ray, HitInfo &hitInfo) const {
         vec3 intersection = ray.origin + ray.direction * hit.t_max;
         getHitInfo(*hit.face, intersection, ray.direction, hitInfo);
         hitInfo.t = hit.t_max;
-        if (hitInfo.diffuseColor[3] > 0.0f)
+        if (hitInfo.baseColor[3] > 0.0f)
             return;
         hit = HitRecord(hit.t_max + eps_zero, INFINITY);
     }

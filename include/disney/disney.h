@@ -29,7 +29,7 @@ class Generator;
 struct BsdfSample;
 
 // -- BSDF evaluation for next event estimation
-glm::vec3 EvaluateDisney(const BRDF &surface, glm::vec3 v, glm::vec3 l, bool thin, float &forwardPdf, float &reversePdf);
+glm::vec3 EvaluateDisney(const BRDF &surface, glm::vec3 outDir, bool thin, float &forwardPdf, float &reversePdf);
 
 // -- Shaders
 bool SampleDisney(Generator &gen, const BRDF &surface, glm::vec3 v, bool thin, BsdfSample &sample);

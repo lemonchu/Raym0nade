@@ -17,6 +17,7 @@
 #include "disney/disney.h"
 #include "disney/utils.h"
 #include "disney/Fresnel.h"
+#include "geometry.h"
 
 //=============================================================================================================================
 static void CalculateLobePdfs(const BRDF &surface,
@@ -60,7 +61,7 @@ static glm::vec3 CalculateTint(glm::vec3 baseColor) {
 // -- "generalized" Trowbridge-Reitz curve ungeneralized with a hard-coded exponent of 1
 static float GTR1(float absDotHL, float a) {
     if (a >= 1) {
-        return M_1_PI;
+        return 1.0f / M_PI;
     }
 
     float a2 = a * a;
@@ -266,7 +267,7 @@ EvaluateDisneyDiffuse(const BRDF &surface, const glm::vec3 &wo, const glm::vec3 
     float retro = EvaluateDisneyRetroDiffuse(surface, wo, wm, wi);
     float subsurfaceApprox = lerp(lambert, hanrahanKrueger, thin ? surface.flatness : 0.0f);
 
-    return M_1_PI * (retro + subsurfaceApprox * (1.0f - 0.5f * fl) * (1.0f - 0.5f * fv));
+    return 1.0f / M_PI * (retro + subsurfaceApprox * (1.0f - 0.5f * fl) * (1.0f - 0.5f * fv));
 }
 
 //=============================================================================================================================
@@ -496,10 +497,10 @@ SampleDisneyDiffuse(Generator &gen, const BRDF &surface, glm::vec3 v, bool thin,
 }
 
 //=============================================================================================================================
-glm::vec3 EvaluateDisney(const BRDF &surface, glm::vec3 v, glm::vec3 l, bool thin, float &forwardPdf,
+glm::vec3 EvaluateDisney(const BRDF &surface, glm::vec3 outDir, bool thin, float &forwardPdf,
                          float &reversePdf) {
-    glm::vec3 wo = glm::normalize(MatrixMultiply(v, surface.worldToTangent));
-    glm::vec3 wi = glm::normalize(MatrixMultiply(l, surface.worldToTangent));
+    glm::vec3 wo = glm::normalize(MatrixMultiply(surface.inDir, surface.worldToTangent));
+    glm::vec3 wi = glm::normalize(MatrixMultiply(outDir, surface.worldToTangent));
     glm::vec3 wm = glm::normalize(wo + wi);
 
     float dotNV = CosTheta(wo);
