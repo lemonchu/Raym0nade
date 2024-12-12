@@ -8,12 +8,43 @@ unsigned int vertexCount(const aiScene *scene) {
     return cnt;
 }
 
+unsigned int faceCount(const aiScene *scene) {
+    unsigned int cnt = 0;
+    for (int i = 0; i < scene->mNumMeshes; i++)
+        cnt += scene->mMeshes[i]->mNumFaces;
+    return cnt;
+}
+
 glm::mat4 aiMatrix4x4ToGlm(const aiMatrix4x4 &from) {
     glm::mat4 to;
     for (int i = 0; i < 4; i++)
         for (int j = 0; j < 4; j++)
             to[i][j] = from[j][i];
     return to;
+}
+
+vec3 getAverageEmissiveColor(const Material &material, const Face &face) {
+    vec3 averageColor(0.0f);
+    int sampleCount = 0;
+
+    static const int gridResolution = 8;
+    for (int i = 0; i < gridResolution; ++i) {
+        for (int j = 0; j < gridResolution; ++j) {
+            float u = static_cast<float>(i) / (gridResolution - 1);
+            float v = static_cast<float>(j) / (gridResolution - 1);
+            if (u + v > 1.0f) {
+                u = 1.0f - u;
+                v = 1.0f - v;
+            }
+            float w = 1.0f - u - v;
+            vec2 uv = u * face.data[0]->uv + v * face.data[1]->uv + w * face.data[2]->uv;
+            vec3 textureColor = material.getEmissiveColor(uv[0], uv[1]);
+            averageColor += textureColor;
+            ++sampleCount;
+        }
+    }
+    averageColor /= static_cast<float>(sampleCount);
+    return averageColor;
 }
 
 void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
@@ -42,18 +73,16 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         }
 
         faces.push_back({
-                                {vec3(transformedVertex[0]),
-                                 vec3(transformedVertex[1]),
-                                 vec3(transformedVertex[2])},
-                                {&vData[face0.mIndices[0]],
-                                 &vData[face0.mIndices[1]],
-                                 &vData[face0.mIndices[2]]},
-                                &material,
-                                nullptr
-                        });
+                {vec3(transformedVertex[0]),
+                 vec3(transformedVertex[1]),
+                 vec3(transformedVertex[2])},
+                {&vData[face0.mIndices[0]],
+                 &vData[face0.mIndices[1]],
+                 &vData[face0.mIndices[2]]},
+                &material,
+        });
 
         const Face &face = faces.back();
-
         vec3 normal = normalize(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
         vData[face0.mIndices[0]].normal += normal;
         vData[face0.mIndices[1]].normal += normal;
@@ -69,35 +98,34 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         lightObjects.emplace_back();
         auto &lightObject = lightObjects.back();
 
-        float totalPower = 0.0f;
+        float totalPower = 0.0f, totalArea = 0.0f;
         vec3 color = vec3(0.0f);
+        static const vec3 RGB_Weight = vec3(0.3f, 0.6f, 0.1f);
 
         for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
             auto &face = meshFaces[j];
 
-            vec3 centroid = (face.v[0] + face.v[1] + face.v[2]) / 3.0f;
-            vec2 uv = (face.data[0]->uv + face.data[1]->uv + face.data[2]->uv) / 3.0f;
-            vec3 textureColor = material.getEmissiveColor(uv[0], uv[1]);
-
-            float colorPower = glm::length(textureColor);
-            if (colorPower == 0.0f)
+            vec3 textureColor = getAverageEmissiveColor(material, face);
+            float Clum = dot(textureColor, RGB_Weight);
+            if (Clum == 0.0f)
                 continue;
-            vec3 normal = cross(face.v[1] - face.v[0], face.v[2] - face.v[0]);
-            float area = length(normal) / 2.0f;
+
+            float area = length(cross(face.v[1] - face.v[0], face.v[2] - face.v[0])) / 2.0f;
             if (area < eps_zero)
                 continue;
-            normal = normalize(normal);
+
+            totalArea += area;
             color += textureColor * area;
-            totalPower += area * colorPower;
-            lightObject.lightFaces.emplace_back(centroid, normal, area * colorPower);
-            face.lightObject = &lightObject;
+            float power = area * Clum;
+            totalPower += power;
+            lightObject.lightFaces.emplace_back(face, power);
         }
         if (lightObject.lightFaces.empty()) {
             lightObjects.pop_back();
         } else {
-            static const float powerAlpha = 0.125f;
-            lightObject.powerDensity = pow(totalPower, powerAlpha-1);
-            lightObject.color = normalize(color);
+            static const float powerAlpha = 0.9f;
+            lightObject.powerDensity = pow(totalArea, powerAlpha-1);
+            lightObject.color = color / dot(color, RGB_Weight);
             std::vector<float> faceWeights;
             faceWeights.resize(lightObject.lightFaces.size());
             for (unsigned int j = 0; j < lightObject.lightFaces.size(); j++) {
@@ -105,7 +133,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
                 lightFace.power *= lightObject.powerDensity;
                 faceWeights[j] = lightFace.power;
                 lightObject.power += lightFace.power;
-                lightObject.center += lightFace.position * lightFace.power;
+                lightObject.center += lightFace.face.center() * lightFace.power;
             }
 
             lightObject.faceDist.Init(faceWeights);
@@ -182,12 +210,16 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
         std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
         return ;
     }
+
+    processMaterial(model_folder, scene);
+
+    lightObjects.reserve(scene->mNumMeshes);
     unsigned int vertexCnt = vertexCount(scene);
     std::cout << "Vertices: " << vertexCnt << std::endl;
     vertexDatas.reserve(vertexCnt);
-    lightObjects.reserve(scene->mNumMeshes);
-
-    processMaterial(model_folder, scene);
+    unsigned int faceCnt = faceCount(scene);
+    std::cout << "faces: " << faceCnt << std::endl;
+    faces.reserve(faceCnt);
 
     const glm::mat4 identity = glm::mat4(1.0f);
     processNode(scene->mRootNode, scene, identity);
@@ -196,8 +228,6 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
     //checkLightSources(scene);
 
     importer.FreeScene();
-
-    std::cout << "Faces: " << faces.size() << std::endl;
 
     kdt.build(faces);
 }
@@ -244,6 +274,44 @@ void reverseCheck(vec3 &v, const vec3 &Dir) {
         v *= -1.0f;
 }
 
+void getHitNormal(const Face& face, const vec3 &inDir, const vec3 &baryCoords, const vec2 &texUV,
+                  vec3 &shapeNormal, vec3 &surfaceNormal) {
+    vec3 edge1 = face.v[1] - face.v[0];
+    vec3 edge2 = face.v[2] - face.v[0];
+    shapeNormal = normalize(cross(edge1, edge2));
+    reverseCheck(shapeNormal, -inDir);
+    surfaceNormal = shapeNormal;
+
+    vec3 normalV0 = face.data[0]->normal;
+    vec3 normalV1 = face.data[1]->normal;
+    vec3 normalV2 = face.data[2]->normal;
+    reverseCheck(normalV0, shapeNormal);
+    reverseCheck(normalV1, shapeNormal);
+    reverseCheck(normalV2, shapeNormal);
+    static const float threshold = 0.9f;
+    surfaceNormal = normalize(
+            baryCoords[0] * (dot(normalV0, shapeNormal) > threshold ? normalV0 : shapeNormal)
+            + baryCoords[1] * (dot(normalV1, shapeNormal) > threshold ? normalV1 : shapeNormal)
+            + baryCoords[2] * (dot(normalV2, shapeNormal) > threshold ? normalV2 : shapeNormal)
+    );
+    vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv;
+    vec2 deltaUV2 = face.data[2]->uv - face.data[0]->uv;
+    float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+    vec3 tangent = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
+    vec3 bitangent = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
+    tangent = normalize(tangent - shapeNormal * dot(shapeNormal, tangent));
+    bitangent = normalize(bitangent - shapeNormal * dot(shapeNormal, bitangent) - tangent * dot(tangent, bitangent));
+    vec3 normalMap = face.material->getNormal(texUV[0], texUV[1]);
+    normalMap.z = 1.0f;
+    surfaceNormal = normalize(
+            tangent * normalMap.x
+            + bitangent * normalMap.y
+            + surfaceNormal * normalMap.z
+    );
+    if (isnan(surfaceNormal))
+        surfaceNormal = shapeNormal;
+}
+
 void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, HitInfo &hitInfo) {
     const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
     const Material& material = *face.material;
@@ -251,46 +319,10 @@ void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, H
             baryCoords[0] * face.data[0]->uv
             + baryCoords[1] * face.data[1]->uv
             + baryCoords[2] * face.data[2]->uv;
-
+    getHitNormal(face, inDir, baryCoords, texUV, hitInfo.shapeNormal, hitInfo.surfaceNormal);
     hitInfo.baseColor = material.getDiffuseColor(texUV[0], texUV[1]);
-
-    vec3 edge1 = face.v[1] - face.v[0];
-    vec3 edge2 = face.v[2] - face.v[0];
-    hitInfo.shapeNormal = normalize(cross(edge1, edge2));
-    reverseCheck(hitInfo.shapeNormal, -inDir);
-
-    vec3 normalV0 = face.data[0]->normal;
-    vec3 normalV1 = face.data[1]->normal;
-    vec3 normalV2 = face.data[2]->normal;
-    reverseCheck(normalV0, hitInfo.shapeNormal);
-    reverseCheck(normalV1, hitInfo.shapeNormal);
-    reverseCheck(normalV2, hitInfo.shapeNormal);
-    static const float threshold = 0.8f;
-    hitInfo.surfaceNormal = normalize(
-            baryCoords[0] * (dot(normalV0, hitInfo.shapeNormal) > threshold ? normalV0 : hitInfo.shapeNormal)
-            + baryCoords[1] * (dot(normalV1, hitInfo.shapeNormal) > threshold ? normalV1 : hitInfo.shapeNormal)
-            + baryCoords[2] * (dot(normalV2, hitInfo.shapeNormal) > threshold ? normalV2 : hitInfo.shapeNormal)
-    );
-
-    vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv;
-    vec2 deltaUV2 = face.data[2]->uv - face.data[0]->uv;
-    float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
-    vec3 tangent = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
-    vec3 bitangent = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
-    tangent = normalize(tangent - hitInfo.shapeNormal * dot(hitInfo.shapeNormal, tangent));
-    bitangent = normalize(bitangent - hitInfo.shapeNormal * dot(hitInfo.shapeNormal, bitangent) - tangent * dot(tangent, bitangent));
-    vec3 normalMap = material.getNormal(texUV[0], texUV[1]);
-    normalMap.z = 1.0f;
-    hitInfo.surfaceNormal = normalize(
-            tangent * normalMap.x
-            + bitangent * normalMap.y
-            + hitInfo.surfaceNormal * normalMap.z
-    );
-    if (isnan(hitInfo.surfaceNormal))
-        hitInfo.surfaceNormal = hitInfo.shapeNormal;
-    hitInfo.emission = (face.lightObject) ?
-            material.getEmissiveColor(texUV[0], texUV[1]) * face.lightObject->powerDensity
-            : vec3(0.0f);
+    hitInfo.emission = (material.texture[aiTextureType_EMISSIVE].empty()) ? vec3(0.0f)
+            : material.getEmissiveColor(texUV[0], texUV[1]);
     material.getSurfaceData(texUV[0], texUV[1], hitInfo.roughness, hitInfo.metallic);
 }
 

@@ -9,10 +9,10 @@ RenderData::RenderData(int seed) : gen(seed) {
     T_RayAndTexture = C_lightSamples = 0;
 }
 
-const float P_RR = 0.6f;
-const int maxRayDepth = 16;
+const float P_RR = 0.5f;
+const int maxRayDepth = 8;
 
-vec3 sampleRay(Ray ray, const Model &model, RenderData &renderData, int depth) {
+vec3 sampleRay(Ray ray, const Model &model, RenderData &renderData, int &fails, int depth) {
 
     renderData.T_RayAndTexture -= clock();
     BRDF brdf(-ray.direction);
@@ -28,28 +28,61 @@ vec3 sampleRay(Ray ray, const Model &model, RenderData &renderData, int depth) {
     vec3 intersection = ray.origin + ray.direction * brdf.surface.t;
     if (depth == maxRayDepth || renderData.gen() > P_RR) {
         renderData.C_lightSamples++;
-        vec3 light = sampleDirectLight(intersection, brdf, model, renderData.gen);
-        return light / ((depth < maxRayDepth) ? (1.0f - P_RR) : 1.0f);
+        vec3 brdfPdf;
+        vec3 light = sampleDirectLight(intersection, brdf, model, renderData.gen, brdfPdf, fails);
+        return light * brdfPdf / ((depth < maxRayDepth) ? (1.0f - P_RR) : 1.0f);
         // RR 停止时，用光源重要性采样计算直接光照
     }
 
     brdf.genTangentSpace();
     vec3 newDirection, brdfPdf;
-    brdf.sample(renderData.gen, newDirection, brdfPdf);
-    if (newDirection == vec3(0.0f))
+    brdf.sample(renderData.gen, newDirection, brdfPdf, fails);
+    if (isnan(newDirection))
         return vec3(0.0f);
     ray = {intersection, newDirection};
-    vec3 inradiance = sampleRay(ray, model, renderData, depth + 1) / P_RR;
+    vec3 inradiance = sampleRay(ray, model, renderData, fails, depth + 1) / P_RR;
     return brdfPdf * inradiance;
 }
 
-void add(RadianceData &radiance, vec3 inradiance) {
+void accumulateInradiance(RadianceData &radiance, vec3 inradiance) {
+    if (isnan(inradiance)) {
+        inradiance = vec3(0.0f);
+        std::cerr << "Warning: NaN detected! (accumulate)" << std::endl;
+    }
     radiance.radiance += inradiance;
     radiance.Var += dot(inradiance, inradiance);
 }
 
+void accumulateInradiance(const BRDF &brdf, const vec3 brdfPdf, const vec3 &light,
+                          RadianceData &radiance_d, RadianceData &radiance_s) {
+
+    vec3 baseColor = (vec3)brdf.surface.baseColor;
+    if (length(baseColor) == 0.0f) {
+        accumulateInradiance(radiance_s, light * brdfPdf);
+        return;
+    }
+    vec3 baseColor0 = normalize(baseColor);
+    static const vec3 White = normalize(vec3(1.0f));
+    float XdotY = dot(baseColor0, White);
+    if (XdotY > 0.99f) {
+        accumulateInradiance(radiance_d, light * brdfPdf / baseColor);
+        return ;
+    }
+    // Consider Pdf = a * white + b * baseColor
+    vec3 perp = normalize(cross(baseColor0, White));
+    vec3 brdfPdf_p = brdfPdf - perp * dot(perp, brdfPdf);
+    float d1 = dot(brdfPdf_p, White);
+    float d2 = dot(brdfPdf_p, baseColor0);
+    float AplusB = (d1+d2) / (1+XdotY);
+    float AminusB = (d1-d2) / (1-XdotY);
+    float B = (AplusB - AminusB) / 2.0f;
+    vec3 brdfPdf_base = B * baseColor0;
+    accumulateInradiance(radiance_d, light * B / length(baseColor));
+    accumulateInradiance(radiance_s, light * (brdfPdf - brdfPdf_base));
+}
+
 void sampleDirectLightFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDir, const vec3 &emission, const Model &model,
-                                            RenderData &renderData, RadianceData &radiance_Dd, RadianceData &radiance_Ds) {
+                                            RenderData &renderData, RadianceData &radiance_Dd, RadianceData &radiance_Ds, int &fails) {
 
     if (Gbuffer.face == nullptr || length(emission) > 0)
         return; // 暂不计入直接光照
@@ -57,12 +90,14 @@ void sampleDirectLightFromFirstIntersection(const GbufferData &Gbuffer, const ve
     BRDF brdf(-inDir);
     getHitInfo(*Gbuffer.face, Gbuffer.position, inDir, brdf.surface);
     brdf.genTangentSpace();
-    vec3 light = sampleDirectLight(Gbuffer.position, brdf, model, renderData.gen);
-    add(radiance_Dd, light);
+    vec3 brdfPdf;
+    vec3 light = sampleDirectLight(Gbuffer.position, brdf, model, renderData.gen, brdfPdf, fails);
+    accumulateInradiance(brdf, brdfPdf, light, radiance_Dd, radiance_Ds);
 }
 
+
 void sampleRayFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDir, const vec3 &emission, const Model &model,
-                                    RenderData &renderData, RadianceData &radiance_Id, RadianceData &radiance_Is) {
+                                    RenderData &renderData, RadianceData &radiance_Id, RadianceData &radiance_Is, int &fails) {
 
     if (Gbuffer.face == nullptr || length(emission) > 0)
         return; // 暂不计入直接光照
@@ -71,12 +106,13 @@ void sampleRayFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDi
     getHitInfo(*Gbuffer.face, Gbuffer.position, inDir, brdf.surface);
     brdf.genTangentSpace();
     vec3 newDirection, brdfPdf;
-    brdf.sample(renderData.gen, newDirection, brdfPdf);
+    brdf.sample(renderData.gen, newDirection, brdfPdf, fails);
     if (newDirection == vec3(0.0f))
         return;
     Ray ray = {Gbuffer.position, newDirection};
-    vec3 light = sampleRay(ray, model, renderData, 1);
-    add(radiance_Id, light);
+    vec3 light = sampleRay(ray, model, renderData, fails, 1);
+
+    accumulateInradiance(brdf, brdfPdf, light, radiance_Id, radiance_Is);
 }
 
 void rayCasting(Model &model, const RenderArgs &args, Image &image) {
@@ -141,16 +177,20 @@ void renderPixel(const Model &model, const RenderArgs &args,
             &radiance_Is = image.radiance_Is[id];
     HitInfo hitInfo;
     getHitInfo(*Gbuffer.face, Gbuffer.position, aim, hitInfo);
+    int trys_direct = 0;
     for (int T = 0; T < spp_direct; T++)
         sampleDirectLightFromFirstIntersection(Gbuffer, aim, hitInfo.emission, model,
-                                               renderData, radiance_Dd, radiance_Ds);
-    normalize(radiance_Dd, exposure, spp_direct);
-    normalize(radiance_Ds, exposure, spp_direct);
+                                               renderData, radiance_Dd, radiance_Ds, trys_direct);
+    trys_direct += spp_direct;
+    normalize(radiance_Dd, exposure, trys_direct);
+    normalize(radiance_Ds, exposure, trys_direct);
+    int trys_indirect = 0;
     for (int T = 0; T < spp_indirect; T++)
         sampleRayFromFirstIntersection(Gbuffer, aim, hitInfo.emission, model,
-                                       renderData, radiance_Id, radiance_Is);
-    normalize(radiance_Id, exposure, spp_indirect);
-    normalize(radiance_Is, exposure, spp_indirect);
+                                       renderData, radiance_Id, radiance_Is, trys_indirect);
+    trys_indirect += spp_indirect;
+    normalize(radiance_Id, exposure, trys_indirect);
+    normalize(radiance_Is, exposure, trys_indirect);
 }
 
 void render(const Model &model, const RenderArgs &args,

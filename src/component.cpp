@@ -1,7 +1,7 @@
 #include "component.h"
 
-LightFace::LightFace(glm::vec3 position, glm::vec3 normal, float power) :
-        position(position), normal(normal), power(power) {}
+LightFace::LightFace(Face face, float power) :
+        face(face), power(power) {}
 
 Generator::Generator(unsigned int seed) : mt(seed), U(0.0f, 1.0f) {}
 

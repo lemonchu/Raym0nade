@@ -390,5 +390,6 @@ void Material::getSurfaceData(float u, float v, float &rouguness, float &metalli
     }
     vec4 data = texture[aiTextureType_SPECULAR].get4(u, v, false);
     rouguness = data[1];
-    metallic = data[2];
+    metallic = std::min(data[2], 0.99f);
+    rouguness *= 0.5f + 0.5f * pow(1.0f - metallic, 0.2f);
 }
