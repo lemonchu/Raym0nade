@@ -56,6 +56,8 @@ void accumulateInradiance(RadianceData &radiance, vec3 inradiance) {
 void accumulateInradiance(const BRDF &brdf, const vec3 brdfPdf, const vec3 &light,
                           RadianceData &radiance_d, RadianceData &radiance_s) {
 
+    if (light == vec3(0.0f))
+        return;
     vec3 baseColor = (vec3)brdf.surface.baseColor;
     if (length(baseColor) == 0.0f) {
         accumulateInradiance(radiance_s, light * brdfPdf);
@@ -107,11 +109,10 @@ void sampleRayFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDi
     brdf.genTangentSpace();
     vec3 newDirection, brdfPdf;
     brdf.sample(renderData.gen, newDirection, brdfPdf, fails);
-    if (newDirection == vec3(0.0f))
+    if (isnan(newDirection))
         return;
     Ray ray = {Gbuffer.position, newDirection};
     vec3 light = sampleRay(ray, model, renderData, fails, 1);
-
     accumulateInradiance(brdf, brdfPdf, light, radiance_Id, radiance_Is);
 }
 

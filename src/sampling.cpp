@@ -35,18 +35,10 @@ float GTR2(float NdotH, float a) {
     return a2 / (PI * t*t);
 }
 
-float GTR2_aniso(float NdotH, float HdotX, float HdotY, float ax, float ay) {
-    return 1 / (PI * ax*ay * sqr( sqr(HdotX/ax) + sqr(HdotY/ay) + NdotH*NdotH ));
-}
-
 float smithG_GGX(float NdotV, float alphaG) {
     float a = alphaG*alphaG;
     float b = NdotV*NdotV;
     return 1 / (NdotV + sqrt(a + b - a*b));
-}
-
-float smithG_GGX_aniso(float NdotV, float VdotX, float VdotY, float ax, float ay) {
-    return 1 / (NdotV + sqrt( sqr(VdotX*ax) + sqr(VdotY*ay) + sqr(NdotV) ));
 }
 
 
@@ -79,10 +71,9 @@ vec3 BRDF::getBRDF(vec3 outDir) const
     const float specularTint = 0.0f;
     const float sheen = 0.0f;
     const float sheenTint = 0.0f;
-    const float anisotropic = 0.0f;
-    const float clearcoat = 1.0f;
+    const float clearcoat = 1.5f;
     const float clearcoatGloss = 0.25f;
-    const float clearcoatTint = 0.5f;
+    const float clearcoatTint = 0.0f;
 
     vec3 Ctint = Cdlum > 0.0f ? Cdlin/Cdlum : vec3(1); // normalize lum. to isolate hue+sat
     vec3 Cspec0 = mix(specular * .08f * glm::mix(vec3(1), Ctint, specularTint), Cdlin, surface.metallic);
@@ -102,15 +93,12 @@ vec3 BRDF::getBRDF(vec3 outDir) const
     float ss = 1.25f * (Fss * (1 / (NdotL + NdotV) - .5f) + .5f);
 
     // specular
-    float aspect = sqrt(1-anisotropic*.9);
-    float ax = std::max(.001f, sqr(surface.roughness)/aspect);
-    float ay = std::max(.001f, sqr(surface.roughness)*aspect);
-    float Ds = GTR2_aniso(NdotH, dot(H, X), dot(H, Y), ax, ay);
+    float Ds = GTR2(NdotH, surface.roughness);
     float FH = SchlickFresnel(LdotH);
     vec3 Fs = mix(Cspec0, vec3(1.0f), FH);
     float Gs;
-    Gs  = smithG_GGX_aniso(NdotL, dot(L, X), dot(L, Y), ax, ay);
-    Gs *= smithG_GGX_aniso(NdotV, dot(V, X), dot(V, Y), ax, ay);
+    Gs  = smithG_GGX(NdotL, surface.roughness);
+    Gs *= smithG_GGX(NdotV, surface.roughness);
 
     // sheen
     vec3 Fsheen = FH * sheen * Csheen;
@@ -124,31 +112,67 @@ vec3 BRDF::getBRDF(vec3 outDir) const
              + (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1), Ctint, clearcoatTint)
              + Gs*Fs*Ds;
 
-    return ret;
+    return ret * dot(outDir, surface.surfaceNormal);
 }
 
-vec3 BRDF::getBRDFWithCos(vec3 outDir) const {
-    return getBRDF(outDir) * dot(outDir, surface.surfaceNormal);
-}
+static const int MaxTrys = 16;
 
-void BRDF::sample(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails) const {
-    auto sample0 = [&]() -> vec3 {
-        float u = gen(), v = gen() * 2.0f * M_PI;
-        float d = sqrt(u);
-        float z = sqrt(1 - d*d);
-        float x = d * cos(v), y = d * sin(v);
-        return x * tangent + y * bitangent + z * surface.surfaceNormal;
+void BRDF::sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) const {
+
+    auto sampleGGX2 = [&](vec3 &outDir, float &pdf) -> void {
+        float u = gen(), phi = gen() * 2.0f * M_PI;
+        float
+            cosTheta = sqrt((1.0f-u) / (1.0f+(sqr(surface.roughness)-1.0f)*u)),
+            sinTheta = sqrt(1 - cosTheta*cosTheta);
+        vec3 H = sinTheta * cos(phi) * tangent
+                + sinTheta * sin(phi) * bitangent
+                + cosTheta * surface.surfaceNormal;
+        outDir = reflect(-inDir, H);
+        float LDotH = dot(outDir, H);
+        float LdotN = dot(outDir, surface.surfaceNormal);
+        if (LDotH < 0.0f || LdotN < 0.0f) {
+            pdf = 0.0f;
+            return ;
+        }
+        pdf = GTR2(cosTheta, surface.roughness) * cosTheta / (4.0f * LDotH);
     };
-    static const int MaxTrys = 16;
     for (int T = 1; T <= MaxTrys; T++) {
-        Dir = sample0();
-        if (dot(Dir, surface.shapeNormal) > 0.0f) {
-            brdfPdf = getBRDF(Dir);
+        float pdf;
+        sampleGGX2(outDir, pdf);
+        if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
+            brdfPdf = getBRDF(outDir) / pdf;
             return;
         }
         fails++;
     }
-    Dir = vec3(NAN);
+    outDir = vec3(NAN);
+}
+
+void BRDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) const {
+    auto sampleCos = [&]() -> vec3 {
+        float u = gen(), phi = gen() * 2.0f * M_PI;
+        float d = sqrt(u);
+        float z = sqrt(1 - d*d);
+        float x = d * cos(phi), y = d * sin(phi);
+        return x * tangent + y * bitangent + z * surface.surfaceNormal;
+    };
+    for (int T = 1; T <= MaxTrys; T++) {
+        outDir = sampleCos();
+        float pdf = dot(outDir, surface.surfaceNormal) / M_PI;
+        if (dot(outDir, surface.shapeNormal) > 0.0f) {
+            brdfPdf = getBRDF(outDir) / pdf;
+            return;
+        }
+        fails++;
+    }
+    outDir = vec3(NAN);
+}
+
+void BRDF::sample(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails) const {
+    if (gen() < surface.metallic)
+        sampleBRDF(gen, Dir, brdfPdf, fails);
+    else
+        sampleCos(gen, Dir, brdfPdf, fails);
 }
 
 int sample(const std::vector<float> &weights, float randomValue) {
@@ -167,7 +191,7 @@ void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model,
     for (const auto & lightObject : model.lightObjects)  {
         vec3 lightDir = normalize(lightObject.center - pos);
         float distance = glm::length(lightObject.center - pos);
-        vec3 brdfPdf = brdf.getBRDFWithCos(lightDir);
+        vec3 brdfPdf = brdf.getBRDF(lightDir);
         float albedo = dot((vec3)brdf.surface.baseColor, RGB_Weight);
         float weight = albedo * lightObject.power / (distance * distance + eps_lightRadius);
         weights.push_back(weight);
@@ -249,7 +273,7 @@ vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model,
         return vec3(0.0f);
 
     float contribution = lightObject.power * faceFactor / P_lightObject;
-    brdfPdf = brdf.getBRDFWithCos(lightDir);
+    brdfPdf = brdf.getBRDF(lightDir);
     if (isnan(brdfPdf))
         std::cerr << "Warning: NaN detected! (sampleDirectLight::brdfPdf)" << std::endl;
     if (isnan(contribution))

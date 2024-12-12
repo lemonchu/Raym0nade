@@ -123,8 +123,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         if (lightObject.lightFaces.empty()) {
             lightObjects.pop_back();
         } else {
-            static const float powerAlpha = 0.9f;
-            lightObject.powerDensity = pow(totalArea, powerAlpha-1);
+            lightObject.powerDensity = 1.0f;
             lightObject.color = color / dot(color, RGB_Weight);
             std::vector<float> faceWeights;
             faceWeights.resize(lightObject.lightFaces.size());

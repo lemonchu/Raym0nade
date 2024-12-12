@@ -6,6 +6,9 @@
 #include "model.h"
 
 class BRDF {
+private:
+    void sampleBRDF(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails) const;
+    void sampleCos(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails) const;
 public:
     vec3 inDir, tangent, bitangent;
     glm::mat3 worldToTangent;
@@ -14,9 +17,8 @@ public:
     BRDF(const vec3 &inDir);
 
     void genTangentSpace();
-    vec3 getBRDF(vec3 outDir) const;
-    vec3 getBRDFWithCos(vec3 outDir) const;
-    void sample(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &trys) const;
+    [[nodiscard]] vec3 getBRDF(vec3 outDir) const;
+    void sample(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails) const;
 };
 
 const float eps_lightRadius = 1e-5f;
