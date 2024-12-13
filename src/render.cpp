@@ -14,6 +14,11 @@ const int maxRayDepth = 8;
 
 vec3 sampleRay(Ray ray, const Model &model, RenderData &renderData, int &fails, int depth) {
 
+    if (depth > maxRayDepth){
+        // This should never happen
+        throw std::runtime_error("Depth exceeds maximum depth");
+    }
+
     renderData.T_RayAndTexture -= clock();
     BRDF brdf(-ray.direction);
     model.rayHit(ray, brdf.surface);
@@ -44,7 +49,7 @@ vec3 sampleRay(Ray ray, const Model &model, RenderData &renderData, int &fails, 
     return brdfPdf * inradiance;
 }
 
-void accumulateInradiance(RadianceData &radiance, vec3 inradiance) {
+void accumulateInwardRadiance(RadianceData &radiance, vec3 inradiance) {
     if (isnan(inradiance)) {
         inradiance = vec3(0.0f);
         std::cerr << "Warning: NaN detected! (accumulate)" << std::endl;
@@ -53,21 +58,21 @@ void accumulateInradiance(RadianceData &radiance, vec3 inradiance) {
     radiance.Var += dot(inradiance, inradiance);
 }
 
-void accumulateInradiance(const BRDF &brdf, const vec3 brdfPdf, const vec3 &light,
-                          RadianceData &radiance_d, RadianceData &radiance_s) {
+void accumulateInwardRadiance(const BRDF &brdf, const vec3 brdfPdf, const vec3 &light,
+                              RadianceData &radiance_d, RadianceData &radiance_s) {
 
     if (light == vec3(0.0f))
         return;
     vec3 baseColor = (vec3)brdf.surface.baseColor;
     if (length(baseColor) == 0.0f) {
-        accumulateInradiance(radiance_s, light * brdfPdf);
+        accumulateInwardRadiance(radiance_s, light * brdfPdf);
         return;
     }
     vec3 baseColor0 = normalize(baseColor);
     static const vec3 White = normalize(vec3(1.0f));
     float XdotY = dot(baseColor0, White);
     if (XdotY > 0.99f) {
-        accumulateInradiance(radiance_d, light * brdfPdf / baseColor);
+        accumulateInwardRadiance(radiance_d, light * brdfPdf / baseColor);
         return ;
     }
     // Consider Pdf = a * white + b * baseColor
@@ -79,8 +84,8 @@ void accumulateInradiance(const BRDF &brdf, const vec3 brdfPdf, const vec3 &ligh
     float AminusB = (d1-d2) / (1-XdotY);
     float B = (AplusB - AminusB) / 2.0f;
     vec3 brdfPdf_base = B * baseColor0;
-    accumulateInradiance(radiance_d, light * B / length(baseColor));
-    accumulateInradiance(radiance_s, light * (brdfPdf - brdfPdf_base));
+    accumulateInwardRadiance(radiance_d, light * B / length(baseColor));
+    accumulateInwardRadiance(radiance_s, light * (brdfPdf - brdfPdf_base));
 }
 
 void sampleDirectLightFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDir, const vec3 &emission, const Model &model,
@@ -94,7 +99,7 @@ void sampleDirectLightFromFirstIntersection(const GbufferData &Gbuffer, const ve
     brdf.genTangentSpace();
     vec3 brdfPdf;
     vec3 light = sampleDirectLight(Gbuffer.position, brdf, model, renderData.gen, brdfPdf, fails);
-    accumulateInradiance(brdf, brdfPdf, light, radiance_Dd, radiance_Ds);
+    accumulateInwardRadiance(brdf, brdfPdf, light, radiance_Dd, radiance_Ds);
 }
 
 
@@ -113,7 +118,7 @@ void sampleRayFromFirstIntersection(const GbufferData &Gbuffer, const vec3 &inDi
         return;
     Ray ray = {Gbuffer.position, newDirection};
     vec3 light = sampleRay(ray, model, renderData, fails, 1);
-    accumulateInradiance(brdf, brdfPdf, light, radiance_Id, radiance_Is);
+    accumulateInwardRadiance(brdf, brdfPdf, light, radiance_Id, radiance_Is);
 }
 
 void rayCasting(Model &model, const RenderArgs &args, Image &image) {
@@ -194,6 +199,10 @@ void renderPixel(const Model &model, const RenderArgs &args,
     normalize(radiance_Is, exposure, trys_indirect);
 }
 
+/*
+ * Render Workers
+ * Master call this worker function to render the scene.
+ */
 void renderWorker(const Model &model, const RenderArgs &args,
                   RenderData &renderData, Image &image, int xL, int xR) {
     static const int
