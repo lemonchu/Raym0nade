@@ -18,6 +18,11 @@ struct Ray {
     vec3 origin, direction;
 };
 
+struct RayDifferential {
+    vec3 dPdx, dPdy;
+    vec3 dDdx, dDdy;
+};
+
 struct Box {
     vec3 v0, v1;
     Box();

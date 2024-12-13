@@ -31,72 +31,108 @@ void _mod(int &x, int m) {
     }
 }
 
-vec3 get3(const std::vector<uint8_t> &data, int index) {
-    return {
+glm::vec3 get3_basic_from_pixel_array(const std::vector<uint8_t> &data, int index) {
+    return vec3(
             static_cast<float>(data[index]),
             static_cast<float>(data[index + 1]),
             static_cast<float>(data[index + 2])
-    };
+    ) / 256.0f; // Considering that 256 brings possible zero result in NormalMap
 }
 
-vec3 ImageData::get3(float u, float v) const {
-    v = 1.0f - v;
+glm::vec4 get4_basic_from_pixel_array(const std::vector<uint8_t> &data, int index) {
+    return vec4(
+            static_cast<float>(data[index]),
+            static_cast<float>(data[index + 1]),
+            static_cast<float>(data[index + 2]),
+            static_cast<float>(data[index + 3])
+    ) / 255.0f;
+}
+
+// Helper function for bilinear interpolation
+glm::vec3 bilinearInterpolate3(const std::vector<uint8_t>& data, int width, int height, float u, float v) {
     float x = u * width, y = v * height;
     int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
     float dx = x - x0, dy = y - y0;
     _mod(x0, width);
     _mod(y0, height);
     int x1 = (x0 + 1) % width, y1 = (y0 + 1) % height;
-    vec3 c00 = ::get3(data, (y0 * width + x0) * 3);
-    vec3 c01 = ::get3(data, (y0 * width + x1) * 3);
-    vec3 c10 = ::get3(data, (y1 * width + x0) * 3);
-    vec3 c11 = ::get3(data, (y1 * width + x1) * 3);
-    vec3 c0 = c00 * (1.0f - dx) + c01 * dx;
-    vec3 c1 = c10 * (1.0f - dx) + c11 * dx;
-    vec3 c = c0 * (1.0f - dy) + c1 * dy;
-    return c / 255.0f;
+
+    glm::vec3 c00 = get3_basic_from_pixel_array(data, (y0 * width + x0) * 3);
+    glm::vec3 c01 = get3_basic_from_pixel_array(data, (y0 * width + x1) * 3);
+    glm::vec3 c10 = get3_basic_from_pixel_array(data, (y1 * width + x0) * 3);
+    glm::vec3 c11 = get3_basic_from_pixel_array(data, (y1 * width + x1) * 3);
+    glm::vec3 c0 = c00 * (1.0f - dx) + c01 * dx;
+    glm::vec3 c1 = c10 * (1.0f - dx) + c11 * dx;
+    return c0 * (1.0f - dy) + c1 * dy;
 }
 
-vec4 get4(const std::vector<uint8_t> &data, int index) {
-    return {
-            static_cast<float>(data[index]),
-            static_cast<float>(data[index + 1]),
-            static_cast<float>(data[index + 2]),
-            static_cast<float>(data[index + 3])
-    };
-}
-
-vec4 ImageData::get4(float u, float v, bool gammaFlag) const {
-    v = 1.0f - v;
+glm::vec4 bilinearInterpolate4(const std::vector<uint8_t>& data, int width, int height, float u, float v) {
     float x = u * width, y = v * height;
-    int x0 = floor(x), y0 = floor(y);
+    int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
     float dx = x - x0, dy = y - y0;
     _mod(x0, width);
     _mod(y0, height);
     int x1 = (x0 + 1) % width, y1 = (y0 + 1) % height;
-    vec4 c00 = ::get4(data, (y0 * width + x0) * 4);
-    vec4 c01 = ::get4(data, (y0 * width + x1) * 4);
-    vec4 c10 = ::get4(data, (y1 * width + x0) * 4);
-    vec4 c11 = ::get4(data, (y1 * width + x1) * 4);
-    vec4 c0 = c00 * (1.0f - dx) + c01 * dx;
-    vec4 c1 = c10 * (1.0f - dx) + c11 * dx;
-    vec4 c = (c0 * (1.0f - dy) + c1 * dy) / 255.0f;
+
+    glm::vec4 c00 = get4_basic_from_pixel_array(data, (y0 * width + x0) * 4);
+    glm::vec4 c01 = get4_basic_from_pixel_array(data, (y0 * width + x1) * 4);
+    glm::vec4 c10 = get4_basic_from_pixel_array(data, (y1 * width + x0) * 4);
+    glm::vec4 c11 = get4_basic_from_pixel_array(data, (y1 * width + x1) * 4);
+    glm::vec4 c0 = c00 * (1.0f - dx) + c01 * dx;
+    glm::vec4 c1 = c10 * (1.0f - dx) + c11 * dx;
+    return c0 * (1.0f - dy) + c1 * dy;
+}
+
+glm::vec3 ImageData::get3(float u, float v, float depth) const {
+    v = 1.0f - v;
+    depth = std::max(std::min(depth, static_cast<float>(map_depth - 1)), 0.0f);
+
+    int level = static_cast<int>(depth);
+    int nextLevel = std::min(level + 1, map_depth - 1);
+    float levelBlend = depth - level;
+
+    glm::vec3 color1 = bilinearInterpolate3(data[level],width >> level, height >> level, u, v);
+    glm::vec3 color2 = bilinearInterpolate3(data[nextLevel], width >> nextLevel, height >> nextLevel, u, v);
+
+    return color1 * (1.0f - levelBlend) + color2 * levelBlend;
+}
+
+glm::vec4 ImageData::get4(float u, float v, float depth, bool gammaFlag) const {
+    v = 1.0f - v;
+    depth = std::max(std::min(depth, static_cast<float>(map_depth - 1)), 0.0f);
+
+    int level = static_cast<int>(depth);
+    int nextLevel = std::min(level + 1, map_depth - 1);
+    float levelBlend = depth - level;
+
+    int widthLevel = width >> level;
+    int heightLevel = height >> level;
+    int widthNextLevel = width >> nextLevel;
+    int heightNextLevel = height >> nextLevel;
+
+    glm::vec4 color1 = bilinearInterpolate4(data[level], widthLevel, heightLevel, u, v) / 255.0f;
+    glm::vec4 color2 = bilinearInterpolate4(data[nextLevel], widthNextLevel, heightNextLevel, u, v) / 255.0f;
+
+    glm::vec4 finalColor = color1 * (1.0f - levelBlend) + color2 * levelBlend;
+
     static const float gamma = 2.2f;
-    return (gammaFlag) ? vec4(
-            pow(c[0], gamma),
-            pow(c[1], gamma),
-            pow(c[2], gamma),
-            c[3]
-    ) : c;
+
+    if (gammaFlag) {
+        finalColor.r = std::pow(finalColor.r, 1.0f / gamma);
+        finalColor.g = std::pow(finalColor.g, 1.0f / gamma);
+        finalColor.b = std::pow(finalColor.b, 1.0f / gamma);
+    }
+
+    return finalColor;
 }
 
 bool ImageData::empty() const {
-    return data.empty();
+    return data[0].empty();
 }
 
 bool ImageData::hasTransparentPart() const {
-    for (int i = 3; i < data.size(); i += 4)
-        if (data[i] < 255)
+    for (int i = 3; i < data[0].size(); i += 4)
+        if (data[0][i] < 255)
             return true;
     return false;
 }
@@ -108,6 +144,43 @@ Material::Material() : hasTransparentPart(false) {}
         throw std::out_of_range("Index out of range");
     }
     return texture[index];
+}
+
+void ImageData::generateMipmaps() {
+
+    map_depth = MAX_MIPMAP_LEVEL; // NEVER REMOVE THIS LINE
+
+    std::cout << "Generating mipmaps...";
+    for (int level = 1; level < MAX_MIPMAP_LEVEL; ++level) {
+        int prevWidth = width >> (level - 1);
+        int prevHeight = height >> (level - 1);
+        int currWidth = width >> level;
+        int currHeight = height >> level;
+
+        if (currWidth == 0 || currHeight == 0){
+            map_depth = level;
+            break;
+        }
+
+        data[level].resize(currWidth * currHeight * channels);
+
+        for (int y = 0; y < currHeight; ++y) {
+            for (int x = 0; x < currWidth; ++x) {
+                for (int c = 0; c < channels; ++c) {
+                    int sum = 0;
+                    for (int dy = 0; dy < 2; ++dy) {
+                        for (int dx = 0; dx < 2; ++dx) {
+                            int px = (x * 2 + dx) % prevWidth;
+                            int py = (y * 2 + dy) % prevHeight;
+                            sum += data[level - 1][(py * prevWidth + px) * channels + c];
+                        }
+                    }
+                    data[level][(y * currWidth + x) * channels + c] = sum / 4;
+                }
+            }
+        }
+    }
+    std::cout << map_depth << " levels generated." << std::endl;
 }
 
 PyObject *call_dds_to_array(const std::string &filename) {
@@ -167,7 +240,7 @@ bool Material::loadImageFromDDS(ImageData &imageData, const std::string &filenam
             Py_buffer view;
             if (PyObject_GetBuffer(pData, &view, PyBUF_SIMPLE) == 0) {
                 uint8_t *buffer = static_cast<uint8_t *>(view.buf);
-                imageData.data.assign(buffer, buffer + view.len);
+                imageData.data[0].assign(buffer, buffer + view.len);
                 PyBuffer_Release(&view);
             }
         }
@@ -231,12 +304,12 @@ bool Material::loadImageFromPNG(ImageData &imageData, const std::string &filenam
     png_read_update_info(png, info);
 
     std::vector<png_byte> row(imgWidth * 3); // 3 bytes per pixel (RGB)
-    imageData.data.resize(imgWidth * imgHeight * 3);
+    imageData.data[0].resize(imgWidth * imgHeight * 3);
 
     for (int y = 0; y < imgHeight; y++) {
         png_read_row(png, row.data(), nullptr);
         for (int x = 0; x < imgWidth * 3; x++) {
-            imageData.data[y * imgWidth * 3 + x] = row[x];
+            imageData.data[0][y * imgWidth * 3 + x] = row[x];
         }
     }
     imageData.width = imgWidth;
@@ -290,10 +363,10 @@ bool Material::loadImageFromJPG(ImageData &imageData, const std::string &filenam
     // Set output buffer size based on image dimensions and components
     int pixelSize = 3; // RGB has 3 components
     int pitch = imgWidth * pixelSize;
-    imageData.data.resize(imgHeight * pitch);
+    imageData.data[0].resize(imgHeight * pitch);
 
     // Decompress JPEG image to RGB format
-    if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData.data[0], imgWidth, pitch, imgHeight, TJPF_RGB,
+    if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData.data[0][0], imgWidth, pitch, imgHeight, TJPF_RGB,
                       TJFLAG_FASTDCT) < 0) {
         std::cerr << "Error decompressing JPEG image" << std::endl;
         free(jpegBuf);
@@ -321,6 +394,7 @@ void Material::loadImageFromFile(int index, const std::string &filename) {
     } else {
         std::cerr << "Unsupported file format: " << filename << std::endl;
     }
+    texture[index].generateMipmaps();
 }
 
 void Material::loadMaterialProperties(const aiMaterial *aiMat) {
@@ -333,63 +407,34 @@ void Material::loadMaterialProperties(const aiMaterial *aiMat) {
         hasTransparentPart = true;
         std::cout << "Material has transparent part" << std::endl;
     }
-/*
-    float clearcoat, clearcoatRoughness, specularColor,
-            specular, roughness, specularFactor;
-
-    if (aiMat->Get(AI_MATKEY_CLEARCOAT_FACTOR, clearcoat) != AI_SUCCESS) {
-        std::cerr << "Failed to get clearcoat factor" << std::endl;
-    } else {
-        std::cout << "Clearcoat: " << clearcoat << std::endl;
-    }
-    if (aiMat->Get(AI_MATKEY_CLEARCOAT_ROUGHNESS_FACTOR, clearcoatRoughness) != AI_SUCCESS) {
-        std::cerr << "Failed to get clearcoat roughness factor" << std::endl;
-    } else {
-        std::cout << "Clearcoat roughness: " << clearcoatRoughness << std::endl;
-    }
-    if (aiMat->Get(AI_MATKEY_COLOR_SPECULAR, specularColor) != AI_SUCCESS) {
-        std::cerr << "Failed to get specular color" << std::endl;
-    } else {
-        std::cout << "Specular color: " << specularColor << std::endl;
-    }
-    if (aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness) != AI_SUCCESS) {
-        std::cerr << "Failed to get roughness factor" << std::endl;
-    } else {
-        std::cout << "Roughness: " << roughness << std::endl;
-    }
-    if (aiMat->Get(AI_MATKEY_SPECULAR_FACTOR, specularFactor) != AI_SUCCESS) {
-        std::cerr << "Failed to get specular factor" << std::endl;
-    } else {
-        std::cout << "Specular factor: " << specularFactor << std::endl;
-    }*/
 }
 
 vec4 Material::getDiffuseColor(float u, float v) const {
     if (texture[aiTextureType_DIFFUSE].empty())
         return vec4(0.5f, 0.5f, 0.5f, 1.0f);
-    return texture[aiTextureType_DIFFUSE].get4(u, v, true);
+    return texture[aiTextureType_DIFFUSE].get4(u, v, 4, true);
 }
 
 vec3 Material::getNormal(float u, float v) const {
     if (texture[aiTextureType_NORMALS].empty())
-        return vec3(0.0f, 0.0f, 1.0f);
-    return texture[aiTextureType_NORMALS].get3(u, v) * 2.0f - 1.0f;
+        return vec3(0.0f, 0.0f, 0.0f);
+    return texture[aiTextureType_NORMALS].get3(u, v, 4) * 2.0f - 1.0f;
 }
 
 vec3 Material::getEmissiveColor(float u, float v) const {
     if (texture[aiTextureType_EMISSIVE].empty())
         return vec3(0.0f);
-    return texture[aiTextureType_EMISSIVE].get4(u, v, true);
+    return texture[aiTextureType_EMISSIVE].get4(u, v, 4, true);
 }
 
-void Material::getSurfaceData(float u, float v, float &rouguness, float &metallic) const {
+void Material::getSurfaceData(float u, float v, float &roughness, float &metallic) const {
     if (texture[aiTextureType_SPECULAR].empty()) {
-        rouguness = 1.0f;
+        roughness = 1.0f;
         metallic = 0.0f;
         return;
     }
-    vec4 data = texture[aiTextureType_SPECULAR].get4(u, v, false);
-    rouguness = data[1];
+    vec4 data = texture[aiTextureType_SPECULAR].get4(u, v, 4, false);
+    roughness = data[1];
     metallic = std::min(data[2], 0.99f);
-    rouguness *= 0.5f + 0.5f * pow(1.0f - metallic, 0.2f);
+    roughness *= 0.5f + 0.5f * pow(1.0f - metallic, 0.2f);
 }

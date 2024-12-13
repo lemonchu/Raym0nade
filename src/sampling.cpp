@@ -108,7 +108,7 @@ vec3 BRDF::getBRDF(vec3 outDir) const
     float Fr = mix(.04, 1.0, FH);
     float Gr = smithG_GGX(NdotL, .25) * smithG_GGX(NdotV, .25);
 
-    vec3 ret = ((1.0f/M_PI) * mix(Fd, ss, subsurface) * Cdlin + Fsheen) * (1-surface.metallic)
+    vec3 ret = (static_cast<float>(1.0f/M_PI) * mix(Fd, ss, subsurface) * Cdlin + Fsheen) * (1-surface.metallic)
              + (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1), Ctint, clearcoatTint)
              + Gs*Fs*Ds;
 

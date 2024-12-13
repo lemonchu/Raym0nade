@@ -194,8 +194,8 @@ void renderPixel(const Model &model, const RenderArgs &args,
     normalize(radiance_Is, exposure, trys_indirect);
 }
 
-void render(const Model &model, const RenderArgs &args,
-            RenderData &renderData, Image &image, int xL, int xR) {
+void renderWorker(const Model &model, const RenderArgs &args,
+                  RenderData &renderData, Image &image, int xL, int xR) {
     static const int
             C_calc = 256,
             C_report = 4096;
@@ -251,8 +251,8 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     threadPool.reserve(threads);
     for (int i = 0; i < threads; i++)
         threadPool.emplace_back([&](int index) {
-            render(model, args, datas[index], image,
-                     index * width / threads, (index + 1) * width / threads);
+            renderWorker(model, args, datas[index], image,
+                         index * width / threads, (index + 1) * width / threads);
         }, i);
     for (auto &thread : threadPool)
         thread.join();
