@@ -4,7 +4,6 @@
 BRDF::BRDF(const vec3 &inDir) : inDir(inDir) {}
 
 const float PI = 3.14159265358979323846;
-static const vec3 RGB_Weight = vec3(0.3f, 0.6f, 0.1f);
 
 float sqr(float x) { return x*x; }
 
@@ -71,8 +70,8 @@ vec3 BRDF::getBRDF(vec3 outDir) const
     const float specularTint = 0.0f;
     const float sheen = 0.0f;
     const float sheenTint = 0.0f;
-    const float clearcoat = 1.5f;
-    const float clearcoatGloss = 0.25f;
+    const float clearcoat = 1.6f;
+    const float clearcoatGloss = 0.2f;
     const float clearcoatTint = 0.0f;
 
     vec3 Ctint = Cdlum > 0.0f ? Cdlin/Cdlum : vec3(1); // normalize lum. to isolate hue+sat
@@ -108,7 +107,7 @@ vec3 BRDF::getBRDF(vec3 outDir) const
     float Fr = mix(.04, 1.0, FH);
     float Gr = smithG_GGX(NdotL, .25) * smithG_GGX(NdotV, .25);
 
-    vec3 ret = (static_cast<float>(1.0f/M_PI) * mix(Fd, ss, subsurface) * Cdlin + Fsheen) * (1-surface.metallic)
+    vec3 ret = (static_cast<float>(1.0f/PI) * mix(Fd, ss, subsurface) * Cdlin + Fsheen) * (1-surface.metallic)
              + (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1), Ctint, clearcoatTint)
              + Gs*Fs*Ds;
 
@@ -120,7 +119,7 @@ static const int MaxTrys = 16;
 void BRDF::sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) const {
 
     auto sampleGGX2 = [&](vec3 &outDir, float &pdf) -> void {
-        float u = gen(), phi = gen() * 2.0f * M_PI;
+        float u = gen(), phi = gen() * 2.0f * PI;
         float
             cosTheta = sqrt((1.0f-u) / (1.0f+(sqr(surface.roughness)-1.0f)*u)),
             sinTheta = sqrt(1 - cosTheta*cosTheta);
@@ -150,7 +149,7 @@ void BRDF::sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) c
 
 void BRDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) const {
     auto sampleCos = [&]() -> vec3 {
-        float u = gen(), phi = gen() * 2.0f * M_PI;
+        float u = gen(), phi = gen() * 2.0f * PI;
         float d = sqrt(u);
         float z = sqrt(1 - d*d);
         float x = d * cos(phi), y = d * sin(phi);
@@ -158,7 +157,7 @@ void BRDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) co
     };
     for (int T = 1; T <= MaxTrys; T++) {
         outDir = sampleCos();
-        float pdf = dot(outDir, surface.surfaceNormal) / M_PI;
+        float pdf = dot(outDir, surface.surfaceNormal) / PI;
         if (dot(outDir, surface.shapeNormal) > 0.0f) {
             brdfPdf = getBRDF(outDir) / pdf;
             return;
@@ -205,7 +204,7 @@ void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model,
     prob = weights[lightIndex] / totalWeight;
 }
 
-void generateRandomPointInLightFace(const LightFace &lightFace, const vec3 &pos,
+void generateRandomPointInLightFace(const Face &face, const vec3 &pos,
                                     Generator &gen, vec3 &lightPos, float &cosPhi) {
     float a = gen(), b = gen();
     if (a + b > 1.0f) {
@@ -213,7 +212,6 @@ void generateRandomPointInLightFace(const LightFace &lightFace, const vec3 &pos,
         b = 1.0f - b;
     }
     float c = 1.0f - a - b;
-    const Face &face = lightFace.face;
     lightPos = a * face.v[0] + b * face.v[1] + c * face.v[2];
     vec3 lightDir = normalize(lightPos - pos);
     vec2 texUV =
@@ -231,7 +229,7 @@ void sampleLightFace(const vec3 &pos, const LightObject &lightObject,
     static const int MaxTrys = 16;
     for (int T = 1; T <= MaxTrys; T++) {
         int faceIndex = lightObject.faceDist(gen);
-        auto &lightFace = lightObject.lightFaces[faceIndex];
+        const Face& lightFace = lightObject.faces[faceIndex];
         float cosPhi;
         generateRandomPointInLightFace(lightFace, pos, gen, lightPos, cosPhi);
         if (cosPhi > 0.0f) {

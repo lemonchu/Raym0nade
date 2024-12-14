@@ -31,15 +31,20 @@ void _mod(int &x, int m) {
     }
 }
 
-glm::vec3 get3_basic_from_pixel_array(const std::vector<uint8_t> &data, int index) {
+template<typename Vec>
+Vec get_basic(const std::vector<uint8_t> &data, int index);
+
+template<>
+vec3 get_basic<vec3>(const std::vector<uint8_t> &data, int index) {
     return vec3(
             static_cast<float>(data[index]),
             static_cast<float>(data[index + 1]),
             static_cast<float>(data[index + 2])
-    ) / 256.0f; // Considering that 256 brings possible zero result in NormalMap
+    ) / 255.0f;
 }
 
-glm::vec4 get4_basic_from_pixel_array(const std::vector<uint8_t> &data, int index) {
+template<>
+vec4 get_basic<vec4>(const std::vector<uint8_t> &data, int index) {
     return vec4(
             static_cast<float>(data[index]),
             static_cast<float>(data[index + 1]),
@@ -48,8 +53,9 @@ glm::vec4 get4_basic_from_pixel_array(const std::vector<uint8_t> &data, int inde
     ) / 255.0f;
 }
 
-// Helper function for bilinear interpolation
-glm::vec3 bilinearInterpolate3(const std::vector<uint8_t>& data, int width, int height, float u, float v) {
+template<typename Vec>
+Vec get_bilinear(const std::vector<uint8_t>& data, int width, int height, float u, float v) {
+    static const int BitWidth = std::is_same<Vec, vec3>::value ? 3 : 4;
     float x = u * width, y = v * height;
     int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
     float dx = x - x0, dy = y - y0;
@@ -57,33 +63,17 @@ glm::vec3 bilinearInterpolate3(const std::vector<uint8_t>& data, int width, int 
     _mod(y0, height);
     int x1 = (x0 + 1) % width, y1 = (y0 + 1) % height;
 
-    glm::vec3 c00 = get3_basic_from_pixel_array(data, (y0 * width + x0) * 3);
-    glm::vec3 c01 = get3_basic_from_pixel_array(data, (y0 * width + x1) * 3);
-    glm::vec3 c10 = get3_basic_from_pixel_array(data, (y1 * width + x0) * 3);
-    glm::vec3 c11 = get3_basic_from_pixel_array(data, (y1 * width + x1) * 3);
-    glm::vec3 c0 = c00 * (1.0f - dx) + c01 * dx;
-    glm::vec3 c1 = c10 * (1.0f - dx) + c11 * dx;
+    Vec c00 = get_basic<Vec>(data, (y0 * width + x0) * BitWidth);
+    Vec c01 = get_basic<Vec>(data, (y0 * width + x1) * BitWidth);
+    Vec c10 = get_basic<Vec>(data, (y1 * width + x0) * BitWidth);
+    Vec c11 = get_basic<Vec>(data, (y1 * width + x1) * BitWidth);
+    Vec c0 = c00 * (1.0f - dx) + c01 * dx;
+    Vec c1 = c10 * (1.0f - dx) + c11 * dx;
     return c0 * (1.0f - dy) + c1 * dy;
 }
 
-glm::vec4 bilinearInterpolate4(const std::vector<uint8_t>& data, int width, int height, float u, float v) {
-    float x = u * width, y = v * height;
-    int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
-    float dx = x - x0, dy = y - y0;
-    _mod(x0, width);
-    _mod(y0, height);
-    int x1 = (x0 + 1) % width, y1 = (y0 + 1) % height;
-
-    glm::vec4 c00 = get4_basic_from_pixel_array(data, (y0 * width + x0) * 4);
-    glm::vec4 c01 = get4_basic_from_pixel_array(data, (y0 * width + x1) * 4);
-    glm::vec4 c10 = get4_basic_from_pixel_array(data, (y1 * width + x0) * 4);
-    glm::vec4 c11 = get4_basic_from_pixel_array(data, (y1 * width + x1) * 4);
-    glm::vec4 c0 = c00 * (1.0f - dx) + c01 * dx;
-    glm::vec4 c1 = c10 * (1.0f - dx) + c11 * dx;
-    return c0 * (1.0f - dy) + c1 * dy;
-}
-
-glm::vec3 ImageData::get3(float u, float v, float depth) const {
+template<typename Vec>
+Vec ImageData::get(float u, float v, float depth) const {
     v = 1.0f - v;
     depth = std::max(std::min(depth, static_cast<float>(map_depth - 1)), 0.0f);
 
@@ -91,39 +81,10 @@ glm::vec3 ImageData::get3(float u, float v, float depth) const {
     int nextLevel = std::min(level + 1, map_depth - 1);
     float levelBlend = depth - level;
 
-    glm::vec3 color1 = bilinearInterpolate3(data[level],width >> level, height >> level, u, v);
-    glm::vec3 color2 = bilinearInterpolate3(data[nextLevel], width >> nextLevel, height >> nextLevel, u, v);
+    Vec ret1 = get_bilinear<Vec>(data[level], width >> level, height >> level, u, v);
+    Vec ret2 = get_bilinear<Vec>(data[nextLevel], width >> nextLevel, height >> nextLevel, u, v);
 
-    return color1 * (1.0f - levelBlend) + color2 * levelBlend;
-}
-
-glm::vec4 ImageData::get4(float u, float v, float depth, bool gammaFlag) const {
-    v = 1.0f - v;
-    depth = std::max(std::min(depth, static_cast<float>(map_depth - 1)), 0.0f);
-
-    int level = static_cast<int>(depth);
-    int nextLevel = std::min(level + 1, map_depth - 1);
-    float levelBlend = depth - level;
-
-    int widthLevel = width >> level;
-    int heightLevel = height >> level;
-    int widthNextLevel = width >> nextLevel;
-    int heightNextLevel = height >> nextLevel;
-
-    glm::vec4 color1 = bilinearInterpolate4(data[level], widthLevel, heightLevel, u, v) / 255.0f;
-    glm::vec4 color2 = bilinearInterpolate4(data[nextLevel], widthNextLevel, heightNextLevel, u, v) / 255.0f;
-
-    glm::vec4 finalColor = color1 * (1.0f - levelBlend) + color2 * levelBlend;
-
-    static const float gamma = 2.2f;
-
-    if (gammaFlag) {
-        finalColor.r = std::pow(finalColor.r, 1.0f / gamma);
-        finalColor.g = std::pow(finalColor.g, 1.0f / gamma);
-        finalColor.b = std::pow(finalColor.b, 1.0f / gamma);
-    }
-
-    return finalColor;
+    return ret1 * (1.0f - levelBlend) + ret2 * levelBlend;
 }
 
 bool ImageData::empty() const {
@@ -409,22 +370,34 @@ void Material::loadMaterialProperties(const aiMaterial *aiMat) {
     }
 }
 
+const float gamma = 2.2f;
+
+void gammaPow(vec4 &v) {
+    v[0] = pow(v[0], gamma);
+    v[1] = pow(v[1], gamma);
+    v[2] = pow(v[2], gamma);
+}
+
 vec4 Material::getDiffuseColor(float u, float v) const {
     if (texture[aiTextureType_DIFFUSE].empty())
         return vec4(0.5f, 0.5f, 0.5f, 1.0f);
-    return texture[aiTextureType_DIFFUSE].get4(u, v, 4, true);
+    vec4 color = texture[aiTextureType_DIFFUSE].get<vec4>(u, v, 4);
+    gammaPow(color);
+    return color;
 }
 
 vec3 Material::getNormal(float u, float v) const {
     if (texture[aiTextureType_NORMALS].empty())
-        return vec3(0.0f, 0.0f, 0.0f);
-    return texture[aiTextureType_NORMALS].get3(u, v, 4) * 2.0f - 1.0f;
+        return vec3(0.0f);
+    return texture[aiTextureType_NORMALS].get<vec3>(u, v, 4) * 2.0f - 1.0f;
 }
 
 vec3 Material::getEmissiveColor(float u, float v) const {
     if (texture[aiTextureType_EMISSIVE].empty())
         return vec3(0.0f);
-    return texture[aiTextureType_EMISSIVE].get4(u, v, 4, true);
+    vec4 color = texture[aiTextureType_EMISSIVE].get<vec4>(u, v, 4);
+    gammaPow(color);
+    return color;
 }
 
 void Material::getSurfaceData(float u, float v, float &roughness, float &metallic) const {
@@ -433,8 +406,8 @@ void Material::getSurfaceData(float u, float v, float &roughness, float &metalli
         metallic = 0.0f;
         return;
     }
-    vec4 data = texture[aiTextureType_SPECULAR].get4(u, v, 4, false);
-    roughness = data[1];
-    metallic = std::min(data[2], 0.99f);
+    vec4 surfaceData = texture[aiTextureType_SPECULAR].get<vec4>(u, v, 4);
+    roughness = surfaceData[1];
+    metallic = std::min(surfaceData[2], 0.99f);
     roughness *= 0.5f + 0.5f * pow(1.0f - metallic, 0.2f);
 }

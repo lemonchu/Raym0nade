@@ -5,13 +5,6 @@
 #include "geometry.h"
 #include "material.h"
 
-struct Generator {
-    std::mt19937 mt;
-    std::uniform_real_distribution<float> U;
-    explicit Generator(unsigned int seed);
-    float operator()();
-};
-
 struct VertexData {
     vec2 uv;
     vec3 normal;
@@ -23,7 +16,7 @@ struct VertexData {
 struct Face {
     vec3 v[3];
     VertexData *data[3];
-    Material *material;
+    const Material *material;
 
     [[nodiscard]] vec3 center() const;
     [[nodiscard]] Box aabb() const;
@@ -36,10 +29,11 @@ struct HitRecord {
     HitRecord(float t_min, float t_max);
 };
 
-struct LightFace {
-    Face face;
-    float power;
-    LightFace(Face face, float power);
+struct Generator {
+    std::mt19937 mt;
+    std::uniform_real_distribution<float> U;
+    explicit Generator(unsigned int seed);
+    float operator()();
 };
 
 class RandomDistribution {
@@ -52,9 +46,9 @@ public:
 
 class LightObject {
 public:
-    glm::vec3 center, color;
+    vec3 center, color;
     float power, powerDensity;
-    std::vector<LightFace> lightFaces;
+    std::vector<Face> faces;
     RandomDistribution faceDist;
     LightObject();
 };

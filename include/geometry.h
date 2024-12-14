@@ -8,9 +8,9 @@ using vec2 = glm::vec<2, float>;
 using vec3 = glm::vec<3, float>;
 using vec4 = glm::vec<4, float>;
 
-#ifndef M_PI
-const float M_PI = 3.14159265359f;
-#endif
+const float eps_zero = 1e-4f;
+
+const vec3 RGB_Weight = vec3(0.3f, 0.6f, 0.1f);
 
 bool isnan(vec3 v);
 
@@ -39,8 +39,5 @@ glm::vec3 barycentric(const glm::vec3& A, const glm::vec3& B, const glm::vec3& C
 
 void getTangentSpace(const vec3 &normal, vec3 &tangent, vec3 &bitangent);
 void getTangentSpaceWithInDir(const vec3 &normal, const vec3 &inDir, vec3 &tangent, vec3 &bitangent);
-void tangentTransform(const vec3 &normal, vec3 &v);
-
-const float eps_zero = 1e-4f;
 
 #endif // GEOMETRY_H

@@ -9,8 +9,6 @@
 #define MAX_MIPMAP_LEVEL 8
 
 class ImageData {
-private:
-    [[nodiscard]] int getPixelIndex(float u, float v, int level) const;
 public:
     int width, height, channels;
     std::vector<uint8_t> data[MAX_MIPMAP_LEVEL];
@@ -18,8 +16,8 @@ public:
     ImageData() : width(0), height(0), channels(0), map_depth(0) {}
 
     void generateMipmaps();
-    [[nodiscard]] glm::vec3 get3(float u, float v, float depth) const;
-    [[nodiscard]] glm::vec4 get4(float u, float v, float depth, bool gammaFlag) const;
+    template<typename Vec>
+    [[nodiscard]] Vec get(float u, float v, float depth) const;
     [[nodiscard]] bool empty() const;
     [[nodiscard]] bool hasTransparentPart() const;
 };

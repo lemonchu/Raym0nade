@@ -82,9 +82,9 @@ void getTangentSpace(const vec3 &normal, vec3 &tangent, vec3 &bitangent) {
     bitangent = cross(normal, tangent);
 }
 
-const float eps_direction = 1e-3f;
-
 void getTangentSpaceWithInDir(const vec3 &normal, const vec3 &inDir, vec3 &tangent, vec3 &bitangent) {
+    static const float eps_direction = 1e-3f;
+
     float cosTheta = dot(normal, inDir);
     if (cosTheta < - 1.0f + eps_direction) {
         getTangentSpace(normal, tangent, bitangent);
@@ -92,14 +92,4 @@ void getTangentSpaceWithInDir(const vec3 &normal, const vec3 &inDir, vec3 &tange
     }
     bitangent = normalize(cross(normal, inDir));
     tangent = cross(bitangent, normal);
-}
-
-void tangentTransform(const vec3 &normal, vec3 &v) {
-    vec3 v0 =
-            abs(normal.x) < 0.8f ?
-            vec3(1.0f, 0.0f, 0.0f) :
-            vec3(0.0f, 1.0f, 0.0f);
-    vec3 tangent, bitangent;
-    getTangentSpace(normal, tangent, bitangent);
-    v = v[0] * tangent + v[1] * bitangent + v[2] * normal;
 }

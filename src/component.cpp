@@ -1,9 +1,7 @@
 #include "component.h"
 
-LightFace::LightFace(Face face, float power) :
-        face(face), power(power) {}
-
-Generator::Generator(unsigned int seed) : mt(seed), U(0.0f, 1.0f) {}
+Generator::Generator(unsigned int seed) :
+    mt(seed), U(0.0f, 1.0f) {}
 
 float Generator::operator()() {
     return U(mt);
