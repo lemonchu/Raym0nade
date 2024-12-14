@@ -100,13 +100,6 @@ bool ImageData::hasTransparentPart() const {
 
 Material::Material() : hasTransparentPart(false) {}
 
-[[nodiscard]] const ImageData &Material::getImage(int index) const {
-    if (index < 0 || index >= AI_TEXTURE_TYPE_MAX + 1) {
-        throw std::out_of_range("Index out of range");
-    }
-    return texture[index];
-}
-
 void ImageData::generateMipmaps() {
 
     map_depth = MAX_MIPMAP_LEVEL; // NEVER REMOVE THIS LINE

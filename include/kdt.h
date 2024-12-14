@@ -6,24 +6,22 @@
 
 struct KDT_Node {
     Box box;
-    KDT_Node *son[2];
-    Face *faceL, *faceR;
+    int faceL, faceR;
     KDT_Node();
 };
 
 class KDT {
-    KDT_Node *buffer, *root;
-    int cur;
+    KDT_Node *node;
+    Face *faces;
 public:
+
     KDT();
 
-    KDT_Node *newNode();
-
-    void dfs_build(KDT_Node *&u, Face *faceL, Face *faceR);
+    void dfs_build(int u, int faceL, int faceR);
 
     void build(std::vector<Face> &faces);
 
-    void dfs_rayHit(KDT_Node *u, const Ray &ray, HitRecord &closest_hit) const;
+    void dfs_rayHit(int u, const Ray &ray, HitRecord &closest_hit) const;
 
     void rayHit(const Ray &ray, HitRecord &closest_hit) const;
 

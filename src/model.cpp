@@ -204,7 +204,6 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
 
     processMaterial(model_folder, scene);
 
-    lightObjects.reserve(scene->mNumMeshes);
     unsigned int vertexCnt = vertexCount(scene);
     std::cout << "Vertices: " << vertexCnt << std::endl;
     vertexDatas.reserve(vertexCnt);

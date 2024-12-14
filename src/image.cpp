@@ -135,10 +135,8 @@ void Image::shade(const vec3 &position, float exposure, int options) {
             color[i] = (G.surfaceNormal + vec3(1.0f)) / 2.0f;
             continue;
         }
-        if (options & (BaseColor | Emission)) {
-            const GbufferData &G = Gbuffer[i];
+        if (options & (BaseColor | Emission))
             getHitInfo(*G.face, G.position, normalize(G.position - position), hitInfo);
-        }
         vec3 radiance_d = vec3(0.0f), radiance_s = vec3(0.0f);
         if (options & DirectLight) {
             if (options & Diffuse)

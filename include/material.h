@@ -27,14 +27,12 @@ std::string urlDecode(const std::string &src);
 class Material {
 public:
 
-    ImageData texture[AI_TEXTURE_TYPE_MAX + 1];
+    ImageData texture[AI_TEXTURE_TYPE_MAX];
 
     std::string name;
     bool hasTransparentPart;
 
     Material();
-
-    [[nodiscard]] const ImageData& getImage(int index) const;
 
     static bool loadImageFromDDS(ImageData &imageData, const std::string& filename);
     static bool loadImageFromPNG(ImageData &imageData, const std::string& filename);

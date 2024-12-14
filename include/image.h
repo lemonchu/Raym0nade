@@ -19,15 +19,21 @@ struct GbufferData {
 
 class Image {
 public:
-    static const int
-            DirectLight = 1,
-            IndirectLight = 2,
-            BaseColor = 4,
-            Emission = 8,
-            shapeNormal = 16,
-            surfaceNormal = 32,
-            Diffuse = 64,
-            Specular = 128;
+    enum ShadeOption {
+        DirectLight = 1,
+        IndirectLight = 2,
+        BaseColor = 4,
+        Emission = 8,
+        shapeNormal = 16,
+        surfaceNormal = 32,
+        Diffuse = 64,
+        Specular = 128,
+        Direct_Diffuse = DirectLight | Diffuse,
+        Direct_Specular = DirectLight | Specular,
+        Indirect_Diffuse = IndirectLight | Diffuse,
+        Indirect_Specular = IndirectLight | Specular,
+        Full = DirectLight | IndirectLight | Diffuse | Specular | BaseColor | Emission
+    };
     int width, height;
     GbufferData *Gbuffer;
     RadianceData *radiance_Dd, *radiance_Ds, *radiance_Id, *radiance_Is;

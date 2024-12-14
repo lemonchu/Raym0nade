@@ -135,8 +135,8 @@ void rayCasting(Model &model, const RenderArgs &args, Image &image) {
     for (int x = 0; x < width; x++)
         for (int y = 0; y < height; y++) {
             float
-                    rayX = x - width / 2.0f,
-                    rayY = y - height / 2.0f;
+                    rayX = static_cast<float>(x) - width / 2.0f,
+                    rayY = static_cast<float>(y) - height / 2.0f;
             vec3 aim = normalize(direction + accuracy * (rayX * right + rayY * up));
             Ray ray = {position, aim};
             GbufferData &Gbuffer = image.Gbuffer[y * width + x];
@@ -241,12 +241,14 @@ void render_multiThread(Model &model, const RenderArgs &args) {
 
     std::cout << "Ray casting completed. (" << clock()-startTime << " ms)"<< std::endl;
 
-    image.shade(position, exposure, Image::BaseColor);
-    image.save((args.savePath+"(DiffuseColor).png").c_str());
-    image.shade(position, exposure, Image::shapeNormal);
-    image.save((args.savePath+"(shapeNormal).png").c_str());
-    image.shade(position, exposure, Image::surfaceNormal);
-    image.save((args.savePath+"(surfaceNormal).png").c_str());
+    auto exportImage = [&](const std::string &tag, int shadeOptions) {
+        image.shade(position, exposure, shadeOptions);
+        image.save((args.savePath + "(" + tag + ").png").c_str());
+    };
+
+    exportImage("DiffuseColor", Image::BaseColor);
+    exportImage("shapeNormal", Image::shapeNormal);
+    exportImage("surfaceNormal", Image::surfaceNormal);
 
     std::atomic<int> renderedPixels(0);
     std::vector<RenderData> datas;
@@ -276,34 +278,17 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     std::cout << "Ray intersection & Texture query time: " << T_ray << " ms*thread." << std::endl;
     std::cout << "Direct light samples: " << C_lightSamples << std::endl;
 
-
-    image.shade(position, exposure, Image::DirectLight | Image::Diffuse);
-    image.save((args.savePath+"(Direct_Diffuse).png").c_str());
-    image.shade(position, exposure, Image::DirectLight | Image::Specular);
-    image.save((args.savePath+"(Direct_Specular).png").c_str());
-    image.shade(position, exposure, Image::IndirectLight | Image::Diffuse);
-    image.save((args.savePath+"(Indirect_Diffuse).png").c_str());
-    image.shade(position, exposure, Image::IndirectLight | Image::Specular);
-    image.save((args.savePath+"(Indirect_Specular).png").c_str());
-    image.shade(position, exposure,
-                Image::DirectLight | Image::IndirectLight |
-                Image::Diffuse | Image::Specular |
-                Image::Emission | Image::BaseColor);
-    image.save((args.savePath+"(raw).png").c_str());
+    exportImage("Direct_Diffuse", Image::Direct_Diffuse);
+    exportImage("Direct_Specular", Image::Direct_Specular);
+    exportImage("Indirect_Diffuse", Image::Indirect_Diffuse);
+    exportImage("Indirect_Specular", Image::Indirect_Specular);
+    exportImage("Raw", Image::Full);
     image.filter();
-    image.shade(position, exposure, Image::DirectLight | Image::Diffuse);
-    image.save((args.savePath+"(Direct_Diffuse_Filter).png").c_str());
-    image.shade(position, exposure, Image::DirectLight | Image::Specular);
-    image.save((args.savePath+"(Direct_Specular_Filter).png").c_str());
-    image.shade(position, exposure, Image::IndirectLight | Image::Diffuse);
-    image.save((args.savePath+"(Indirect_Diffuse_Filter).png").c_str());
-    image.shade(position, exposure, Image::IndirectLight | Image::Specular);
-    image.save((args.savePath+"(Indirect_Specular_Filter).png").c_str());
-    image.shade(position, exposure,
-                Image::DirectLight | Image::IndirectLight |
-                Image::Diffuse | Image::Specular |
-                Image::Emission | Image::BaseColor);
-    image.save((args.savePath+"(Filter).png").c_str());
+    exportImage("Direct_Diffuse_Filter", Image::Direct_Diffuse);
+    exportImage("Direct_Specular_Filter", Image::Direct_Specular);
+    exportImage("Indirect_Diffuse_Filter", Image::Indirect_Diffuse);
+    exportImage("Indirect_Specular_Filter", Image::Indirect_Specular);
+    exportImage("Filter", Image::Full);
 
     std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;
 }

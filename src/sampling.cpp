@@ -3,7 +3,7 @@
 
 BRDF::BRDF(const vec3 &inDir) : inDir(inDir) {}
 
-const float PI = 3.14159265358979323846;
+const float PI = 3.14159265358979323846f;
 
 float sqr(float x) { return x*x; }
 
@@ -45,13 +45,10 @@ void BRDF::genTangentSpace() {
     getTangentSpaceWithInDir(surface.surfaceNormal, inDir, tangent, bitangent);
 }
 
-vec3 BRDF::getBRDF(vec3 outDir) const
-{
+vec3 BRDF::getBRDF(vec3 outDir) const {
     const vec3 &V = inDir;
     const vec3 &L = outDir;
     const vec3 &N = surface.surfaceNormal;
-    const vec3 &X = tangent;
-    const vec3 &Y = bitangent;
 
     float NdotL = dot(N,L);
     float NdotV = dot(N,V);
@@ -65,23 +62,24 @@ vec3 BRDF::getBRDF(vec3 outDir) const
     vec3 Cdlin = surface.baseColor;
     float Cdlum = dot(Cdlin, RGB_Weight); // luminance approx.
 
-    const float subsurface = 0.0f;
-    const float specular = 0.1f;
-    const float specularTint = 0.0f;
-    const float sheen = 0.0f;
-    const float sheenTint = 0.0f;
-    const float clearcoat = 1.6f;
-    const float clearcoatGloss = 0.2f;
-    const float clearcoatTint = 0.0f;
+    const float
+        subsurface = 0.0f,
+        specular = 0.1f,
+        specularTint = 0.0f,
+        sheen = 0.0f,
+        sheenTint = 0.0f,
+        clearcoat = 1.6f,
+        clearcoatGloss = 0.2f,
+        clearcoatTint = 0.0f;
 
-    vec3 Ctint = Cdlum > 0.0f ? Cdlin/Cdlum : vec3(1); // normalize lum. to isolate hue+sat
-    vec3 Cspec0 = mix(specular * .08f * glm::mix(vec3(1), Ctint, specularTint), Cdlin, surface.metallic);
+    vec3 Ctint = Cdlum > 0.0f ? Cdlin/Cdlum : vec3(1.0f); // normalize lum. to isolate hue+sat
+    vec3 Cspec0 = mix(specular * .08f * glm::mix(vec3(1.0f), Ctint, specularTint), Cdlin, surface.metallic);
     vec3 Csheen = mix(vec3(1.0f), Ctint, sheenTint);
 
     // Diffuse fresnel - go from 1 at normal incidence to .5 at grazing
     // and mix in diffuse retro-reflection based on roughness
     float FL = SchlickFresnel(NdotL), FV = SchlickFresnel(NdotV);
-    float Fd90 = 0.5f + 2 * LdotH*LdotH * surface.roughness;
+    float Fd90 = 0.5f + 2.0f * LdotH*LdotH * surface.roughness;
     float Fd = mix(1.0f, Fd90, FL) * mix(1.0f, Fd90, FV);
 
     // Based on Hanrahan-Krueger brdf approximation of isotropic bssrdf
@@ -89,7 +87,7 @@ vec3 BRDF::getBRDF(vec3 outDir) const
     // Fss90 used to "flatten" retroreflection based on roughness
     float Fss90 = LdotH * LdotH * surface.roughness;
     float Fss = mix(1.0f, Fss90, FL) * mix(1.0f, Fss90, FV);
-    float ss = 1.25f * (Fss * (1 / (NdotL + NdotV) - .5f) + .5f);
+    float ss = 1.25f * (Fss * (1.0f / (NdotL + NdotV) - .5f) + .5f);
 
     // specular
     float Ds = GTR2(NdotH, surface.roughness);
@@ -103,12 +101,12 @@ vec3 BRDF::getBRDF(vec3 outDir) const
     vec3 Fsheen = FH * sheen * Csheen;
 
     // clearcoat (ior = 1.5 -> F0 = 0.04)
-    float Dr = GTR1(NdotH, mix(.1,.001,clearcoatGloss));
-    float Fr = mix(.04, 1.0, FH);
-    float Gr = smithG_GGX(NdotL, .25) * smithG_GGX(NdotV, .25);
+    float Dr = GTR1(NdotH, mix(.1f,.001f,clearcoatGloss));
+    float Fr = mix(.04f, 1.0f, FH);
+    float Gr = smithG_GGX(NdotL, .25f) * smithG_GGX(NdotV, .25f);
 
-    vec3 ret = (static_cast<float>(1.0f/PI) * mix(Fd, ss, subsurface) * Cdlin + Fsheen) * (1-surface.metallic)
-             + (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1), Ctint, clearcoatTint)
+    vec3 ret = ((1.0f/PI) * mix(Fd, ss, subsurface) * Cdlin + Fsheen) * (1-surface.metallic)
+             + (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1.0f), Ctint, clearcoatTint)
              + Gs*Fs*Ds;
 
     return ret * dot(outDir, surface.surfaceNormal);
@@ -181,6 +179,7 @@ int sample(const std::vector<float> &weights, float randomValue) {
         if (randomValue <= cumulativeWeight)
             return i;
     }
+    return -1;
 }
 
 void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model,
@@ -224,9 +223,7 @@ void generateRandomPointInLightFace(const Face &face, const vec3 &pos,
 }
 
 void sampleLightFace(const vec3 &pos, const LightObject &lightObject,
-                     Generator &gen, vec3 &lightPos, float &faceFactor, int &fails) {
-    vec3 lightDir;
-    static const int MaxTrys = 16;
+                     Generator &gen, vec3 &lightPos, float &faceFactor) {
     for (int T = 1; T <= MaxTrys; T++) {
         int faceIndex = lightObject.faceDist(gen);
         const Face& lightFace = lightObject.faces[faceIndex];
@@ -261,7 +258,7 @@ vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model,
 
     vec3 lightPos;
     float faceFactor;
-    sampleLightFace(pos, lightObject, gen, lightPos, faceFactor, fails);
+    sampleLightFace(pos, lightObject, gen, lightPos, faceFactor);
     if (isnan(lightPos))
         return vec3(0.0f);
 

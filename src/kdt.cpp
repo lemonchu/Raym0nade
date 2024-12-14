@@ -2,7 +2,7 @@
 #include <iostream>
 #include "kdt.h"
 
-KDT_Node::KDT_Node() : faceL(nullptr), faceR(nullptr), son{nullptr, nullptr} {}
+KDT_Node::KDT_Node() = default;
 
 template<int axis>
 bool cmp(const Face &A, const Face &B) {
@@ -11,25 +11,26 @@ bool cmp(const Face &A, const Face &B) {
 
 bool (*cmpFunc[3])(const Face &, const Face &) = {cmp<0>, cmp<1>, cmp<2>};
 
-KDT::KDT() : buffer(nullptr), root(nullptr), cur(0) {}
+KDT::KDT() : node(nullptr) {}
 
-KDT_Node *KDT::newNode() { return buffer + (cur++); }
+const unsigned int LeafBagSize = 8;
 
-const unsigned int LeafBagSize = 12;
+int nodeCount(int u, int n) {
+    return (n <= LeafBagSize) ? u : nodeCount(u<<1|1, (n+1)>>1);
+}
 
-void KDT::dfs_build(KDT_Node *&u, Face *faceL, Face *faceR) {
-    u = newNode();
+void KDT::dfs_build(int u, int faceL, int faceR) {
     if (faceR - faceL <= LeafBagSize) {
-        u->faceL = faceL;
-        u->faceR = faceR;
-        u->box = Box(vec3(INFINITY),vec3(-INFINITY));
-        for (Face *ptr = u->faceL; ptr != u->faceR; ++ptr)
-            u->box = u->box + ptr->aabb();
+        node[u].faceL = faceL;
+        node[u].faceR = faceR;
+        node[u].box = Box(vec3(INFINITY),vec3(-INFINITY));
+        for (int i = faceL; i < faceR; i++)
+            node[u].box = node[u].box + faces[i].aabb();
         return;
     }
     vec3 Em = vec3(0), Em2 = vec3(0);
-    for (Face *ptr = faceL; ptr != faceR; ++ptr) {
-        vec3 m = (ptr->v[0] + ptr->v[1] + ptr->v[2]);
+    for (int i = faceL; i < faceR; i++) {
+        vec3 m = faces[i].center();
         Em += m;
         Em2 += m * m;
     }
@@ -37,26 +38,29 @@ void KDT::dfs_build(KDT_Node *&u, Face *faceL, Face *faceR) {
     int axis = 0;
     if (D[1] > D[0]) axis = 1;
     if (D[2] > D[0] && D[2] > D[1]) axis = 2;
-    Face *faceM = faceL + (faceR - faceL) / 2;
-    std::nth_element(faceL, faceM, faceR, cmpFunc[axis]);
-    dfs_build(u->son[0], faceL, faceM);
-    dfs_build(u->son[1], faceM, faceR);
-    u->box = u->son[0]->box + u->son[1]->box;
+    int faceM = (faceR + faceL) / 2;
+    std::nth_element(faces+faceL, faces+faceM, faces+faceR, cmpFunc[axis]);
+    dfs_build(u<<1, faceL, faceM);
+    dfs_build(u<<1|1, faceM, faceR);
+    node[u].box = node[u<<1].box + node[u<<1|1].box;
 }
 
-void KDT::build(std::vector<Face> &triangles) {
-    buffer = new KDT_Node[triangles.size() / LeafBagSize * 4];
-    dfs_build(root, &triangles.front(), &triangles.back() + 1);
-    std::cout << "build(cur): " << cur << std::endl;
+void KDT::build(std::vector<Face> &faces) {
+    int size = nodeCount(1, faces.size()) + 1;
+    node = new KDT_Node[size];
+    this->faces = &faces.front();
+    dfs_build(1, 0, faces.size());
+    std::cout << "KDT built with size " << size << std::endl;
 }
 
-void KDT::dfs_rayHit(KDT_Node *u, const Ray &ray, HitRecord &closest_hit) const {
-    if (u->son[0] == nullptr) {
-        for (Face *ptr = u->faceL; ptr != u->faceR; ++ptr) {
-            float t = RayTriangleIntersection(ray, ptr->v[0], ptr->v[1], ptr->v[2]);
+void KDT::dfs_rayHit(int u, const Ray &ray, HitRecord &closest_hit) const {
+    if (node[u].faceR) {
+        for (int i = node[u].faceL; i < node[u].faceR; i++) {
+            const Face &face = faces[i];
+            float t = RayTriangleIntersection(ray, face.v[0], face.v[1], face.v[2]);
             if (closest_hit.t_min < t && t < closest_hit.t_max) {
                 closest_hit.t_max = t;
-                closest_hit.face = ptr;
+                closest_hit.face = &face;
             }
         }
         return;
@@ -67,26 +71,26 @@ void KDT::dfs_rayHit(KDT_Node *u, const Ray &ray, HitRecord &closest_hit) const 
         tR0 = closest_hit.t_max,
         tL1 = closest_hit.t_min,
         tR1 = closest_hit.t_max;
-    rayInBox(ray, u->son[0]->box, tL0, tR0);
-    rayInBox(ray, u->son[1]->box, tL1, tR1);
+    rayInBox(ray, node[u<<1].box, tL0, tR0);
+    rayInBox(ray, node[u<<1|1].box, tL1, tR1);
 
     if (tL0 < tL1) {
         if (tL0 < tR0)
-            dfs_rayHit(u->son[0], ray, closest_hit);
+            dfs_rayHit(u<<1, ray, closest_hit);
         if (tL1 < tR1 && tL1 < closest_hit.t_max)
-            dfs_rayHit(u->son[1], ray, closest_hit);
+            dfs_rayHit(u<<1|1, ray, closest_hit);
     } else {
         if (tL1 < tR1)
-            dfs_rayHit(u->son[1], ray, closest_hit);
+            dfs_rayHit(u<<1|1, ray, closest_hit);
         if (tL0 < tR0 && tL0 < closest_hit.t_max)
-            dfs_rayHit(u->son[0], ray, closest_hit);
+            dfs_rayHit(u<<1, ray, closest_hit);
     }
 }
 
 void KDT::rayHit(const Ray &ray, HitRecord &closest_hit) const {
-    dfs_rayHit(root, ray, closest_hit);
+    dfs_rayHit(1, ray, closest_hit);
 }
 
 KDT::~KDT() {
-    delete[] buffer;
+    delete[] node;
 }

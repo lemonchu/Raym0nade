@@ -12,7 +12,7 @@
 struct HitInfo {
     vec3 shapeNormal, surfaceNormal, emission;
     vec4 baseColor;
-    float t, roughness, metallic, specular;
+    float t, roughness, metallic;
     HitInfo() : t(0) {}
 };
 
