@@ -82,13 +82,6 @@ vec3 sampleRay(Ray ray, const RayDifferential &base_diff, const Model &model, Re
 
     vec3 irradiance = sampleRay(newRay, next_diff, model, renderData, fails, depth + 1) / P_RR;
 
-    if (isnan(brdfPdf)) {
-        irradiance = vec3(0.0f);
-        std::cout << brdfPdf.z << std::endl;
-        throw std::runtime_error("Last brdfPdf  NaN detected! [Sample Ray]");
-        std::cerr << "Warning: NaN detected! (SampleRay)" << std::endl;
-    }
-
     return brdfPdf * irradiance;
 }
 

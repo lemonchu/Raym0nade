@@ -57,7 +57,7 @@ template<typename Vec>
 Vec get_bilinear(const std::vector<uint8_t>& data, int width, int height, float u, float v) {
     static const int BitWidth = std::is_same<Vec, vec3>::value ? 3 : 4;
     float x = u * width, y = v * height;
-    int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
+    int x0 = floorf(x), y0 = floorf(y);
     float dx = x - x0, dy = y - y0;
     _mod(x0, width);
     _mod(y0, height);
@@ -69,6 +69,12 @@ Vec get_bilinear(const std::vector<uint8_t>& data, int width, int height, float 
     Vec c11 = get_basic<Vec>(data, (y1 * width + x1) * BitWidth);
     Vec c0 = c00 * (1.0f - dx) + c01 * dx;
     Vec c1 = c10 * (1.0f - dx) + c11 * dx;
+
+    Vec ret = c0 * (1.0f - dy) + c1 * dy;
+
+    if (dx < 0.0f || dy < 0.0f)
+        std::cout << "dx: " << dx << " dy: " << dy << std::endl;
+
     return c0 * (1.0f - dy) + c1 * dy;
 }
 
@@ -365,6 +371,10 @@ void Material::loadMaterialProperties(const aiMaterial *aiMat) {
 
 void gammaPow(vec4 &v) {
     static const float gamma = 2.2f;
+    if (v[0] < 0.0f || v[1] < 0.0f || v[2] < 0.0f) {
+        std::cerr << "color: " << v[0] << ", " << v[1] << ", " << v[2] << std::endl;
+        throw std::runtime_error("Invalid color value");
+    }
     v[0] = pow(v[0], gamma);
     v[1] = pow(v[1], gamma);
     v[2] = pow(v[2], gamma);

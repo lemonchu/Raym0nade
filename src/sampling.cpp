@@ -113,12 +113,7 @@ vec3 BRDF::getBRDF(vec3 outDir) const {
              + (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1.0f), Ctint, clearcoatTint)
              + Gs*Fs*Ds;
 
-    ret *= NdotL;
-
-    if (isnan(ret))
-        throw std::runtime_error("brdfPdf NaN detected! [ret]");
-
-    return ret;
+    return ret * NdotL;
 }
 
 static const int MaxTrys = 16;
@@ -141,22 +136,12 @@ void BRDF::sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) c
             return ;
         }
         pdf = GTR2(cosTheta, surface.roughness) * cosTheta / (4.0f * LDotH);
-        if (isinf(pdf)) {
-            std::cout << "cosTheta: " << cosTheta << std::endl;
-            std::cout << "LDotH: " << LDotH << std::endl;
-            std::cout << "surface.roughness: " << surface.roughness << std::endl;
-            throw std::runtime_error("brdfPdf NaN detected! [sampleGGX2]");
-        }
     };
     for (int T = 1; T <= MaxTrys; T++) {
         float pdf;
         sampleGGX2(outDir, pdf);
         if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
             brdfPdf = getBRDF(outDir) / pdf;
-            if (isnan(brdfPdf)) {
-                std::cout << "pdf: " << pdf << std::endl;
-                throw std::runtime_error("brdfPdf NaN detected! [sample]");
-            }
             return;
         }
         fails++;
@@ -177,8 +162,6 @@ void BRDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) co
         float pdf = dot(outDir, surface.surfaceNormal) / PI;
         if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
             brdfPdf = getBRDF(outDir) / pdf;
-            if (isnan(brdfPdf))
-                throw std::runtime_error("brdfPdf NaN detected! [sample]");
             return ;
         }
         fails++;
