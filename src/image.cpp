@@ -5,10 +5,8 @@
 
 RadianceData::RadianceData() : radiance(vec3(0.0f)), Var(0.0f) {}
 
-GbufferData::GbufferData() :  shapeNormal(vec3(0.0f)), surfaceNormal(vec3(0.0f)), position(vec3(0.0f)), face(nullptr) {}
-
 Image::Image(int width, int height) : width(width), height(height) {
-    Gbuffer = new GbufferData[width * height];
+    Gbuffer = new HitInfo[width * height];
     radiance_Dd = new RadianceData[width * height];
     radiance_Ds = new RadianceData[width * height];
     radiance_Id = new RadianceData[width * height];
@@ -41,14 +39,14 @@ void filterVar(RadianceData *radiance, int width, int height) {
         radiance[i].Var = varBuffer[i];
 }
 
-float getWeight(const GbufferData &Gp, const GbufferData &Gq, const RadianceData &Lp, const RadianceData &Lq) {
+float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, const RadianceData &Lq) {
     static const float
             sigma_z = 1.0f,
             sigma_n = 128.0f,
             sigma_l = 1.0f,
             eps = 1e-2f;
 
-    if (Gq.face == nullptr)
+    if (isnan(Gq.position))
         return 0.0f;
 
     float weight = 1.0f;
@@ -67,7 +65,7 @@ float getWeight(const GbufferData &Gp, const GbufferData &Gq, const RadianceData
     return (radianceDiff < 10.0f) ? weight * std::exp(-radianceDiff) : 0.0f;
 }
 
-void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, int width, int height, int step) {
+void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, int height, int step) {
 
     static const int filterRadius = 2;
     static const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
@@ -77,8 +75,8 @@ void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, int widt
         for (int x = 0; x < width; ++x) {
             float weightSum = 0.0f;
             RadianceData &Lp = radiance[y * width + x];
-            const GbufferData &Gp = Gbuffer[y * width + x];
-            if (Gp.face == nullptr)
+            const HitInfo &Gp = Gbuffer[y * width + x];
+            if (isnan(Gp.position))
                 continue;
             for (int dy = -filterRadius; dy <= filterRadius; ++dy)
                 for (int dx = -filterRadius; dx <= filterRadius; ++dx) {
@@ -87,7 +85,7 @@ void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, int widt
                         continue;
                     float weight = h[dx + filterRadius] * h[dy + filterRadius];
                     RadianceData &Lq = radiance[ny * width + nx];
-                    const GbufferData &Gq = Gbuffer[ny * width + nx];
+                    const HitInfo &Gq = Gbuffer[ny * width + nx];
                     if (dx != 0 || dy != 0)
                         weight *= getWeight(Gp, Gq, Lp, Lq);
                     weightSum += weight;
@@ -103,7 +101,7 @@ void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, int widt
     }
 }
 
-void filterRadiance(RadianceData *radiance, const GbufferData *Gbuffer, int width, int height) {
+void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, int height) {
     filterVar(radiance, width, height);
     filterRadiance(radiance, Gbuffer, width, height, 1);
     filterRadiance(radiance, Gbuffer, width, height, 2);
@@ -119,11 +117,10 @@ void Image::filter() {
     filterRadiance(radiance_Is, Gbuffer, width, height);
 }
 
-void Image::shade(const vec3 &position, float exposure, int options) {
-    HitInfo hitInfo;
+void Image::shade(float exposure, int options) {
     for (int i = 0; i < width * height; ++i) {
-        GbufferData &G = Gbuffer[i];
-        if (G.face == nullptr) {
+        const HitInfo &G = Gbuffer[i];
+        if (isnan(G.position)) {
             color[i] = vec3(0.0f);
             continue;
         }
@@ -135,8 +132,6 @@ void Image::shade(const vec3 &position, float exposure, int options) {
             color[i] = (G.surfaceNormal + vec3(1.0f)) / 2.0f;
             continue;
         }
-        if (options & (BaseColor | Emission))
-            getHitInfo(*G.face, G.position, normalize(G.position - position), hitInfo);
         vec3 radiance_d = vec3(0.0f), radiance_s = vec3(0.0f);
         if (options & DirectLight) {
             if (options & Diffuse)
@@ -152,10 +147,10 @@ void Image::shade(const vec3 &position, float exposure, int options) {
         }
         if (!(options & (DirectLight | IndirectLight)))
             radiance_d = vec3(1.0f);
-        vec3 diffuseColor = (options & BaseColor) ? hitInfo.baseColor : vec3(1.0f);
+        vec3 diffuseColor = (options & BaseColor) ? G.baseColor : vec3(1.0f);
         color[i] = diffuseColor * radiance_d + radiance_s;
         if (options & Emission)
-            color[i] += hitInfo.emission * exposure;
+            color[i] += G.emission * exposure;
     }
     gammaCorrection();
 }

@@ -10,16 +10,16 @@
 #include <Python.h>
 
 struct HitInfo {
-    vec3 shapeNormal, surfaceNormal, emission;
-    vec4 baseColor;
-    float t, roughness, metallic;
-    HitInfo() : t(0) {}
+    vec3 shapeNormal, surfaceNormal, emission, baseColor, position;
+    float roughness, metallic;
+    HitInfo();
 };
 
-void getHitNormal(const Face& face, const vec3 &inDir, const vec3 &baryCoords, const vec2 &texUV,
-                  vec3 &shapeNormal, vec3 &surfaceNormal);
-void getHitInfo(const Face& face, const glm::vec3& intersection, const vec3 &inDir,
-                HitInfo &hitInfo);
+void getHitAllNormals(const Face& face, const vec3 &inDir, const vec3 &baryCoords,
+                      vec3 &shapeNormal_to_compute, vec3 &surfaceNormal_to_compute_raw);
+void getHitTexture(const Face& face, const vec3 &baryCoords, const vec3 &hit_dPdx, const vec3 &hit_dPdy, HitInfo &hitInfo_to_init);
+void getHitInfo(const Face& face, const vec3 &inDir,
+                HitInfo &hitInfo_to_init, const glm::vec3& hit_dPdx, const glm::vec3& hit_dPdy);
 
 class Model {
 private:
@@ -37,9 +37,8 @@ public:
 
     Model();
     Model(const std::string &model_folder, const std::string &model_name);
-    void rayHit(Ray ray, HitInfo &hitInfo) const;
-    bool rayHit_test(Ray ray, float aimDepth) const;
-    void rayCast(Ray ray, float &depth, const Face *&face) const;
+    [[nodiscard]] HitRecord rayHit(Ray ray) const;
+    [[nodiscard]] bool rayHit_test(Ray ray, float aimDepth) const;
 };
 
 #endif // MODEL_H

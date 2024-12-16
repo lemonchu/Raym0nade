@@ -13,7 +13,7 @@ struct RenderArgs {
 
 struct RenderData {
     Generator gen;
-    int T_RayAndTexture, C_lightSamples;
+    int C_lightSamples;
     std::atomic<int> *renderedPixels;
     explicit RenderData(int seed);
 };

@@ -1,7 +1,11 @@
 #include <iostream>
 #include "sampling.h"
 
-BRDF::BRDF(const vec3 &inDir) : inDir(inDir) {}
+BRDF::BRDF(const vec3 &inDir, const vec3 &hit_position) : inDir(inDir) {
+    surface.position = hit_position;
+}
+
+BRDF::BRDF(const vec3 &inDir,const HitInfo &hitInfo) : inDir(inDir), surface(hitInfo) {}
 
 const float PI = 3.14159265358979323846f;
 
@@ -109,7 +113,12 @@ vec3 BRDF::getBRDF(vec3 outDir) const {
              + (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1.0f), Ctint, clearcoatTint)
              + Gs*Fs*Ds;
 
-    return ret * dot(outDir, surface.surfaceNormal);
+    ret *= NdotL;
+
+    if (isnan(ret))
+        throw std::runtime_error("brdfPdf NaN detected! [ret]");
+
+    return ret;
 }
 
 static const int MaxTrys = 16;
@@ -127,17 +136,27 @@ void BRDF::sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) c
         outDir = reflect(-inDir, H);
         float LDotH = dot(outDir, H);
         float LdotN = dot(outDir, surface.surfaceNormal);
-        if (LDotH < 0.0f || LdotN < 0.0f) {
+        if (LDotH <= 0.0f || LdotN <= 0.0f) {
             pdf = 0.0f;
             return ;
         }
         pdf = GTR2(cosTheta, surface.roughness) * cosTheta / (4.0f * LDotH);
+        if (isinf(pdf)) {
+            std::cout << "cosTheta: " << cosTheta << std::endl;
+            std::cout << "LDotH: " << LDotH << std::endl;
+            std::cout << "surface.roughness: " << surface.roughness << std::endl;
+            throw std::runtime_error("brdfPdf NaN detected! [sampleGGX2]");
+        }
     };
     for (int T = 1; T <= MaxTrys; T++) {
         float pdf;
         sampleGGX2(outDir, pdf);
         if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
             brdfPdf = getBRDF(outDir) / pdf;
+            if (isnan(brdfPdf)) {
+                std::cout << "pdf: " << pdf << std::endl;
+                throw std::runtime_error("brdfPdf NaN detected! [sample]");
+            }
             return;
         }
         fails++;
@@ -156,9 +175,11 @@ void BRDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) co
     for (int T = 1; T <= MaxTrys; T++) {
         outDir = sampleCos();
         float pdf = dot(outDir, surface.surfaceNormal) / PI;
-        if (dot(outDir, surface.shapeNormal) > 0.0f) {
+        if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
             brdfPdf = getBRDF(outDir) / pdf;
-            return;
+            if (isnan(brdfPdf))
+                throw std::runtime_error("brdfPdf NaN detected! [sample]");
+            return ;
         }
         fails++;
     }
@@ -213,12 +234,8 @@ void generateRandomPointInLightFace(const Face &face, const vec3 &pos,
     float c = 1.0f - a - b;
     lightPos = a * face.v[0] + b * face.v[1] + c * face.v[2];
     vec3 lightDir = normalize(lightPos - pos);
-    vec2 texUV =
-            a * face.data[0]->uv +
-            b * face.data[1]->uv +
-            c * face.data[2]->uv;
     vec3 shapeNormal, surfaceNormal;
-    getHitNormal(face, lightDir, vec3(a,b,c), texUV, shapeNormal, surfaceNormal);
+    getHitAllNormals(face, lightDir, vec3(a,b,c), shapeNormal, surfaceNormal);
     cosPhi = dot(surfaceNormal, -lightDir);
 }
 
@@ -237,7 +254,7 @@ void sampleLightFace(const vec3 &pos, const LightObject &lightObject,
     lightPos = vec3(NAN);
 }
 
-vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model,
+vec3 sampleDirectLight(const BRDF &brdf, const Model &model,
                        Generator &gen, vec3 &brdfPdf, int &fails) {
 
     // vec3 light = vec3(0.0f);
@@ -248,6 +265,7 @@ vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model,
     //     light += dot * lightObject.color * lightObject.power / (distance * distance + eps_lightRadius);
     // }
     // return vec4(light, 1.0f);
+    const vec3 &pos = brdf.surface.position;
 
     float P_lightObject;
     int lightIndex;

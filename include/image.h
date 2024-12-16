@@ -11,12 +11,6 @@ struct RadianceData {
     RadianceData();
 };
 
-struct GbufferData {
-    const Face *face;
-    vec3 shapeNormal, surfaceNormal, position;
-    GbufferData();
-};
-
 class Image {
 public:
     enum ShadeOption {
@@ -35,14 +29,14 @@ public:
         Full = DirectLight | IndirectLight | Diffuse | Specular | BaseColor | Emission
     };
     int width, height;
-    GbufferData *Gbuffer;
+    HitInfo *Gbuffer;
     RadianceData *radiance_Dd, *radiance_Ds, *radiance_Id, *radiance_Is;
     vec3 *color;
     Image(int width, int height);
 
     void filter();
 
-    void shade(const vec3 &position, float exposure, int options);
+    void shade(float exposure, int options);
 
     void bloom();
 

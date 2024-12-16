@@ -104,7 +104,7 @@ void ImageData::generateMipmaps() {
 
     map_depth = MAX_MIPMAP_LEVEL; // NEVER REMOVE THIS LINE
 
-    std::cout << "Generating mipmaps...";
+    std::cout << "--- Generating mipmaps...";
     for (int level = 1; level < MAX_MIPMAP_LEVEL; ++level) {
         int prevWidth = width >> (level - 1);
         int prevHeight = height >> (level - 1);
@@ -363,32 +363,35 @@ void Material::loadMaterialProperties(const aiMaterial *aiMat) {
     }
 }
 
-const float gamma = 2.2f;
-
 void gammaPow(vec4 &v) {
+    static const float gamma = 2.2f;
     v[0] = pow(v[0], gamma);
     v[1] = pow(v[1], gamma);
     v[2] = pow(v[2], gamma);
 }
 
-vec4 Material::getDiffuseColor(float u, float v) const {
+// 传入 duv = nan 表示不使用mipmap
+vec4 Material::getDiffuseColor(float u, float v, float duv) const {
     if (texture[aiTextureType_DIFFUSE].empty())
         return vec4(0.5f, 0.5f, 0.5f, 1.0f);
-    vec4 color = texture[aiTextureType_DIFFUSE].get<vec4>(u, v, 4);
+    float map_depth = isnan(duv) ? 0.0f : log2(duv * texture[aiTextureType_DIFFUSE].width);
+    vec4 color = texture[aiTextureType_DIFFUSE].get<vec4>(u, v, map_depth);
     gammaPow(color);
     return color;
 }
 
-vec3 Material::getNormal(float u, float v) const {
+vec3 Material::getNormal(float u, float v, float duv) const {
     if (texture[aiTextureType_NORMALS].empty())
         return vec3(0.0f);
-    return texture[aiTextureType_NORMALS].get<vec3>(u, v, 4) * 2.0f - 1.0f;
+    float map_depth = isnan(duv) ? 0.0f : log2(duv * texture[aiTextureType_NORMALS].width);
+    return texture[aiTextureType_NORMALS].get<vec3>(u, v, map_depth) * 2.0f - 1.0f;
 }
 
-vec3 Material::getEmissiveColor(float u, float v) const {
+vec3 Material::getEmissiveColor(float u, float v, float duv) const {
     if (texture[aiTextureType_EMISSIVE].empty())
         return vec3(0.0f);
-    vec4 color = texture[aiTextureType_EMISSIVE].get<vec4>(u, v, 4);
+    float map_depth = isnan(duv) ? 0.0f : log2(duv * texture[aiTextureType_EMISSIVE].width);
+    vec4 color = texture[aiTextureType_EMISSIVE].get<vec4>(u, v, map_depth);
     gammaPow(color);
     return color;
 }
@@ -399,8 +402,9 @@ void Material::getSurfaceData(float u, float v, float &roughness, float &metalli
         metallic = 0.0f;
         return;
     }
-    vec4 surfaceData = texture[aiTextureType_SPECULAR].get<vec4>(u, v, 4);
+    vec4 surfaceData = texture[aiTextureType_SPECULAR].get<vec4>(u, v, 0);
     roughness = surfaceData[1];
     metallic = std::min(surfaceData[2], 0.99f);
     roughness *= 0.5f + 0.5f * pow(1.0f - metallic, 0.2f);
+    roughness = std::max(2e-3f, roughness);
 }

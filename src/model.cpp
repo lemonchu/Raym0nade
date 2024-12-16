@@ -1,6 +1,10 @@
 #include <iostream>
 #include "model.h"
 
+HitInfo::HitInfo() {
+    position = vec3(NAN);
+}
+
 unsigned int vertexCount(const aiScene *scene) {
     unsigned int cnt = 0;
     for (int i = 0; i < scene->mNumMeshes; i++)
@@ -37,7 +41,7 @@ vec3 getAverageEmissiveColor(const Material &material, const Face &face) {
             }
             float c = 1.0f - a - b;
             vec2 uv = a * face.data[0]->uv + b * face.data[1]->uv + c * face.data[2]->uv;
-            vec3 textureColor = material.getEmissiveColor(uv[0], uv[1]);
+            vec3 textureColor = material.getEmissiveColor(uv[0], uv[1], NAN);
             averageColor += textureColor;
         }
     }
@@ -230,70 +234,121 @@ bool TransparentTest(const Ray &ray, const HitRecord &hit) {
             baryCoords[0] * face.data[0]->uv
             + baryCoords[1] * face.data[1]->uv
             + baryCoords[2] * face.data[2]->uv;
-    vec4 diffuseColor = material.getDiffuseColor(texUV[0], texUV[1]);
-    return diffuseColor[3] == 0.0f;
+    vec4 diffuseColor = material.getDiffuseColor(texUV[0], texUV[1], NAN);
+    return diffuseColor[3] < eps_zero;
 }
 
-void reverseCheck(vec3 &v, const vec3 &Dir) {
+void reverseFix(vec3 &v, const vec3 &Dir) {
     if (dot(v, Dir) < 0.0f)
         v *= -1.0f;
 }
 
-void getHitNormal(const Face& face, const vec3 &inDir, const vec3 &baryCoords, const vec2 &texUV,
-                  vec3 &shapeNormal, vec3 &surfaceNormal) {
+void getHitAllNormals(const Face& face, const vec3 &inDir, const vec3 &baryCoords,
+                      vec3 &shapeNormal_to_compute, vec3 &surfaceNormal_to_compute_raw) {
 
-    vec3 edge1 = face.v[1] - face.v[0];
-    vec3 edge2 = face.v[2] - face.v[0];
-    shapeNormal = normalize(cross(edge1, edge2));
-    reverseCheck(shapeNormal, -inDir);
-    surfaceNormal = shapeNormal;
+    shapeNormal_to_compute = normalize(cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
+
+    const auto &shapeNormal = shapeNormal_to_compute;
+
+    reverseFix(shapeNormal_to_compute, -inDir);
+    surfaceNormal_to_compute_raw = shapeNormal_to_compute;
 
     vec3 normalV0 = face.data[0]->normal;
     vec3 normalV1 = face.data[1]->normal;
     vec3 normalV2 = face.data[2]->normal;
 
-    reverseCheck(normalV0, shapeNormal);
-    reverseCheck(normalV1, shapeNormal);
-    reverseCheck(normalV2, shapeNormal);
+    reverseFix(normalV0, shapeNormal_to_compute);
+    reverseFix(normalV1, shapeNormal_to_compute);
+    reverseFix(normalV2, shapeNormal_to_compute);
     static const float threshold = 0.9f;
-    surfaceNormal = normalize(
-            baryCoords[0] * (dot(normalV0, shapeNormal) > threshold ? normalV0 : shapeNormal)
-            + baryCoords[1] * (dot(normalV1, shapeNormal) > threshold ? normalV1 : shapeNormal)
-            + baryCoords[2] * (dot(normalV2, shapeNormal) > threshold ? normalV2 : shapeNormal)
+    surfaceNormal_to_compute_raw = normalize(
+            baryCoords[0] * (dot(normalV0, shapeNormal_to_compute) > threshold ? normalV0 : shapeNormal_to_compute)
+            + baryCoords[1] * (dot(normalV1, shapeNormal_to_compute) > threshold ? normalV1 : shapeNormal_to_compute)
+            + baryCoords[2] * (dot(normalV2, shapeNormal_to_compute) > threshold ? normalV2 : shapeNormal_to_compute)
     );
-    vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv;
-    vec2 deltaUV2 = face.data[2]->uv - face.data[0]->uv;
-    float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
-    vec3 tangent = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
-    vec3 bitangent = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
-    tangent = normalize(tangent - shapeNormal * dot(shapeNormal, tangent));
-    bitangent = normalize(bitangent - shapeNormal * dot(shapeNormal, bitangent) - tangent * dot(tangent, bitangent));
-    vec3 normalMap = face.material->getNormal(texUV[0], texUV[1]);
-    normalMap.z = 1.0f;
-    surfaceNormal = normalize(
-            tangent * normalMap.x
-            + bitangent * normalMap.y
-            + surfaceNormal * normalMap.z
-    );
-    if (isnan(surfaceNormal))
-        surfaceNormal = shapeNormal;
+    if (isnan(surfaceNormal_to_compute_raw))
+        surfaceNormal_to_compute_raw = shapeNormal_to_compute;
 }
 
-void getHitInfo(const Face& face, const vec3& intersection, const vec3 &inDir, HitInfo &hitInfo) {
-    const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
-    const Material& material = *face.material;
+vec2 getDuv(const Face &face, const vec3 &hit_dPdx) {
+    vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], face.v[0] + hit_dPdx);
+    vec2 texUV0 = face.data[0]->uv;
+    vec2 texUV1 =
+            baryCoords[0] * face.data[0]->uv +
+            baryCoords[1] * face.data[1]->uv +
+            baryCoords[2] * face.data[2]->uv;
+    return texUV1 - texUV0;
+}
+
+void getHitTexture(const Face& face, const vec3 &baryCoords, const vec3 &hit_dPdx, const vec3 &hit_dPdy, HitInfo &hitInfo_to_init) {
+
+    // 插值得到命中点处的UV坐标
     vec2 texUV =
-            baryCoords[0] * face.data[0]->uv
-            + baryCoords[1] * face.data[1]->uv
-            + baryCoords[2] * face.data[2]->uv;
-    getHitNormal(face, inDir, baryCoords, texUV, hitInfo.shapeNormal, hitInfo.surfaceNormal);
-    hitInfo.baseColor = material.getDiffuseColor(texUV[0], texUV[1]);
-    hitInfo.emission = (material.texture[aiTextureType_EMISSIVE].empty()) ? vec3(0.0f)
-            : material.getEmissiveColor(texUV[0], texUV[1]);
-    material.getSurfaceData(texUV[0], texUV[1], hitInfo.roughness, hitInfo.metallic);
+            baryCoords[0] * face.data[0]->uv +
+            baryCoords[1] * face.data[1]->uv +
+            baryCoords[2] * face.data[2]->uv;
+
+    const Material& material = *face.material;
+
+    vec3 &shapeNormal = hitInfo_to_init.shapeNormal,
+         &surfaceNormal_to_compute = hitInfo_to_init.surfaceNormal;
+
+    material.getSurfaceData(texUV[0], texUV[1], hitInfo_to_init.roughness, hitInfo_to_init.metallic);
+
+    vec2 dUVdx = getDuv(face, hit_dPdx),
+         dUVdy = getDuv(face, hit_dPdy);
+
+    if (isnan(dUVdx) || isnan(dUVdx)) {
+        surfaceNormal_to_compute = shapeNormal;
+        vec3 normalMap = face.material->getNormal(texUV[0], texUV[1], NAN);
+        hitInfo_to_init.baseColor = material.getDiffuseColor(texUV[0], texUV[1], NAN);
+        hitInfo_to_init.emission = (material.texture[aiTextureType_EMISSIVE].empty())
+                ? vec3(0.0f)
+                : material.getEmissiveColor(texUV[0], texUV[1], NAN);
+    } else {
+        float duv = std::max(length(dUVdx), length(dUVdy));
+
+        vec3 normalMap = face.material->getNormal(texUV[0], texUV[1], duv);
+        hitInfo_to_init.baseColor = material.getDiffuseColor(texUV[0], texUV[1], duv);
+        hitInfo_to_init.emission = (material.texture[aiTextureType_EMISSIVE].empty())
+                ? vec3(0.0f)
+                : material.getEmissiveColor(texUV[0], texUV[1], duv);
+
+        // 根据UV差分求出边缘向量与UV差分
+        vec3 edge1 = face.v[1] - face.v[0];
+        vec3 edge2 = face.v[2] - face.v[0];
+        vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv;
+        vec2 deltaUV2 = face.data[2]->uv - face.data[0]->uv;
+        float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+        vec3 tangentBasisU = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
+        vec3 tangentBasisV = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
+        vec3 tangent = normalize(tangentBasisU - shapeNormal * dot(shapeNormal, tangentBasisU));
+        vec3 bitangent = normalize(tangentBasisV - shapeNormal * dot(shapeNormal, tangentBasisV) - tangent * dot(tangent, tangentBasisV));
+
+        // 利用法线贴图，将TBN空间的法线转换到世界坐标系
+        surfaceNormal_to_compute = normalize(
+                tangent * normalMap.x +
+                bitangent * normalMap.y +
+                surfaceNormal_to_compute
+        );
+
+        if (isnan(surfaceNormal_to_compute))
+            surfaceNormal_to_compute = shapeNormal;
+    }
 }
 
 const int maxRayDepth_hit = 8;
+
+HitRecord Model::rayHit(Ray ray) const {
+    HitRecord hit(eps_zero, INFINITY);
+    for (int T = 0; T < maxRayDepth_hit; T++) {
+        kdt.rayHit(ray, hit);
+        if (hit.t_max == INFINITY || !TransparentTest(ray, hit))
+            return hit;
+        hit = HitRecord(hit.t_max + eps_zero, INFINITY);
+    }
+    return hit;
+}
 
 bool Model::rayHit_test(Ray ray, float aimDepth) const {
     HitRecord hit(eps_zero, aimDepth + eps_zero);
@@ -306,36 +361,4 @@ bool Model::rayHit_test(Ray ray, float aimDepth) const {
         hit = HitRecord(hit.t_max + eps_zero, aimDepth + eps_zero);
     }
     return true;
-}
-
-void Model::rayHit(Ray ray, HitInfo &hitInfo) const {
-    HitRecord hit;
-    for (int T = 0; T < maxRayDepth_hit; T++) {
-        kdt.rayHit(ray, hit);
-        if (hit.t_max == INFINITY) {
-            hitInfo.t = INFINITY;
-            break;
-        }
-        vec3 intersection = ray.origin + ray.direction * hit.t_max;
-        getHitInfo(*hit.face, intersection, ray.direction, hitInfo);
-        hitInfo.t = hit.t_max;
-        if (hitInfo.baseColor[3] > 0.0f)
-            return;
-        hit = HitRecord(hit.t_max + eps_zero, INFINITY);
-    }
-}
-
-void Model::rayCast(Ray ray, float &depth, const Face *&face) const {
-    HitRecord hit(eps_zero, INFINITY);
-    for (int T = 0; T < maxRayDepth_hit; T++) {
-        kdt.rayHit(ray, hit);
-        if (hit.t_max == INFINITY)
-            return;
-        if (!TransparentTest(ray, hit)) {
-            depth = hit.t_max;
-            face = hit.face;
-            return;
-        }
-        hit = HitRecord(hit.t_max + eps_zero, INFINITY);
-    }
 }

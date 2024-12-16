@@ -12,6 +12,7 @@ const float eps_zero = 1e-4f;
 
 const vec3 RGB_Weight = vec3(0.3f, 0.6f, 0.1f);
 
+bool isnan(vec2 v);
 bool isnan(vec3 v);
 
 struct Ray {
@@ -19,8 +20,8 @@ struct Ray {
 };
 
 struct RayDifferential {
-    vec3 dPdx, dPdy;
-    vec3 dDdx, dDdy;
+    vec3 dPdx = glm::vec3{0.0f}, dPdy = glm::vec3{0.0f};
+    vec3 dDdx = glm::vec3{0.0f}, dDdy = glm::vec3{0.0f};
 };
 
 struct Box {

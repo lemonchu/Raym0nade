@@ -41,9 +41,9 @@ public:
 
     // New method to load material properties
     void loadMaterialProperties(const aiMaterial* aiMat);
-    [[nodiscard]] vec4 getDiffuseColor(float u, float v) const;
-    [[nodiscard]] vec3 getNormal(float u, float v) const;
-    [[nodiscard]] vec3 getEmissiveColor(float u, float v) const;
+    [[nodiscard]] vec4 getDiffuseColor(float u, float v, float duv) const;
+    [[nodiscard]] vec3 getNormal(float u, float v, float duv) const;
+    [[nodiscard]] vec3 getEmissiveColor(float u, float v, float duv) const;
     void getSurfaceData(float u, float v, float &rouguness, float &metallic) const;
 };
 

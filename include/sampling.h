@@ -14,7 +14,8 @@ public:
     glm::mat3 worldToTangent;
     HitInfo surface;
 
-    BRDF(const vec3 &inDir);
+    BRDF(const vec3 &inDir, const vec3 &hit_position);
+    BRDF(const vec3 &inDir, const HitInfo &hitInfo);
 
     void genTangentSpace();
     [[nodiscard]] vec3 getBRDF(vec3 outDir) const;
@@ -23,7 +24,7 @@ public:
 
 const float eps_lightRadius = 1e-5f;
 
-vec3 sampleDirectLight(const vec3 &pos, const BRDF &brdf, const Model &model,
+vec3 sampleDirectLight(const BRDF &brdf, const Model &model,
                        Generator &gen, vec3 &brdfPdf, int &trys);
 
 #endif // SAMPLING_H
