@@ -4,7 +4,7 @@
 HitInfo::HitInfo() :
     position(vec3(NAN)), shapeNormal(NAN), surfaceNormal(NAN),
     opacity(1.0f), specular(0.04f), roughness(0.8f), metallic(0.0f), eta(1.0f),
-    emission(0.0f), baseColor(0.0f), entering(true) {}
+    emission(0.0f), baseColor(0.0f), entering(true), id(0) {}
 
 unsigned int vertexCount(const aiScene *scene) {
     unsigned int cnt = 0;

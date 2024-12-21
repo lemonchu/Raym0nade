@@ -1,5 +1,4 @@
 #include "geometry.h"
-#include <cfloat>
 #include <iostream>
 
 bool isfinite(vec2 v) {

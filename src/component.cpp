@@ -17,7 +17,8 @@ void RandomDistribution::Init(const std::vector<float>& distribution) {
 
 int RandomDistribution::operator()(Generator &gen) const {
     float randomValue = prefixSums.back() * gen();
-    return std::lower_bound(prefixSums.begin(), prefixSums.end(), randomValue) - prefixSums.begin();
+    return static_cast<int>
+        (std::lower_bound(prefixSums.begin(), prefixSums.end(), randomValue) - prefixSums.begin());
 }
 
 float RandomDistribution::pdf(int index) const {

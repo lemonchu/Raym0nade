@@ -41,7 +41,7 @@ private:
 public:
     void Init(const std::vector<float>& distribution);
     int operator()(Generator &gen) const;
-    float pdf(int index) const;
+    [[nodiscard]] float pdf(int index) const;
 };
 
 class LightObject {

@@ -23,8 +23,13 @@ public:
     void sampleReflection(Generator &gen, vec3 &Dir, vec3 &bsdfPdf, int &fails) const;
 };
 
+struct LightSample {
+    vec3 bsdfPdf, light;
+    float weight;
+    LightSample(const vec3 &bsdfPdf, const vec3 &light, float weight);
+};
+
 const float eps_lightRadius = 5e-3f;
-vec3 sampleDirectLight(const BSDF &bsdf, const Model &model,
-                       Generator &gen, vec3 &bsdfPdf);
+std::vector<LightSample> sampleDirectLight(const BSDF &bsdf, const Model &model, Generator &gen, int sampleCnt);
 
 #endif // SAMPLING_H

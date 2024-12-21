@@ -172,7 +172,6 @@ void Image::shade(float exposure, int options) {
         if (options & Emission)
             pixelarray[i] += G.emission * exposure;
     }
-    // gammaCorrection();
 }
 
 void Image::bloom() {
@@ -267,89 +266,42 @@ void Image::save(const char *file_name) {
     png_destroy_write_struct(&png_ptr, &info_ptr);
 }
 
-void Image::load(const char* file_name) {
-    FILE *fp = fopen(file_name, "rb");
-    if (!fp) {
-        std::cerr << "Could not open file for reading" << std::endl;
-        return;
+void accumulateInwardRadiance_basic(RadianceData &radiance, vec3 inradiance, float weight) {
+    if (!isfinite(inradiance)) {
+        std::cerr << "NaN detected!" << std::endl;
+        throw std::runtime_error("NaN detected!");
     }
-
-    png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-    if (!png_ptr) {
-        std::cerr << "Could not create read struct" << std::endl;
-        fclose(fp);
-        return;
-    }
-
-    png_infop info_ptr = png_create_info_struct(png_ptr);
-    if (!info_ptr) {
-        std::cerr << "Could not create info struct" << std::endl;
-        png_destroy_read_struct(&png_ptr, nullptr, nullptr);
-        fclose(fp);
-        return;
-    }
-
-    if (setjmp(png_jmpbuf(png_ptr))) {
-        std::cerr << "Error during png creation" << std::endl;
-        png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
-        fclose(fp);
-        return;
-    }
-
-    png_init_io(png_ptr, fp);
-    png_read_info(png_ptr, info_ptr);
-
-    width = png_get_image_width(png_ptr, info_ptr);
-    height = png_get_image_height(png_ptr, info_ptr);
-    png_byte color_type = png_get_color_type(png_ptr, info_ptr);
-    png_byte bit_depth = png_get_bit_depth(png_ptr, info_ptr);
-
-    std::cout << "width: " << width << " height: " << height << std::endl;
-    std::cout << "color_type: " << (int)color_type << " bit_depth: " << (int)bit_depth << std::endl;
-
-    if (bit_depth == 16)
-        png_set_strip_16(png_ptr);
-
-    if (color_type == PNG_COLOR_TYPE_PALETTE)
-        png_set_palette_to_rgb(png_ptr);
-
-    if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
-        png_set_expand_gray_1_2_4_to_8(png_ptr);
-
-    if (png_get_valid(png_ptr, info_ptr, PNG_INFO_tRNS))
-        png_set_tRNS_to_alpha(png_ptr);
-
-    if (color_type == PNG_COLOR_TYPE_RGB || color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_PALETTE)
-        png_set_filler(png_ptr, 0xFF, PNG_FILLER_AFTER);
-
-    if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
-        png_set_gray_to_rgb(png_ptr);
-
-    png_read_update_info(png_ptr, info_ptr);
-
-    // delete[] pixelarray;
-    pixelarray = new vec3[width * height];
-
-    std::vector<png_byte> image_data(width * height * 4);
-    for (int y = 0; y < height; ++y) {
-        png_bytep row = &image_data[y * width * 4];
-        png_read_row(png_ptr, row, nullptr);
-        for (int x = 0; x < width; ++x) {
-            int id = y * width + x;
-            pixelarray[id] = vec3(row[x * 4] / 255.0f, row[x * 4 + 1] / 255.0f, row[x * 4 + 2] / 255.0f);
-        }
-    }
-
-    fclose(fp);
-    png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+    radiance.radiance += inradiance * weight;
+    radiance.Var += dot(inradiance, inradiance) * weight;
 }
 
-void Image::reverseGammaCorrection() {
-    for (int i = 0; i < width * height; ++i) {
-        pixelarray[i] = glm::pow(pixelarray[i], vec3(GammaFactor));
-    }
-}
+void accumulateInwardRadiance(const vec3 baseColor, const LightSample &sample,
+                              RadianceData &radiance_d, RadianceData &radiance_s) {
 
-Image::Image(const char *file_name): radiance_Dd(nullptr), radiance_Ds(nullptr), radiance_Id(nullptr), radiance_Is(nullptr), pixelarray(nullptr), Gbuffer(nullptr) {
-    load(file_name);
+    if (sample.light == vec3(0.0f))
+        return;
+    if (baseColor == vec3(0.0f)) {
+        accumulateInwardRadiance_basic(radiance_s, sample.light * sample.bsdfPdf, sample.weight);
+        return;
+    }
+    vec3 baseColor0 = normalize(baseColor);
+    static const vec3 White = normalize(vec3(1.0f));
+    float XdotY = dot(baseColor0, White);
+    if (XdotY > 0.999f) {
+        accumulateInwardRadiance_basic(radiance_d, sample.light * sample.bsdfPdf / baseColor, sample.weight);
+        return ;
+    }
+    // Consider Pdf = a * white + b * baseColor
+    vec3 perp = normalize(cross(baseColor0, White));
+    vec3 bsdfPdf_p = sample.bsdfPdf - perp * dot(perp, sample.bsdfPdf);
+    float d1 = dot(bsdfPdf_p, White);
+    float d2 = dot(bsdfPdf_p, baseColor0);
+    float AplusB = (d1+d2) / (1+XdotY);
+    float AminusB = (d1-d2) / (1-XdotY);
+    float B = (AplusB - AminusB) / 2.0f;
+    vec3 brdfPdf_base = B * baseColor0;
+    accumulateInwardRadiance_basic(
+            radiance_d, sample.light * B / length(baseColor), sample.weight);
+    accumulateInwardRadiance_basic(
+            radiance_s, sample.light * (sample.bsdfPdf - brdfPdf_base), sample.weight);
 }

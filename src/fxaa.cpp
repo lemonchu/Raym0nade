@@ -1,6 +1,5 @@
 #include <vector>
 #include <cstring>
-#include <iostream>
 #include "image.h"
 
 const float EDGE_THRESHOLD_MIN = 0.0312f;
@@ -12,13 +11,9 @@ void Image::FXAA() {
 
     const vec3 *data = pixelarray;
     vec3 *output = new vec3[width * height];
-    if (!output) {
-        std::cerr << "Failed to allocate memory for FXAA." << std::endl;
-        return;
-    }
 
     auto getLuminance = [](const vec3& rgb) -> float {
-        return rgb.x * 0.299f + rgb.y * 0.587f + rgb.z * 0.114f;
+        return dot(rgb, RGB_Weight);
     };
 
     for(int y = 0; y < height; y++) {
@@ -61,14 +56,14 @@ void Image::FXAA() {
             );
             
             // 沿梯度方向采样
-            vec2 uv(float(x)/width, float(y)/height);
+            vec2 uv(float(x)/float(width), float(y)/float(height));
             vec3 finalColor = data[y * width + x];
             float bestDelta = 0.0f;
             
             for(int i = 0; i < QUALITY; i++) {
                 vec2 offset(
-                    isHorizontal ? 0.0f : gradientStep * stepLength * (i + 1),
-                    isHorizontal ? gradientStep * stepLength * (i + 1) : 0.0f
+                    isHorizontal ? 0.0f : gradientStep * stepLength * float(i + 1),
+                    isHorizontal ? gradientStep * stepLength * float(i + 1) : 0.0f
                 );
                 
                 vec2 sampleUv = uv + offset;

@@ -11,7 +11,7 @@ bool cmp(const Face &A, const Face &B) {
 
 bool (*cmpFunc[3])(const Face &, const Face &) = {cmp<0>, cmp<1>, cmp<2>};
 
-KDT::KDT() : node(nullptr) {}
+KDT::KDT() : node(nullptr), faces(nullptr) {}
 
 const unsigned int LeafBagSize = 10;
 
@@ -45,11 +45,11 @@ int nodeCount(int u, int n) {
     return (n <= LeafBagSize) ? u : nodeCount(u<<1|1, (n+1)>>1);
 }
 
-void KDT::build(std::vector<Face> &faces) {
-    int size = nodeCount(1, faces.size()) + 1;
+void KDT::build(std::vector<Face> &faces0) {
+    int size = nodeCount(1, int(faces0.size())) + 1;
     node = new KDT_Node[size];
-    this->faces = &faces.front();
-    dfs_build(1, 0, faces.size());
+    faces = &faces0.front();
+    dfs_build(1, 0, int(faces0.size()));
     std::cout << "KDT has built with size " << size << std::endl;
 }
 

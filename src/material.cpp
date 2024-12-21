@@ -24,13 +24,6 @@ std::string urlDecode(const std::string &src) {
     return decoded;
 }
 
-void _mod(int &x, int m) {
-    if (x < 0 || x >= m) {
-        x %= m;
-        if (x < 0) x += m;
-    }
-}
-
 template<typename Vec>
 Vec get_basic(const std::vector<uint8_t> &data, int index);
 
@@ -55,10 +48,18 @@ vec4 get_basic<vec4>(const std::vector<uint8_t> &data, int index) {
 
 template<typename Vec>
 Vec get_bilinear(const std::vector<uint8_t>& data, int width, int height, float u, float v) {
+
+    static constexpr auto _mod = [](int &x, int m) -> void {
+        if (x < 0 || x >= m) {
+            x %= m;
+            if (x < 0) x += m;
+        }
+    };
+
     static const int BitWidth = std::is_same<Vec, vec3>::value ? 3 : 4;
-    float x = u * width, y = v * height;
-    int x0 = floorf(x), y0 = floorf(y);
-    float dx = x - x0, dy = y - y0;
+    float x = u * float(width), y = v * float(height);
+    int x0 = int(floorf(x)), y0 = int(floorf(y));
+    float dx = x - float(x0), dy = y - float(y0);
     _mod(x0, width);
     _mod(y0, height);
     int x1 = (x0 + 1) % width, y1 = (y0 + 1) % height;
@@ -85,7 +86,7 @@ Vec ImageData::get(float u, float v, float depth) const {
 
     int level = static_cast<int>(depth);
     int nextLevel = std::min(level + 1, map_depth - 1);
-    float levelBlend = depth - level;
+    float levelBlend = depth - float(level);
 
     Vec ret1 = get_bilinear<Vec>(data[level], width >> level, height >> level, u, v);
     Vec ret2 = get_bilinear<Vec>(data[nextLevel], width >> nextLevel, height >> nextLevel, u, v);
@@ -108,7 +109,7 @@ bool ImageData::hasTransparentPart() const {
 
 Material::Material() :
     hasFullyTransparentPart(false), opacity(1.0f), ior(1.0f),
-    transmittingColor(0.0f), roughness(0.8f) {}
+    transmittingColor(0.0f), roughness(0.8f), id(0) {}
 
 void ImageData::generateMipmaps() {
 
@@ -203,7 +204,7 @@ bool Material::loadImageFromDDS(ImageData &imageData, const std::string &filenam
 
             Py_buffer view;
             if (PyObject_GetBuffer(pData, &view, PyBUF_SIMPLE) == 0) {
-                uint8_t *buffer = static_cast<uint8_t *>(view.buf);
+                uint8_t *buffer = static_cast<uint8_t*>(view.buf);
                 imageData.data[0].assign(buffer, buffer + view.len);
                 PyBuffer_Release(&view);
             }
@@ -498,7 +499,7 @@ void gammaPow(vec4 &v) {
 vec4 Material::getDiffuseColor(float u, float v, float duv) const {
     if (texture[aiTextureType_DIFFUSE].empty())
         return vec4(1.0f);
-    float map_depth = isnan(duv) ? 0.0f : log2(duv * texture[aiTextureType_DIFFUSE].width);
+    float map_depth = isnan(duv) ? 0.0f : log2(duv * float(texture[aiTextureType_DIFFUSE].width));
     vec4 color = texture[aiTextureType_DIFFUSE].get<vec4>(u, v, map_depth);
     gammaPow(color);
     return color;
@@ -507,14 +508,14 @@ vec4 Material::getDiffuseColor(float u, float v, float duv) const {
 vec3 Material::getNormal(float u, float v, float duv) const {
     if (texture[aiTextureType_NORMALS].empty())
         return vec3(0.0f);
-    float map_depth = isnan(duv) ? 0.0f : log2(duv * texture[aiTextureType_NORMALS].width);
+    float map_depth = isnan(duv) ? 0.0f : log2(duv * float(texture[aiTextureType_NORMALS].width));
     return texture[aiTextureType_NORMALS].get<vec3>(u, v, map_depth) * 2.0f - 1.0f;
 }
 
 vec3 Material::getEmissiveColor(float u, float v, float duv) const {
     if (texture[aiTextureType_EMISSIVE].empty())
         return vec3(0.0f);
-    float map_depth = isnan(duv) ? 0.0f : log2(duv * texture[aiTextureType_EMISSIVE].width);
+    float map_depth = isnan(duv) ? 0.0f : log2(duv * float(texture[aiTextureType_EMISSIVE].width));
     vec4 color = texture[aiTextureType_EMISSIVE].get<vec4>(u, v, map_depth);
     gammaPow(color);
     return color;

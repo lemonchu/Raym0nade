@@ -336,6 +336,9 @@ void BSDF::sampleReflection(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails
     }
 }
 
+LightSample::LightSample(const vec3 &bsdfPdf, const vec3 &light, float weight) :
+        bsdfPdf(bsdfPdf), light(light), weight(weight) {}
+
 int sample(const std::vector<float> &weights, float randomValue) {
     float cumulativeWeight = 0.0f;
     for (int i = 0; i < weights.size(); ++i) {
@@ -346,10 +349,8 @@ int sample(const std::vector<float> &weights, float randomValue) {
     return -1;
 }
 
-void sampleLightObject(const vec3 &pos, const BSDF &bsdf, const Model &model,
-                       Generator &gen, float &prob, int &lightIndex) {
-    float totalWeight = 0.0f;
-    std::vector<float> weights;
+void getLightObjectWeight(const vec3 &pos, const BSDF &bsdf, const Model &model,
+                          std::vector<float> &weights) {
     weights.reserve(model.lightObjects.size());
     for (const auto & lightObject : model.lightObjects)  {
         vec3 lightDir = normalize(lightObject.center - pos);
@@ -358,16 +359,7 @@ void sampleLightObject(const vec3 &pos, const BSDF &bsdf, const Model &model,
         float Clum = dot(bsdfPdf, RGB_Weight);
         float weight = Clum * lightObject.power / (distance * distance + eps_lightRadius);
         weights.emplace_back(weight);
-        totalWeight += weight;
     }
-    if (totalWeight == 0.0f) {
-        lightIndex = -1;
-        return;
-    }
-    lightIndex = sample(weights, totalWeight * gen());
-    if (lightIndex == -1)
-        return;
-    prob = weights[lightIndex] / totalWeight;
 }
 
 void generateRandomPointInLightFace(const Face &face, const vec3 &pos,
@@ -402,53 +394,52 @@ void sampleLightFace(const vec3 &pos, const LightObject &lightObject,
     lightPos = vec3(NAN);
 }
 
-vec3 sampleDirectLight(const BSDF &bsdf, const Model &model,
-                       Generator &gen, vec3 &bsdfPdf) {
+std::vector<LightSample> sampleDirectLight(
+        const BSDF &bsdf, const Model &model, Generator &gen, int sampleCnt) {
 
-    // vec3 light = vec3(0.0f);
-    // auto &lightObjects = model.lightObjects;
-    // for (const auto& lightObject : lightObjects) {
-    //     float distance = glm::length(lightObject.center - pos);
-    //     float dot = std::max(glm::dot(normalize(lightObject.center - pos), info.normal), 0.00f);
-    //     light += dot * lightObject.color * lightObject.power / (distance * distance + eps_lightRadius);
-    // }
-    // return vec4(light, 1.0f);
     const vec3 &pos = bsdf.surface.position;
 
-    float P_lightObject;
-    int lightIndex;
-    sampleLightObject(pos, bsdf, model, gen, P_lightObject, lightIndex);
-    if (lightIndex == -1) {
-        bsdfPdf = vec3(0.0f);
-        return vec3(0.0f);
-    }
-    auto& lightObject = model.lightObjects[lightIndex];
+    std::vector<float> weights;
+    getLightObjectWeight(pos, bsdf, model, weights);
+    float totalWeight = 0.0f;
+    for (float weight : weights)
+        totalWeight += weight;
+    if (totalWeight == 0.0f)
+        return {};
 
-    vec3 lightPos;
-    float faceFactor;
-    sampleLightFace(pos, lightObject, gen, lightPos, faceFactor);
-    if (!isfinite(lightPos)) {
-        bsdfPdf = vec3(0.0f);
-        return vec3(0.0f);
+    std::vector<LightSample> samples;
+    for (int T = 0; T < sampleCnt; T++) {
+        int lightIndex = sample(weights, totalWeight * gen());
+        if (lightIndex == -1)
+            continue;
+
+        float P_lightObject = weights[lightIndex] / totalWeight;
+        auto& lightObject = model.lightObjects[lightIndex];
+
+        vec3 lightPos;
+        float faceFactor;
+        sampleLightFace(pos, lightObject, gen, lightPos, faceFactor);
+        if (!isfinite(lightPos))
+            continue;
+
+        vec3 lightDir = normalize(lightPos - pos);
+        float distance = length(lightPos - pos);
+        if (model.rayHit_test({pos, lightDir}, distance - eps_zero))
+            continue;
+
+        vec3 bsdfPdf = bsdf.getBSDF(lightDir) * faceFactor / P_lightObject;
+        clamp(bsdfPdf);
+        vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
+
+        if (!isfinite(bsdfPdf)) {
+            std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
+            std::cerr << "lightDir: " << lightDir.x << " " << lightDir.y << " " << lightDir.z << std::endl;
+            std::cerr << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
+            std::cerr << "faceFactor: " << faceFactor << std::endl;
+            std::cerr << "P_lightObject: " << P_lightObject << std::endl;
+        }
+        samples.emplace_back(bsdfPdf, light, 1.0f / static_cast<float>(sampleCnt));
     }
 
-    vec3 lightDir = normalize(lightPos - pos);
-    float distance = length(lightPos - pos);
-    if (model.rayHit_test({pos, lightDir}, distance - eps_zero)) {
-        bsdfPdf = vec3(0.0f);
-        return vec3(0.0f);
-    }
-
-    bsdfPdf = bsdf.getBSDF(lightDir) * faceFactor / P_lightObject;
-    clamp(bsdfPdf);
-    vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
-
-    if (!isfinite(bsdfPdf)) {
-        std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
-        std::cerr << "lightDir: " << lightDir.x << " " << lightDir.y << " " << lightDir.z << std::endl;
-        std::cerr << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
-        std::cerr << "faceFactor: " << faceFactor << std::endl;
-        std::cerr << "P_lightObject: " << P_lightObject << std::endl;
-    }
-    return light;
+    return samples;
 }

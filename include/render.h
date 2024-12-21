@@ -35,7 +35,6 @@ public:
     Generator gen;
     Medium mediums;
     int C_lightSamples;
-    std::atomic<int> *renderedPixels;
     explicit RenderData(int seed);
 };
 

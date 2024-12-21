@@ -4,6 +4,7 @@
 #include "geometry.h"
 #include "component.h"
 #include "model.h"
+#include "sampling.h"
 
 struct RadianceData {
     vec3 radiance;
@@ -33,7 +34,6 @@ public:
     RadianceData *radiance_Dd, *radiance_Ds, *radiance_Id, *radiance_Is;
     vec3 *pixelarray;
     Image(int width, int height);
-    Image(const char* file_name);
 
     void filter();
 
@@ -44,12 +44,13 @@ public:
     void bloom();
 
     void gammaCorrection();
-    void reverseGammaCorrection();
 
-    void load(const char* file_name);
     void save(const char* file_name);
 
     ~Image();
 };
+
+void accumulateInwardRadiance(const vec3 &baseColor, const LightSample &sample,
+                              RadianceData &radiance_d, RadianceData &radiance_s);
 
 #endif // IMAGE_H
