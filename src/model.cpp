@@ -1,9 +1,10 @@
 #include <iostream>
 #include "model.h"
 
-HitInfo::HitInfo() {
-    position = vec3(NAN);
-}
+HitInfo::HitInfo() :
+    position(vec3(NAN)), shapeNormal(NAN), surfaceNormal(NAN),
+    opacity(1.0f), specular(0.04f), roughness(0.8f), metallic(0.0f), eta(1.0f),
+    emission(0.0f), baseColor(0.0f), entering(true) {}
 
 unsigned int vertexCount(const aiScene *scene) {
     unsigned int cnt = 0;
@@ -17,14 +18,6 @@ unsigned int faceCount(const aiScene *scene) {
     for (int i = 0; i < scene->mNumMeshes; i++)
         cnt += scene->mMeshes[i]->mNumFaces;
     return cnt;
-}
-
-glm::mat4 aiMatrix4x4ToGlm(const aiMatrix4x4 &from) {
-    glm::mat4 to;
-    for (int i = 0; i < 4; i++)
-        for (int j = 0; j < 4; j++)
-            to[i][j] = from[j][i];
-    return to;
 }
 
 vec3 getAverageEmissiveColor(const Material &material, const Face &face) {
@@ -94,14 +87,15 @@ void Model::checkLightObject(Face *meshFaces, aiMesh *mesh, const Material &mate
               << lightObject.center.z << std::endl;
 }
 
-void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
+void Model::processMesh(aiMesh *mesh) {
 
     unsigned int offset = vertexDatas.size();
     for (unsigned int j = 0; j < mesh->mNumVertices; j++) {
         aiVector3D texCoord = mesh->mTextureCoords[0][j];
+        aiVector3D normal = mesh->mNormals[j];
         vertexDatas.emplace_back(
                 vec2(texCoord.x, texCoord.y),
-                vec3(0)
+                vec3(normal.x, normal.y, normal.z)
         );
     }
 
@@ -115,7 +109,7 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
         glm::vec3 transformedVertex[3];
         for (int k = 0; k < 3; ++k) {
             aiVector3D vertex = mesh->mVertices[face0.mIndices[k]];
-            transformedVertex[k] = (vec3)(nodeTransform * glm::vec4(vertex.x, vertex.y, vertex.z, 1.0f));
+            transformedVertex[k] = vec3(vertex.x, vertex.y, vertex.z);
         }
 
         faces.push_back({
@@ -127,33 +121,11 @@ void Model::processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform) {
                  &vData[face0.mIndices[2]]},
                 &material,
         });
-
-        const Face &face = faces.back();
-        vec3 normal = normalize(glm::cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
-        vData[face0.mIndices[0]].normal += normal;
-        vData[face0.mIndices[1]].normal += normal;
-        vData[face0.mIndices[2]].normal += normal;
     }
-
-    for (unsigned int j = 0; j < mesh->mNumVertices; j++)
-        vData[j].normal = normalize(vData[j].normal);
 
     Face *meshFaces = &faces[offset];
     if (!material.texture[aiTextureType_EMISSIVE].empty())
         checkLightObject(meshFaces, mesh, material);
-}
-
-void Model::processNode(aiNode *node, const aiScene *scene, const glm::mat4 &parentTransform) {
-    glm::mat4 nodeTransform = parentTransform * aiMatrix4x4ToGlm(node->mTransformation);
-
-    for (int i = 0; i < node->mNumMeshes; i++) {
-        aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
-        processMesh(mesh, nodeTransform);
-    }
-
-    for (int i = 0; i < node->mNumChildren; i++) {
-        processNode(node->mChildren[i], scene, nodeTransform);
-    }
 }
 
 void Model::processMaterial(const std::string &model_folder, const aiScene *scene) {
@@ -162,6 +134,12 @@ void Model::processMaterial(const std::string &model_folder, const aiScene *scen
     for (int i = 0; i < scene->mNumMaterials; i++) {
         std::cout << "Loading material " << i << std::endl;
         aiMaterial *material = scene->mMaterials[i];
+
+        aiString matName;
+        if (material->Get(AI_MATKEY_NAME, matName) == AI_SUCCESS) {
+            std::string name = matName.C_Str();
+            std::cout << "Material Name: " << name << std::endl;
+        }
 
         for (int j = 0; j < AI_TEXTURE_TYPE_MAX; j++) {
             aiTextureType textureType = (aiTextureType) j;
@@ -181,6 +159,7 @@ void Model::processMaterial(const std::string &model_folder, const aiScene *scen
                 materials[i].loadImageFromFile(j, pathStr);
             }
         }
+        materials[i].id = i;
         materials[i].loadMaterialProperties(material);
     }
     std::cout << "Materials: " << materials.size() << std::endl;
@@ -196,10 +175,13 @@ Model::Model() = default;
 Model::Model(const std::string &model_folder, const std::string &model_name) {
 
     Assimp::Importer importer;
+    importer.SetPropertyInteger(AI_CONFIG_PP_PTV_KEEP_HIERARCHY, 1);
     model_path = model_folder + model_name;
     const aiScene* scene = importer.ReadFile(model_path.c_str(),
                                              aiProcess_Triangulate |
-                                             aiProcess_JoinIdenticalVertices);
+                                             aiProcess_PreTransformVertices |
+                                             aiProcess_SortByPType |
+                                             aiProcess_FixInfacingNormals);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
@@ -215,8 +197,8 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
     std::cout << "faces: " << faceCnt << std::endl;
     faces.reserve(faceCnt);
 
-    const glm::mat4 identity = glm::mat4(1.0f);
-    processNode(scene->mRootNode, scene, identity);
+    for (int i = 0; i < scene->mNumMeshes; i++)
+        processMesh(scene->mMeshes[i]);
 
     importer.FreeScene();
 
@@ -226,7 +208,7 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
 bool TransparentTest(const Ray &ray, const HitRecord &hit) {
     const Face& face = *hit.face;
     const Material& material = *face.material;
-    if (!material.hasTransparentPart)
+    if (!material.hasFullyTransparentPart)
         return false;
     const vec3 intersection = ray.origin + ray.direction * hit.t_max;
     const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
@@ -238,36 +220,46 @@ bool TransparentTest(const Ray &ray, const HitRecord &hit) {
     return diffuseColor[3] < eps_zero;
 }
 
-void reverseFix(vec3 &v, const vec3 &Dir) {
-    if (dot(v, Dir) < 0.0f)
+bool reverseFix(vec3 &v, const vec3 &Dir) {
+    if (dot(v, Dir) < 0.0f) {
         v *= -1.0f;
+        return false;
+    }
+    return true;
 }
 
-void getHitAllNormals(const Face& face, const vec3 &inDir, const vec3 &baryCoords,
-                      vec3 &shapeNormal_to_compute, vec3 &surfaceNormal_to_compute_raw) {
+void getHitNormals(const Face& face, const vec3 &inDir, const vec3 &baryCoords,
+                   vec3 &shapeNormal, vec3 &surfaceNormal_raw, bool &entering) {
 
-    shapeNormal_to_compute = normalize(cross(face.v[1] - face.v[0], face.v[2] - face.v[0]));
+    vec3 crossV0 = cross(face.v[1] - face.v[0], face.v[2] - face.v[0]);
+    shapeNormal = normalize(crossV0);
 
-    const auto &shapeNormal = shapeNormal_to_compute;
+    entering = reverseFix(shapeNormal, -inDir);
+    surfaceNormal_raw = shapeNormal;
 
-    reverseFix(shapeNormal_to_compute, -inDir);
-    surfaceNormal_to_compute_raw = shapeNormal_to_compute;
+    float area = length(crossV0) / 2.0f;
+    static const float areaThreshold = 1e-2f;
+    if (area > areaThreshold)
+        return;
 
     vec3 normalV0 = face.data[0]->normal;
     vec3 normalV1 = face.data[1]->normal;
     vec3 normalV2 = face.data[2]->normal;
+    reverseFix(normalV0, shapeNormal);
+    reverseFix(normalV1, shapeNormal);
+    reverseFix(normalV2, shapeNormal);
 
-    reverseFix(normalV0, shapeNormal_to_compute);
-    reverseFix(normalV1, shapeNormal_to_compute);
-    reverseFix(normalV2, shapeNormal_to_compute);
-    static const float threshold = 0.9f;
-    surfaceNormal_to_compute_raw = normalize(
-            baryCoords[0] * (dot(normalV0, shapeNormal_to_compute) > threshold ? normalV0 : shapeNormal_to_compute)
-            + baryCoords[1] * (dot(normalV1, shapeNormal_to_compute) > threshold ? normalV1 : shapeNormal_to_compute)
-            + baryCoords[2] * (dot(normalV2, shapeNormal_to_compute) > threshold ? normalV2 : shapeNormal_to_compute)
+    static const float threshold = 0.85f;
+    surfaceNormal_raw = normalize(
+            baryCoords[0] * (dot(normalV0, shapeNormal) > threshold ? normalV0 : shapeNormal)
+            + baryCoords[1] * (dot(normalV1, shapeNormal) > threshold ? normalV1 : shapeNormal)
+            + baryCoords[2] * (dot(normalV2, shapeNormal) > threshold ? normalV2 : shapeNormal)
     );
-    if (isnan(surfaceNormal_to_compute_raw))
-        surfaceNormal_to_compute_raw = shapeNormal_to_compute;
+
+    if (!finite(surfaceNormal_raw)) {
+        surfaceNormal_raw = shapeNormal;
+        std::cerr << "  getHitNormals : NAN" << std::endl;
+    }
 }
 
 vec2 getDuv(const Face &face, const vec3 &hit_dPdx) {
@@ -280,9 +272,30 @@ vec2 getDuv(const Face &face, const vec3 &hit_dPdx) {
     return texUV1 - texUV0;
 }
 
-void getHitTexture(const Face& face, const vec3 &baryCoords, const vec3 &hit_dPdx, const vec3 &hit_dPdy, HitInfo &hitInfo_to_init) {
+void calcSurfaceNormal(const Face& face, const vec3 &normalMap, const vec3 &shapeNormal,
+                       vec3 &surfaceNormal) {
+    vec3 edge1 = face.v[1] - face.v[0];
+    vec3 edge2 = face.v[2] - face.v[0];
+    vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv;
+    vec2 deltaUV2 = face.data[2]->uv - face.data[0]->uv;
+    float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+    vec3 tangentBasisU = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
+    vec3 tangentBasisV = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
+    vec3 tangent = normalize(tangentBasisU - shapeNormal * dot(shapeNormal, tangentBasisU));
+    vec3 bitangent = normalize(tangentBasisV - shapeNormal * dot(shapeNormal, tangentBasisV) - tangent * dot(tangent, tangentBasisV));
+    vec3 sav = surfaceNormal;
+    surfaceNormal = normalize(
+            tangent * normalMap.x +
+            bitangent * normalMap.y +
+            surfaceNormal
+    );
+    if (!finite(surfaceNormal))
+        surfaceNormal = sav;
+}
 
-    // 插值得到命中点处的UV坐标
+void getHitMaterial(const Face& face, const vec3 &baryCoords, const vec3 &hit_dPdx, const vec3 &hit_dPdy,
+                    HitInfo &hitInfo) {
+
     vec2 texUV =
             baryCoords[0] * face.data[0]->uv +
             baryCoords[1] * face.data[1]->uv +
@@ -290,51 +303,21 @@ void getHitTexture(const Face& face, const vec3 &baryCoords, const vec3 &hit_dPd
 
     const Material& material = *face.material;
 
-    vec3 &shapeNormal = hitInfo_to_init.shapeNormal,
-         &surfaceNormal_to_compute = hitInfo_to_init.surfaceNormal;
-
-    material.getSurfaceData(texUV[0], texUV[1], hitInfo_to_init.roughness, hitInfo_to_init.metallic);
-
+    hitInfo.id = material.id;
+    material.getSurfaceData(texUV[0], texUV[1], hitInfo.roughness, hitInfo.metallic);
+    hitInfo.opacity = material.opacity;
+    hitInfo.eta = material.ior; // 暂存绝对折射率，后续需要转换为相对折射率
     vec2 dUVdx = getDuv(face, hit_dPdx),
          dUVdy = getDuv(face, hit_dPdy);
+    float duv = (finite(dUVdx) && finite(dUVdx)) ? std::max(length(dUVdx), length(dUVdy)) : NAN;
 
-    if (isnan(dUVdx) || isnan(dUVdx)) {
-        surfaceNormal_to_compute = shapeNormal;
-        vec3 normalMap = face.material->getNormal(texUV[0], texUV[1], NAN);
-        hitInfo_to_init.baseColor = material.getDiffuseColor(texUV[0], texUV[1], NAN);
-        hitInfo_to_init.emission = (material.texture[aiTextureType_EMISSIVE].empty())
-                ? vec3(0.0f)
-                : material.getEmissiveColor(texUV[0], texUV[1], NAN);
-    } else {
-        float duv = std::max(length(dUVdx), length(dUVdy));
-
-        vec3 normalMap = face.material->getNormal(texUV[0], texUV[1], duv);
-        hitInfo_to_init.baseColor = material.getDiffuseColor(texUV[0], texUV[1], duv);
-        hitInfo_to_init.emission = (material.texture[aiTextureType_EMISSIVE].empty())
-                ? vec3(0.0f)
-                : material.getEmissiveColor(texUV[0], texUV[1], duv);
-
-        // 根据UV差分求出边缘向量与UV差分
-        vec3 edge1 = face.v[1] - face.v[0];
-        vec3 edge2 = face.v[2] - face.v[0];
-        vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv;
-        vec2 deltaUV2 = face.data[2]->uv - face.data[0]->uv;
-        float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
-        vec3 tangentBasisU = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
-        vec3 tangentBasisV = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
-        vec3 tangent = normalize(tangentBasisU - shapeNormal * dot(shapeNormal, tangentBasisU));
-        vec3 bitangent = normalize(tangentBasisV - shapeNormal * dot(shapeNormal, tangentBasisV) - tangent * dot(tangent, tangentBasisV));
-
-        // 利用法线贴图，将TBN空间的法线转换到世界坐标系
-        surfaceNormal_to_compute = normalize(
-                tangent * normalMap.x +
-                bitangent * normalMap.y +
-                surfaceNormal_to_compute
-        );
-
-        if (isnan(surfaceNormal_to_compute))
-            surfaceNormal_to_compute = shapeNormal;
-    }
+    if (hitInfo.opacity < eps_zero)
+        hitInfo.baseColor = material.transmittingColor;
+    else
+        hitInfo.baseColor = material.getDiffuseColor(texUV[0], texUV[1], duv);
+    hitInfo.emission = material.getEmissiveColor(texUV[0], texUV[1], duv);
+    vec3 normalMap = material.getNormal(texUV[0], texUV[1], duv);
+    calcSurfaceNormal(face, normalMap, hitInfo.shapeNormal, hitInfo.surfaceNormal);
 }
 
 const int maxRayDepth_hit = 8;

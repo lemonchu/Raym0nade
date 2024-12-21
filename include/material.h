@@ -13,7 +13,7 @@ public:
     int width, height, channels;
     std::vector<uint8_t> data[MAX_MIPMAP_LEVEL];
     int map_depth;
-    ImageData() : width(0), height(0), channels(0), map_depth(0) {}
+    ImageData();
 
     void generateMipmaps();
     template<typename Vec>
@@ -30,7 +30,10 @@ public:
     ImageData texture[AI_TEXTURE_TYPE_MAX];
 
     std::string name;
-    bool hasTransparentPart;
+    int id;
+    bool hasFullyTransparentPart;
+    float opacity, ior, roughness;
+    vec3 transmittingColor;
 
     Material();
 
@@ -44,7 +47,7 @@ public:
     [[nodiscard]] vec4 getDiffuseColor(float u, float v, float duv) const;
     [[nodiscard]] vec3 getNormal(float u, float v, float duv) const;
     [[nodiscard]] vec3 getEmissiveColor(float u, float v, float duv) const;
-    void getSurfaceData(float u, float v, float &rouguness, float &metallic) const;
+    void getSurfaceData(float u, float v, float &roughness, float &metallic) const;
 };
 
 #endif // MATERIAL_H

@@ -1,11 +1,11 @@
 #include <iostream>
 #include "sampling.h"
 
-BRDF::BRDF(const vec3 &inDir, const vec3 &hit_position) : inDir(inDir) {
+BSDF::BSDF(const vec3 &inDir, const vec3 &hit_position) : inDir(inDir) {
     surface.position = hit_position;
 }
 
-BRDF::BRDF(const vec3 &inDir,const HitInfo &hitInfo) : inDir(inDir), surface(hitInfo) {}
+BSDF::BSDF(const vec3 &inDir, const HitInfo &hitInfo) : inDir(inDir), surface(hitInfo) {}
 
 const float PI = 3.14159265358979323846f;
 
@@ -19,10 +19,14 @@ float mix(float a, float b, float t) {
     return a*(1-t) + b*t;
 }
 
+float pow5(float x) {
+    float x2 = x*x;
+    return x2*x2*x;
+}
+
 float SchlickFresnel(float u) {
     float m = clamp(1-u, 0, 1);
-    float m2 = m*m;
-    return m2*m2*m; // pow(m,5)
+    return pow5(m);
 }
 
 float GTR1(float NdotH, float a) {
@@ -44,14 +48,12 @@ float smithG_GGX(float NdotV, float alphaG) {
     return 1 / (NdotV + sqrt(a + b - a*b));
 }
 
-
-void BRDF::genTangentSpace() {
+void BSDF::genTangentSpace() {
     getTangentSpaceWithInDir(surface.surfaceNormal, inDir, tangent, bitangent);
 }
 
-vec3 BRDF::getBRDF(vec3 outDir) const {
+vec3 BSDF::getBRDF(vec3 L) const {
     const vec3 &V = inDir;
-    const vec3 &L = outDir;
     const vec3 &N = surface.surfaceNormal;
 
     float NdotL = dot(N,L);
@@ -68,16 +70,15 @@ vec3 BRDF::getBRDF(vec3 outDir) const {
 
     const float
         subsurface = 0.0f,
-        specular = 0.1f,
         specularTint = 0.0f,
         sheen = 0.0f,
         sheenTint = 0.0f,
-        clearcoat = 1.6f,
+        clearcoat = surface.opacity < eps_zero ? 0.04f : 1.5f,
         clearcoatGloss = 0.2f,
         clearcoatTint = 0.0f;
 
     vec3 Ctint = Cdlum > 0.0f ? Cdlin/Cdlum : vec3(1.0f); // normalize lum. to isolate hue+sat
-    vec3 Cspec0 = mix(specular * .08f * glm::mix(vec3(1.0f), Ctint, specularTint), Cdlin, surface.metallic);
+    vec3 Cspec0 = mix(surface.specular * glm::mix(vec3(1.0f), Ctint, specularTint), Cdlin, surface.metallic);
     vec3 Csheen = mix(vec3(1.0f), Ctint, sheenTint);
 
     // Diffuse fresnel - go from 1 at normal incidence to .5 at grazing
@@ -95,7 +96,23 @@ vec3 BRDF::getBRDF(vec3 outDir) const {
 
     // specular
     float Ds = GTR2(NdotH, surface.roughness);
-    float FH = SchlickFresnel(LdotH);
+    float FH;
+    if (surface.eta <= 1.0f) {
+        FH = SchlickFresnel(LdotH);
+    } else {
+        float cosThetaI = fabs(LdotH);
+        float sinThetaI = sqrt_s(1.0f - cosThetaI * cosThetaI);
+        float sinThetaT = surface.eta * sinThetaI;
+        if (sinThetaT >= 1.0f) {
+            // Total internal reflection
+            FH = 1.0f;
+        } else {
+            float cosThetaT = sqrt_s(1.0f - sinThetaT * sinThetaT);
+            float R0 = (surface.eta - 1.0f) / (surface.eta + 1.0f);
+            R0 = R0 * R0;
+            FH = mix(R0, 1.0f, SchlickFresnel(cosThetaT));
+        }
+    }
     vec3 Fs = mix(Cspec0, vec3(1.0f), FH);
     float Gs;
     Gs  = smithG_GGX(NdotL, surface.roughness);
@@ -109,18 +126,90 @@ vec3 BRDF::getBRDF(vec3 outDir) const {
     float Fr = mix(.04f, 1.0f, FH);
     float Gr = smithG_GGX(NdotL, .25f) * smithG_GGX(NdotV, .25f);
 
-    vec3 ret = ((1.0f/PI) * mix(Fd, ss, subsurface) * Cdlin + Fsheen) * (1-surface.metallic)
-             + (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1.0f), Ctint, clearcoatTint)
-             + Gs*Fs*Ds;
+    vec3 ret = ((1.0f/PI) * mix(Fd, ss, subsurface) * Cdlin + Fsheen);
+    ret *= (1.0f - surface.metallic) * surface.opacity;
+    ret += (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1.0f), Ctint, clearcoatTint);
+    ret += Fs * Ds * Gs;
+
+#ifdef RAY_DEBUG
+    if (!finite(ret)) {
+        std::cerr << "Wrong BRDF (getBRDF)" << std::endl;
+        std::cerr << "ret: " << ret.x << " " << ret.y << " " << ret.z << std::endl;
+        std::cerr << "Cdlin: " << Cdlin.x << " " << Cdlin.y << " " << Cdlin.z << std::endl;
+        std::cerr << "Ctint: " << Ctint.x << " " << Ctint.y << " " << Ctint.z << std::endl;
+        std::cerr << "Cspec0: " << Cspec0.x << " " << Cspec0.y << " " << Cspec0.z << std::endl;
+        std::cerr << "Csheen: " << Csheen.x << " " << Csheen.y << " " << Csheen.z << std::endl;
+        std::cerr << "Fs: " << Fs.x << " " << Fs.y << " " << Fs.z << std::endl;
+        std::cerr << "Fsheen: " << Fsheen.x << " " << Fsheen.y << " " << Fsheen.z << std::endl;
+        std::cerr << "Fd: " << Fd << std::endl;
+        std::cerr << "ss: " << ss << std::endl;
+        std::cerr << "Ds: " << Ds << std::endl;
+        std::cerr << "FH: " << FH << std::endl;
+        std::cerr << "Fs: " << Fs.x << " " << Fs.y << " " << Fs.z << std::endl;
+        std::cerr << "Gs: " << Gs << std::endl;
+        std::cerr << "Dr: " << Dr << std::endl;
+        std::cerr << "Fr: " << Fr << std::endl;
+        std::cerr << "Gr: " << Gr << std::endl;
+        std::cerr << "surface.metallic: " << surface.metallic << std::endl;
+        std::cerr << "surface.opacity: " << surface.opacity << std::endl;
+        std::cerr << "surface.roughness: " << surface.roughness << std::endl;
+        std::cerr << "surface.baseColor: " << surface.baseColor.x << " " << surface.baseColor.y << " " << surface.baseColor.z << std::endl;
+        std::cerr << "surface.surfaceNormal: " << surface.surfaceNormal.x << " " << surface.surfaceNormal.y << " " << surface.surfaceNormal.z << std::endl;
+    }
+#endif
 
     return ret * NdotL;
 }
 
+vec3 BSDF::getBTDF(vec3 L) const {
+    const vec3 &N = surface.surfaceNormal;
+    float NdotL = dot(surface.surfaceNormal, L);
+    if (NdotL > 0.0f)
+        return vec3(0.0f);
+
+    const vec3 &V = inDir;
+
+    vec3 H = normalize(L + surface.eta * V);
+
+    // Microfacet distribution term (GGX)
+    float D = GTR2(dot(N, H), surface.roughness);
+
+    // BTDF calculation
+    float BTDF =  D * (-NdotL);
+
+    float NdotV = dot(N, V);
+    float HdotL = dot(H, L);
+    float HdotV = dot(H, V);
+    BTDF *= abs(HdotL * HdotV)/(abs(NdotL * NdotV) + eps_zero);
+    float k = surface.eta * HdotV + HdotL;
+    BTDF /= k*k;
+
+    vec3 ret = vec3(BTDF);
+
+#ifdef RAY_DEBUG
+    if (!finite(ret)) {
+        std::cerr << "Wrong BTDF (getBTDF)" << std::endl;
+        std::cerr << "BTDF: " << BTDF << std::endl;
+        std::cerr << "k: " << k << std::endl;
+        std::cerr << "D: " << D << std::endl;
+    }
+#endif
+
+    return ret;
+}
+
+vec3 BSDF::getBSDF(vec3 outDir) const {
+    if (surface.opacity > 1.0f - eps_zero || surface.entering) // 在非透明面上，或进入透明面时，不考虑直接光照
+        return getBRDF(outDir);
+    else
+        return getBTDF(outDir);
+}
+
 static const int MaxTrys = 16;
 
-void BRDF::sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) const {
+void BSDF::sampleGTR2(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fails) const {
 
-    auto sampleGGX2 = [&](vec3 &outDir, float &pdf) -> void {
+    auto sampleGTR2 = [&](vec3 &outDir, float &pdf) -> void {
         float u = gen(), phi = gen() * 2.0f * PI;
         float
             cosTheta = sqrt((1.0f-u) / (1.0f+(sqr(surface.roughness)-1.0f)*u)),
@@ -128,7 +217,7 @@ void BRDF::sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) c
         vec3 H = sinTheta * cos(phi) * tangent
                 + sinTheta * sin(phi) * bitangent
                 + cosTheta * surface.surfaceNormal;
-        outDir = reflect(-inDir, H);
+        outDir = 2.0f * dot(inDir, H) * H - inDir;
         float LDotH = dot(outDir, H);
         float LdotN = dot(outDir, surface.surfaceNormal);
         if (LDotH <= 0.0f || LdotN <= 0.0f) {
@@ -138,18 +227,26 @@ void BRDF::sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) c
         pdf = GTR2(cosTheta, surface.roughness) * cosTheta / (4.0f * LDotH);
     };
     for (int T = 1; T <= MaxTrys; T++) {
-        float pdf;
-        sampleGGX2(outDir, pdf);
+        sampleGTR2(outDir, pdf);
         if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
             brdfPdf = getBRDF(outDir) / pdf;
             return;
         }
         fails++;
     }
+    pdf = 0.0f;
+    brdfPdf = vec3(0.0f);
     outDir = vec3(NAN);
 }
 
-void BRDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) const {
+const float clampThreshold = 64.0f;
+void clamp(vec3 &pdf) {
+    float Clum = dot(pdf, RGB_Weight);
+    if (Clum > clampThreshold)
+        pdf /= Clum / clampThreshold;
+}
+
+void BSDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fails) const {
     auto sampleCos = [&]() -> vec3 {
         float u = gen(), phi = gen() * 2.0f * PI;
         float d = sqrt(u);
@@ -159,21 +256,81 @@ void BRDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, int &fails) co
     };
     for (int T = 1; T <= MaxTrys; T++) {
         outDir = sampleCos();
-        float pdf = dot(outDir, surface.surfaceNormal) / PI;
+        pdf = dot(outDir, surface.surfaceNormal) / PI;
         if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
             brdfPdf = getBRDF(outDir) / pdf;
+            clamp(brdfPdf);
             return ;
         }
         fails++;
     }
+    pdf = 0.0f;
+    brdfPdf = vec3(0.0f);
     outDir = vec3(NAN);
 }
 
-void BRDF::sample(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails) const {
-    if (gen() < surface.metallic)
-        sampleBRDF(gen, Dir, brdfPdf, fails);
-    else
-        sampleCos(gen, Dir, brdfPdf, fails);
+void BSDF::preciseRefraction(vec3 &outDir, float &F) const {
+    const vec3 &V = inDir;
+    const vec3 &N = surface.surfaceNormal;
+    float eta = surface.eta;
+
+    float NdotV = dot(N, V);
+    if (NdotV < 0.0f) {
+        //std::cout << "        NdotV < 0.0f" << std::endl;
+        F = 1.0f;
+        outDir = vec3(NAN);
+        return;
+    }
+    float delta = 1.0f - eta*eta*(1.0f - NdotV*NdotV);
+    if (delta < 0.0f) {
+        //std::cout << "        delta < 0.0f" << std::endl;
+        F = 1.0f;
+        outDir = vec3(NAN);
+        return;
+    }
+
+    float k = eta * NdotV - sqrt(delta);
+    outDir = k * N - eta * V;
+
+    float LdotN = -dot(outDir, N);
+    // Fresnel term using Schlick's approximation
+    float R0 = (1.0f - eta) / (1.0f + eta);
+    R0 = R0 * R0;
+    F = R0 + (1.0f - R0) * SchlickFresnel(LdotN);
+
+    /*if (rand()%4096 == 0) {
+        std::cout << "surface.eta: " << surface.eta << std::endl;
+        std::cout << "outDir: " << outDir.x << " " << outDir.y << " " << outDir.z << std::endl;
+        std::cout << "V: " << V.x << " " << V.y << " " << V.z << std::endl;
+        std::cout << "N: " << N.x << " " << N.y << " " << N.z << std::endl;
+        std::cout << "dot(N, outDir): " << dot(N, outDir) << std::endl;
+        std::cout << "dot(N, V): " << dot(N, V) << std::endl;
+    }*/
+}
+
+void BSDF::sampleReflection(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails) const {
+
+    vec3 Dir1, Dir2, brdfPdf1, brdfPdf2;
+    int fail1 = 0, fail2 = 0;
+    float pdf1, pdf2;
+    sampleCos(gen, Dir1, brdfPdf1, pdf1, fail1);
+    sampleGTR2(gen, Dir2, brdfPdf2, pdf2, fail2);
+    float p1 = pdf1 / (pdf1 + pdf2);
+    /*std::cout << "             roughness: " << surface.roughness << std::endl;
+    std::cout << "             BaseColor: " << surface.baseColor.x << " " << surface.baseColor.y << " " << surface.baseColor.z << std::endl;
+    std::cout << "             surfaceNormal: " << surface.surfaceNormal.x << " " << surface.surfaceNormal.y << " " << surface.surfaceNormal.z << std::endl;
+    std::cout << "             Clum1: " << Clum1 << " Clum2: " << Clum2 << std::endl;
+    std::cout << "             Dir1: " << Dir1.x << " " << Dir1.y << " " << Dir1.z << std::endl;
+    std::cout << "             Dir2: " << Dir2.x << " " << Dir2.y << " " << Dir2.z << std::endl;*/
+    if (gen() < p1) { // 多重重要性采样 (Multiple Importance Sampling)
+        Dir = Dir1;
+        brdfPdf = brdfPdf1;
+        fails += fail1;
+    } else {
+        Dir = Dir2;
+        brdfPdf = brdfPdf2;
+        fails += fail2;
+    }
 }
 
 int sample(const std::vector<float> &weights, float randomValue) {
@@ -186,17 +343,18 @@ int sample(const std::vector<float> &weights, float randomValue) {
     return -1;
 }
 
-void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model,
+void sampleLightObject(const vec3 &pos, const BSDF &bsdf, const Model &model,
                        Generator &gen, float &prob, int &lightIndex) {
     float totalWeight = 0.0f;
     std::vector<float> weights;
+    weights.reserve(model.lightObjects.size());
     for (const auto & lightObject : model.lightObjects)  {
         vec3 lightDir = normalize(lightObject.center - pos);
         float distance = glm::length(lightObject.center - pos);
-        vec3 brdfPdf = brdf.getBRDF(lightDir);
-        float albedo = dot((vec3)brdf.surface.baseColor, RGB_Weight);
-        float weight = albedo * lightObject.power / (distance * distance + eps_lightRadius);
-        weights.push_back(weight);
+        vec3 bsdfPdf = bsdf.getBSDF(lightDir);
+        float Clum = dot(bsdfPdf, RGB_Weight);
+        float weight = Clum * lightObject.power / (distance * distance + eps_lightRadius);
+        weights.emplace_back(weight);
         totalWeight += weight;
     }
     if (totalWeight == 0.0f) {
@@ -204,6 +362,8 @@ void sampleLightObject(const vec3 &pos, const BRDF &brdf, const Model &model,
         return;
     }
     lightIndex = sample(weights, totalWeight * gen());
+    if (lightIndex == -1)
+        return;
     prob = weights[lightIndex] / totalWeight;
 }
 
@@ -218,7 +378,9 @@ void generateRandomPointInLightFace(const Face &face, const vec3 &pos,
     lightPos = a * face.v[0] + b * face.v[1] + c * face.v[2];
     vec3 lightDir = normalize(lightPos - pos);
     vec3 shapeNormal, surfaceNormal;
-    getHitAllNormals(face, lightDir, vec3(a,b,c), shapeNormal, surfaceNormal);
+    bool entering;
+    getHitNormals(face, lightDir, vec3(a, b, c),
+                  shapeNormal, surfaceNormal, entering);
     cosPhi = dot(surfaceNormal, -lightDir);
 }
 
@@ -230,15 +392,15 @@ void sampleLightFace(const vec3 &pos, const LightObject &lightObject,
         float cosPhi;
         generateRandomPointInLightFace(lightFace, pos, gen, lightPos, cosPhi);
         if (cosPhi > 0.0f) {
-            faceFactor = cosPhi / (dot(pos - lightPos, pos - lightPos) + eps_lightRadius);
+            faceFactor = cosPhi;
             return;
         }
     }
     lightPos = vec3(NAN);
 }
 
-vec3 sampleDirectLight(const BRDF &brdf, const Model &model,
-                       Generator &gen, vec3 &brdfPdf, int &fails) {
+vec3 sampleDirectLight(const BSDF &bsdf, const Model &model,
+                       Generator &gen, vec3 &bsdfPdf) {
 
     // vec3 light = vec3(0.0f);
     // auto &lightObjects = model.lightObjects;
@@ -248,31 +410,42 @@ vec3 sampleDirectLight(const BRDF &brdf, const Model &model,
     //     light += dot * lightObject.color * lightObject.power / (distance * distance + eps_lightRadius);
     // }
     // return vec4(light, 1.0f);
-    const vec3 &pos = brdf.surface.position;
+    const vec3 &pos = bsdf.surface.position;
 
     float P_lightObject;
     int lightIndex;
-    sampleLightObject(pos, brdf,  model, gen, P_lightObject, lightIndex);
-    if (lightIndex == -1)
+    sampleLightObject(pos, bsdf, model, gen, P_lightObject, lightIndex);
+    if (lightIndex == -1) {
+        bsdfPdf = vec3(0.0f);
         return vec3(0.0f);
+    }
     auto& lightObject = model.lightObjects[lightIndex];
 
     vec3 lightPos;
     float faceFactor;
     sampleLightFace(pos, lightObject, gen, lightPos, faceFactor);
-    if (isnan(lightPos))
+    if (!finite(lightPos)) {
+        bsdfPdf = vec3(0.0f);
         return vec3(0.0f);
+    }
 
     vec3 lightDir = normalize(lightPos - pos);
     float distance = length(lightPos - pos);
-    if (model.rayHit_test({pos, lightDir}, distance - eps_lightRadius))
+    if (model.rayHit_test({pos, lightDir}, distance - eps_zero)) {
+        bsdfPdf = vec3(0.0f);
         return vec3(0.0f);
+    }
 
-    float contribution = lightObject.power * faceFactor / P_lightObject;
-    brdfPdf = brdf.getBRDF(lightDir);
-    if (isnan(brdfPdf))
-        std::cerr << "Warning: NaN detected! (sampleDirectLight::brdfPdf)" << std::endl;
-    if (isnan(contribution))
-        std::cerr << "Warning: NaN detected! (sampleDirectLight::contribution)" << std::endl;
-    return lightObject.color * contribution;
+    bsdfPdf = bsdf.getBSDF(lightDir) * faceFactor / P_lightObject;
+    clamp(bsdfPdf);
+    vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
+
+    if (!finite(bsdfPdf)) {
+        std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
+        std::cerr << "lightDir: " << lightDir.x << " " << lightDir.y << " " << lightDir.z << std::endl;
+        std::cerr << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
+        std::cerr << "faceFactor: " << faceFactor << std::endl;
+        std::cerr << "P_lightObject: " << P_lightObject << std::endl;
+    }
+    return light;
 }

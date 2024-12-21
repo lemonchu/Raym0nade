@@ -11,22 +11,22 @@
 
 struct HitInfo {
     vec3 shapeNormal, surfaceNormal, emission, baseColor, position;
-    float roughness, metallic;
+    float specular, roughness, metallic, opacity, eta;
+    int id;
+    bool entering;
     HitInfo();
 };
 
-void getHitAllNormals(const Face& face, const vec3 &inDir, const vec3 &baryCoords,
-                      vec3 &shapeNormal_to_compute, vec3 &surfaceNormal_to_compute_raw);
-void getHitTexture(const Face& face, const vec3 &baryCoords, const vec3 &hit_dPdx, const vec3 &hit_dPdy, HitInfo &hitInfo_to_init);
-void getHitInfo(const Face& face, const vec3 &inDir,
-                HitInfo &hitInfo_to_init, const glm::vec3& hit_dPdx, const glm::vec3& hit_dPdy);
+void getHitNormals(const Face& face, const vec3 &inDir, const vec3 &baryCoords,
+                   vec3 &shapeNormal, vec3 &surfaceNormal_raw, bool &entering);
+void getHitMaterial(const Face& face, const vec3 &baryCoords, const vec3 &hit_dPdx, const vec3 &hit_dPdy,
+                    HitInfo &hitInfo);
 
 class Model {
 private:
     void processMaterial(const std::string &model_folder, const aiScene *scene);
     void checkLightObject(Face *meshFaces, aiMesh *mesh, const Material &material);
-    void processMesh(aiMesh *mesh, const glm::mat4 &nodeTransform);
-    void processNode(aiNode *node, const aiScene *scene, const glm::mat4 &parentTransform);
+    void processMesh(aiMesh *mesh);
 public:
     std::vector<Material> materials;
     std::vector<Face> faces;

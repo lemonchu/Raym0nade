@@ -44,9 +44,10 @@ float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, co
             sigma_z = 1.0f,
             sigma_n = 128.0f,
             sigma_l = 1.0f,
+            sigma_m = 1.0f,
             eps = 1e-2f;
 
-    if (isnan(Gq.position))
+    if (!finite(Gq.position))
         return 0.0f;
 
     float weight = 1.0f;
@@ -62,7 +63,18 @@ float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, co
 
     float radianceDiff = length(Lp.radiance - Lq.radiance) /
                            (sigma_l * sqrt(Lp.Var) + eps);
-    return (radianceDiff < 10.0f) ? weight * std::exp(-radianceDiff) : 0.0f;
+    weight = (radianceDiff < 10.0f) ? weight * std::exp(-radianceDiff) : 0.0f;
+
+    float materialDiff = length(vec3(
+        Gp.metallic - Gq.metallic,
+        Gp.specular - Gq.specular,
+        Gp.opacity - Gq.opacity
+    ));
+    weight *= std::exp(- materialDiff / sigma_m);
+
+    weight *= std::max(Gp.roughness, 0.025f);
+
+    return weight;
 }
 
 void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, int height, int step) {
@@ -76,7 +88,7 @@ void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, i
             float weightSum = 0.0f;
             RadianceData &Lp = radiance[y * width + x];
             const HitInfo &Gp = Gbuffer[y * width + x];
-            if (isnan(Gp.position))
+            if (!finite(Gp.position))
                 continue;
             for (int dy = -filterRadius; dy <= filterRadius; ++dy)
                 for (int dx = -filterRadius; dx <= filterRadius; ++dx) {
@@ -120,7 +132,7 @@ void Image::filter() {
 void Image::shade(float exposure, int options) {
     for (int i = 0; i < width * height; ++i) {
         const HitInfo &G = Gbuffer[i];
-        if (isnan(G.position)) {
+        if (!finite(G.position)) {
             color[i] = vec3(0.0f);
             continue;
         }
@@ -183,6 +195,10 @@ void Image::bloom() {
         for (int id = 0; id < width * height; ++id)
             color[id] += bloomColor[id] / 8.0f;
     }
+}
+
+void Image::FXAA() {
+
 }
 
 const float GammaFactor = 2.2f;

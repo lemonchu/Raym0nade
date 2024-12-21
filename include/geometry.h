@@ -4,6 +4,8 @@
 #include <glm/glm.hpp>
 #include <cmath>
 
+#define RAY_DEBUG
+
 using vec2 = glm::vec<2, float>;
 using vec3 = glm::vec<3, float>;
 using vec4 = glm::vec<4, float>;
@@ -12,8 +14,11 @@ const float eps_zero = 1e-4f;
 
 const vec3 RGB_Weight = vec3(0.3f, 0.6f, 0.1f);
 
-bool isnan(vec2 v);
-bool isnan(vec3 v);
+bool finite(vec2 v);
+bool finite(vec3 v);
+
+float sqrt_s(float x);
+vec3 pow_s(vec3 v, float p);
 
 struct Ray {
     vec3 origin, direction;

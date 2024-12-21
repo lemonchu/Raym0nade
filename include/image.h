@@ -14,14 +14,14 @@ struct RadianceData {
 class Image {
 public:
     enum ShadeOption {
-        DirectLight = 1,
-        IndirectLight = 2,
-        BaseColor = 4,
-        Emission = 8,
-        shapeNormal = 16,
-        surfaceNormal = 32,
-        Diffuse = 64,
-        Specular = 128,
+        BaseColor = 1,
+        Emission = 2,
+        DirectLight = 4,
+        IndirectLight = 8,
+        Diffuse = 16,
+        Specular = 32,
+        shapeNormal = 64,
+        surfaceNormal = 128,
         Direct_Diffuse = DirectLight | Diffuse,
         Direct_Specular = DirectLight | Specular,
         Indirect_Diffuse = IndirectLight | Diffuse,
@@ -37,6 +37,8 @@ public:
     void filter();
 
     void shade(float exposure, int options);
+
+    void FXAA();
 
     void bloom();
 

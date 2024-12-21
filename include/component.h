@@ -9,7 +9,6 @@ struct VertexData {
     vec2 uv;
     vec3 normal;
 
-    VertexData();
     VertexData(const vec2 &uv, const vec3 &normal);
 };
 
@@ -42,6 +41,7 @@ private:
 public:
     void Init(const std::vector<float>& distribution);
     int operator()(Generator &gen) const;
+    float pdf(int index) const;
 };
 
 class LightObject {

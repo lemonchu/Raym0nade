@@ -1,11 +1,31 @@
 #include "geometry.h"
+#include <cfloat>
+#include <iostream>
 
-bool isnan(vec2 v) {
-    return std::isnan(v.x) || std::isnan(v.y);
+
+bool finite(vec2 v) {
+    return _finite(v.x) || _finite(v.y);
 }
 
-bool isnan(vec3 v) {
-    return std::isnan(v.x) || std::isnan(v.y) || std::isnan(v.z);
+bool finite(vec3 v) {
+    return _finite(v.x) || _finite(v.y) || _finite(v.z);
+}
+
+float sqrt_s(float x) {
+#ifdef RAY_DEBUG
+    if (x < -eps_zero) {
+        std::cerr << "Negative sqrt" << std::endl;
+        return 0.0f;
+    }
+#endif
+    return x <= 0.0f ? 0.0f : sqrt(x);
+}
+
+vec3 pow_s(vec3 v, float k) {
+    if (v.x < 0.0f) v.x = 0.0f;
+    if (v.y < 0.0f) v.y = 0.0f;
+    if (v.z < 0.0f) v.z = 0.0f;
+    return vec3(pow(v.x, k), pow(v.y, k), pow(v.z, k));
 }
 
 Box::Box() = default;

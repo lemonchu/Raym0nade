@@ -2,7 +2,7 @@
 #include <iostream>
 #include "kdt.h"
 
-KDT_Node::KDT_Node() = default;
+KDT_Node::KDT_Node() : faceL(0), faceR(0) {}
 
 template<int axis>
 bool cmp(const Face &A, const Face &B) {
@@ -13,11 +13,7 @@ bool (*cmpFunc[3])(const Face &, const Face &) = {cmp<0>, cmp<1>, cmp<2>};
 
 KDT::KDT() : node(nullptr) {}
 
-const unsigned int LeafBagSize = 8;
-
-int nodeCount(int u, int n) {
-    return (n <= LeafBagSize) ? u : nodeCount(u<<1|1, (n+1)>>1);
-}
+const unsigned int LeafBagSize = 10;
 
 void KDT::dfs_build(int u, int faceL, int faceR) {
     if (faceR - faceL <= LeafBagSize) {
@@ -45,12 +41,16 @@ void KDT::dfs_build(int u, int faceL, int faceR) {
     node[u].box = node[u<<1].box + node[u<<1|1].box;
 }
 
+int nodeCount(int u, int n) {
+    return (n <= LeafBagSize) ? u : nodeCount(u<<1|1, (n+1)>>1);
+}
+
 void KDT::build(std::vector<Face> &faces) {
     int size = nodeCount(1, faces.size()) + 1;
     node = new KDT_Node[size];
     this->faces = &faces.front();
     dfs_build(1, 0, faces.size());
-    std::cout << "KDT built with size " << size << std::endl;
+    std::cout << "KDT has built with size " << size << std::endl;
 }
 
 void KDT::dfs_rayHit(int u, const Ray &ray, HitRecord &closest_hit) const {

@@ -9,99 +9,388 @@ RenderData::RenderData(int seed) : gen(seed) {
     C_lightSamples = 0;
 }
 
-const float P_RR = 0.5f;
-const int maxRayDepth = 8;
+MediumData::MediumData(float ior, const vec3 &absorb) : ior(ior), absorb(absorb) {}
 
-vec3 sampleRay(Ray ray, const RayDifferential &base_diff, const Model &model, RenderData &renderData, int &fails, int depth) {
+void Medium::Init() {
+    medium.clear();
+    medium.emplace(-1, MediumData(1.0f, vec3(1.0f)));
+}
+
+void Medium::insert(int id, float ior, const vec3 &absorb) {
+    medium.emplace(id, MediumData(ior, absorb));
+}
+
+void Medium::erase(int id) {
+    medium.erase(id);
+}
+
+float Medium::ior() const {
+    float ior = 1.0f;
+    for (const auto &medium : medium)
+        ior = std::max(ior, medium.second.ior);
+    return ior;
+}
+
+vec3 Medium::absorb() const {
+    vec3 absorb = vec3(1.0f);
+    for (const auto &medium : medium)
+        absorb *= medium.second.absorb;
+    return absorb;
+}
+
+int Medium::size() const {
+    return medium.size();
+}
+
+void calc_dPdxy(const Ray &ray, float hit_t, const vec3 &normal, const RayDifferential &base_diff,
+               vec3 &hit_dPdx, vec3 &hit_dPdy) {
+    float dtdx = - dot(base_diff.dPdx + hit_t * base_diff.dDdx, normal) / dot(ray.direction, normal);
+    float dtdy = - dot(base_diff.dPdy + hit_t * base_diff.dDdy, normal) / dot(ray.direction, normal);
+    hit_dPdx = base_diff.dPdx + dtdx * ray.direction + hit_t * base_diff.dDdx;
+    hit_dPdy = base_diff.dPdy + dtdy * ray.direction + hit_t * base_diff.dDdy;
+}
+
+const vec3 hit_dNdx = glm::vec3{0.0f}, hit_dNdy = glm::vec3{0.0f}; // Derivatives of the normal
+void calc_dDdxy(const Ray &ray, const vec3 &normal, const RayDifferential &base_diff,
+               vec3 &hit_dDdx, vec3 &hit_dDdy) {
+
+    float dDNdx = dot(hit_dNdx, ray.direction) + dot(base_diff.dDdx, normal);
+    float dDNdy = dot(hit_dNdy, ray.direction) + dot(base_diff.dDdy, normal);
+    hit_dDdx = base_diff.dDdx - 2.0f * (dot(ray.direction, normal) * hit_dNdx + dDNdx * normal);
+    hit_dDdy = base_diff.dDdy - 2.0f * (dot(ray.direction, normal) * hit_dNdy + dDNdy * normal);
+}
+
+void getHitInfo(const HitRecord &hit, const Ray &ray, const RayDifferential &base_diff,
+                vec3 &hit_dPdx, vec3 &hit_dPdy, HitInfo &hitInfo) {
+    const auto face = *hit.face;
+    const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], hitInfo.position);
+
+    // Initialize the hit information Stage 1, we obtain the normal.
+    getHitNormals(face, ray.direction, baryCoords,
+                  hitInfo.shapeNormal, hitInfo.surfaceNormal, hitInfo.entering);
+
+    // Derivatives of the position (Calculated outside the if-else block)
+    calc_dPdxy(ray, hit.t_max, hitInfo.shapeNormal, base_diff, hit_dPdx, hit_dPdy);
+
+    // Initialize the hit information Stage 2, we obtain the texture and the tangent space.
+    getHitMaterial(face, baryCoords, hit_dPdx, hit_dPdy, hitInfo);
+}
+
+// #define DEBUG_sampleRay
+
+const float regularizationFactor = 0.24f;
+
+vec3 getAbsorb(const vec3 &absorb, float dis) { // 计算透射颜色
+    static const float omega_absorb = 16.0f;
+    float Clum = dot(absorb, RGB_Weight);
+    return (Clum < 1.0f - eps_zero) ? pow_s(absorb, omega_absorb * dis) : vec3(1.0f);
+}
+
+void calcEta(Medium &mediums, HitInfo &hitInfo) {
+    float eta1 = mediums.ior(), eta2;
+    if (hitInfo.entering)
+        eta2 = std::max(eta1, hitInfo.eta);
+    else {
+        mediums.erase(hitInfo.id);
+        eta2 = mediums.ior();
+        mediums.insert(hitInfo.id, hitInfo.eta, hitInfo.baseColor);
+    }
+    hitInfo.eta = eta1 / eta2;
+}
+
+static float P0_reflect = 0.2f;
+
+vec3 sampleRay(Ray ray, const RayDifferential &base_diff, const Model &model,
+               RenderData &renderData, int &fails, float roughnessFactor, int depth) {
+
+    static const int maxRayDepth = 16;
+
     HitRecord hit = model.rayHit(ray);
-    RayDifferential next_diff;
     if (hit.t_max == INFINITY)
         return vec3(0.0f); // No intersection
 
-    BRDF brdf(-ray.direction, ray.origin + ray.direction * hit.t_max); // This is to be initialized by the hit information later
+    BSDF bsdf(-ray.direction, ray.origin + ray.direction * hit.t_max);
+    vec3 hit_dPdx, hit_dPdy;
+    getHitInfo(hit, ray, base_diff, hit_dPdx, hit_dPdy, bsdf.surface);
+    bsdf.genTangentSpace();
+    roughnessFactor = std::max(roughnessFactor, regularizationFactor * bsdf.surface.roughness);
+    bsdf.surface.roughness = std::max(bsdf.surface.roughness, roughnessFactor);
 
-    const auto face = *hit.face;
-    const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], brdf.surface.position);
-    const Material& material = *face.material;
+    static const float P_RR_Rough = 0.5f, P_RR_Smooth = 0.85f; // 根据光滑程度决定截止概率
+    const float P_RR = P_RR_Smooth + (P_RR_Rough - P_RR_Smooth) * sqrt(bsdf.surface.roughness);
 
-    // Initialize the hit information Stage 1, we obtain the normal.
-    getHitAllNormals(face, ray.direction, baryCoords, brdf.surface.shapeNormal, brdf.surface.surfaceNormal);
+    float ior = bsdf.surface.eta; // 保存绝对折射率
 
-    vec3 hit_dPdx, hit_dPdy; // Derivatives of the position (Calculated outside the if-else block)
-    vec3 hit_dDdx, hit_dDdy; // Derivatives of the direction (To be calculated outside the if-else block)
+    if (glm::length(bsdf.surface.emission) > eps_zero)
+        return vec3(0.0f);
 
-    // Here we just use the normal differential of the shape, which is trivial
-    vec3 hit_dNdx = glm::vec3{0.0f}, hit_dNdy = glm::vec3{0.0f}; // Derivatives of the normal
+#ifdef DEBUG_sampleRay
+    std::cout << "depth: " << depth << std::endl;
+    std::cout << "entering: " << (bsdf.surface.entering ? "true" : "false") << std::endl ;
+    std::cout << "name: " << hit.face->material->name << std::endl << std::endl;;
+#endif
 
-    const auto &hit_t = hit.t_max;
-    float dtdx = - dot(base_diff.dPdx + hit_t * base_diff.dDdx, brdf.surface.shapeNormal) / dot(ray.direction, brdf.surface.shapeNormal);
-    float dtdy = - dot(base_diff.dPdy + hit_t * base_diff.dDdy, brdf.surface.shapeNormal) / dot(ray.direction, brdf.surface.shapeNormal);
-    hit_dPdx = base_diff.dPdx + dtdx * ray.direction + hit_t * hit_dDdx;
-    hit_dPdy = base_diff.dPdy + dtdy * ray.direction + hit_t * hit_dDdy;
-
-    // Initialize the hit information Stage 2, we obtain the texture and the tangent space.
-    getHitTexture(face, baryCoords, hit_dPdx, hit_dPdy, brdf.surface);
-    brdf.genTangentSpace();
-
-    if (glm::length(brdf.surface.emission) > 0)
-        return vec3(0.0f); // 不再计算直接光照
-
-    if (depth == maxRayDepth || renderData.gen() > P_RR) {
-        renderData.C_lightSamples++;
-        vec3 brdfPdf;
-        vec3 light = sampleDirectLight(brdf, model, renderData.gen, brdfPdf, fails);
-        return light * brdfPdf / ((depth < maxRayDepth) ? (1.0f - P_RR) : 1.0f);
-        // RR 停止时，用光源重要性采样计算直接光照
+    float P_reflect = 1.0f, F;
+    vec3 refractDir(NAN);
+    if (bsdf.surface.opacity < eps_zero) { // 透明材质，计算反射和折射的比率
+        calcEta(renderData.mediums, bsdf.surface);
+        bsdf.preciseRefraction(refractDir, F);
+        if (renderData.mediums.size() == 1) // 在空气中，增加反射采样率
+            P_reflect = P0_reflect + (1.0f - P0_reflect) * F;
+        else
+            P_reflect = F;
+#ifdef DEBUG_sampleRay
+        std::cout << "    eta: " << bsdf.surface.eta << std::endl;
+        std::cout << "    refractDir: " << refractDir.x << " " << refractDir.y << " " << refractDir.z << std::endl;
+        std::cout << "    P_reflect: " << P_reflect << std::endl;
+#endif
     }
 
-    vec3 newDirection, brdfPdf;
-    brdf.sample(renderData.gen, newDirection, brdfPdf, fails); // Sample the new direction
-    Ray newRay = {brdf.surface.position, newDirection};
+    vec3 absorb = getAbsorb(renderData.mediums.absorb(), hit.t_max);
+#ifdef DEBUG_sampleRay
+    std::cout << "        Absorb_depth: " << hit.t_max << std::endl;
+    std::cout << "        Absorb: " << absorb.x << " " << absorb.y << " " << absorb.z << std::endl;
+#endif
 
-    if (isnan(newDirection))
+    vec3 newDir, bsdfPdf(NAN);
+    RayDifferential next_diff;
+
+    if (renderData.gen() <= P_reflect) { // 发生反射
+#ifdef DEBUG_sampleRay
+        std::cout << "reflect" << std::endl;
+#endif
+        bool doDirectLightSample =
+                bsdf.surface.entering &&
+                renderData.mediums.size() == 1;
+        // 仅在空气中进行直接光照采样（在空气中反射）
+        if (doDirectLightSample) {
+            if (depth >= maxRayDepth || renderData.gen() > P_RR) {
+                renderData.C_lightSamples++;
+                vec3 light = sampleDirectLight(bsdf, model, renderData.gen, bsdfPdf);
+                bsdfPdf /= P_reflect;
+                if (depth < maxRayDepth)
+                    bsdfPdf /= (1.0f - P_RR);
+                if (!finite(light)) {
+                    std::cout << "light is NAN! (sampleDirectLight)" << std::endl;
+                }
+                if (!finite(bsdfPdf)) {
+                    std::cout << "bsdfPdf is NaN! (sampleDirectLight)" << std::endl;
+                }
+#ifdef DEBUG_sampleRay
+                std::cout << "Light : " << light.x << " " << light.y << " " << light.z << std::endl;
+                std::cout << "bsdfPdf : " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
+                std::cout << "depth :" << depth << std::endl;
+                std::cout << std::endl;
+#endif
+                return bsdfPdf * light;
+            }
+        }
+        bsdf.sampleReflection(renderData.gen, newDir, bsdfPdf, fails);
+        if (!finite(bsdfPdf)) {
+            std::cout << "bsdfPdf is NaN! (reflection)" << std::endl;
+        }
+        bsdfPdf /= P_reflect;
+        if (doDirectLightSample)
+            bsdfPdf /= P_RR;
+        vec3 hit_dDdx, hit_dDdy;
+        calc_dDdxy(ray, bsdf.surface.surfaceNormal, base_diff, hit_dDdx, hit_dDdy);
+        next_diff = {hit_dPdx, hit_dPdy, hit_dDdx, hit_dDdy};
+
+    } else { // 发生折射
+#ifdef DEBUG_sampleRay
+        std::cout << "refract" << std::endl;
+#endif
+        // Todo: 折射的 RayDifferential 计算
+        bool doDirectLightSample =
+                !bsdf.surface.entering &&
+                renderData.mediums.size() == 2;
+        // 仅在空气中进行直接光照采样（折射离开介质，进入空气）
+        if (doDirectLightSample) {
+            if (depth >= maxRayDepth || renderData.gen() > P_RR) {
+                renderData.C_lightSamples++;
+                vec3 light = sampleDirectLight(bsdf, model, renderData.gen, bsdfPdf);
+                bsdfPdf /= (1.0f - P_reflect);
+                if (depth < maxRayDepth)
+                    bsdfPdf /= (1.0f - P_RR);
+                if (!finite(light)) {
+                    std::cout << "light is NAN! (sampleDirectLight.refract)" << std::endl;
+                }
+                if (!finite(bsdfPdf)) {
+                    std::cout << "btdfPdf is NaN! (sampleDirectLight.refract)" << std::endl;
+                }
+#ifdef DEBUG_sampleRay
+                    std::cout << "Light : " << light.x << " " << light.y << " " << light.z << std::endl;
+                    std::cout << "bsdfPdf : " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
+                    std::cout << "depth :" << depth << std::endl;
+                    std::cout << std::endl;
+#endif
+                return absorb * bsdfPdf * light;
+            }
+        }
+        newDir = refractDir;
+
+        bsdfPdf = vec3((1.0f - F) * bsdf.surface.eta * bsdf.surface.eta);
+        bsdfPdf /= (1.0f - P_reflect);
+        if (doDirectLightSample)
+            bsdfPdf /= P_RR;
+
+        next_diff = base_diff;
+        if (!finite(bsdfPdf)) {
+            std::cout << "bsdfPdf is NaN! (refract)" << P_reflect <<std::endl;
+        }
+
+        if (bsdf.surface.entering)
+            renderData.mediums.insert(bsdf.surface.id, ior, bsdf.surface.baseColor);
+        else
+            renderData.mediums.erase(bsdf.surface.id);
+    }
+
+    if (!finite(newDir) || depth == maxRayDepth)
         return vec3(0.0f); // Invalid direction, then return black
 
-    if (dot(newDirection, brdf.surface.shapeNormal) < 0.0f) {
-        // Refraction
-        // TODO: After finish the transparent material, we should add the refraction of transparent material
+    Ray newRay = {bsdf.surface.position, newDir};
 
-        throw std::runtime_error("Refraction is not supported yet.");
+    bsdfPdf *= getAbsorb(renderData.mediums.absorb(), hit.t_max);
 
-    } else if (dot(newDirection, brdf.surface.shapeNormal) > 0.0f) {
-        // Reflection / Diffuse
-        // TODO: Calculate the differential of the normal
+#ifdef DEBUG_sampleRay
+    std::cout << "newPos: " << newRay.origin.x << " " << newRay.origin.y << " " << newRay.origin.z << std::endl;
+    std::cout << "newDir: " << newDir.x << " " << newDir.y << " " << newDir.z << std::endl;
+    std::cout << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
+#endif
 
-        // Propagate the differential through the reflection
-        float dDNdx = dot(hit_dNdx, ray.direction) + dot(base_diff.dDdx, brdf.surface.shapeNormal);
-        float dDNdy = dot(hit_dNdy, ray.direction) + dot(base_diff.dDdy, brdf.surface.shapeNormal);
-        hit_dDdx = base_diff.dDdx - 2.0f * (dot(ray.direction, brdf.surface.shapeNormal) * hit_dNdx + dDNdx * brdf.surface.shapeNormal);
-        hit_dDdy = base_diff.dDdy - 2.0f * (dot(ray.direction, brdf.surface.shapeNormal) * hit_dNdy + dDNdy * brdf.surface.shapeNormal);
+    vec3 irradiance = sampleRay(newRay, next_diff, model,
+                                renderData, fails,
+                                roughnessFactor, depth+1);
 
-        next_diff = {hit_dPdx, hit_dPdy, hit_dDdx, hit_dDdy};
+    if (!finite(irradiance)) {
+        std::cout << "irradiance is NAN!" << std::endl;
+    }
+    if (!finite(bsdfPdf)) {
+        std::cout << "bsdfPdf is NaN! " << depth << std::endl;
+    }
+    return  absorb * bsdfPdf * irradiance;
+}
+
+struct LightSample {
+    vec3 bsdfPdf, light;
+};
+
+void sampleRayFromFirstIntersection(const HitInfo &hitInfo, const vec3 &origin, const RayDifferential &base_diff, const Model &model,
+                                    RenderData &renderData, std::vector<LightSample> &samples, int &fails) {
+
+    if (length(hitInfo.emission) > 0)
+        return; // 暂不计入直接光照
+
+    renderData.mediums.Init();
+
+    vec3 inDir = normalize(hitInfo.position - origin);
+    Ray ray = {origin, inDir};
+    float hit_t = length(hitInfo.position - origin);
+    BSDF bsdf(-inDir, hitInfo);
+    bsdf.genTangentSpace();
+    float ior = bsdf.surface.eta;
+    bsdf.surface.eta = 1.0f / bsdf.surface.eta; // 初始时必然从空气进入介质
+
+    vec3 newDir, bsdfPdf = vec3(NAN);
+
+    float P_reflect = 1.0f, F;
+    vec3 refractDir;
+    if (bsdf.surface.opacity < eps_zero) {
+        // 透明材质
+        bsdf.preciseRefraction(refractDir, F);
+        P_reflect = P0_reflect + (1.0f - P0_reflect) * F;
+#ifdef DEBUG_sampleRay
+        std::cout << "    refractDir: " << refractDir.x << " " << refractDir.y << " " << refractDir.z << std::endl;
+        std::cout << "    P_reflect: " << P_reflect << std::endl;
+#endif
     }
 
-    vec3 irradiance = sampleRay(newRay, next_diff, model, renderData, fails, depth + 1) / P_RR;
+    RayDifferential next_diff;
+    if (renderData.gen() < P_reflect) {
+        // 反射
+#ifdef DEBUG_sampleRay
+        std::cout << "reflect" << std::endl;
+#endif
+        vec3 hit_dPdx, hit_dPdy;
+        calc_dPdxy(ray, hit_t, bsdf.surface.shapeNormal, base_diff, hit_dPdx, hit_dPdy);
+        vec3 hit_dDdx, hit_dDdy;
+        calc_dDdxy(ray, bsdf.surface.surfaceNormal, base_diff, hit_dDdx, hit_dDdy);
+        next_diff = {hit_dPdx, hit_dPdy, hit_dDdx, hit_dDdy};
 
-    return brdfPdf * irradiance;
+        bsdf.sampleReflection(renderData.gen, newDir, bsdfPdf, fails);
+        bsdfPdf /= P_reflect;
+        if (isinf(bsdfPdf.x)) {
+            std::cerr << "bsdfPdf is INF! (reflection)" << std::endl;
+        }
+    } else {
+        // 折射
+        // Todo: 折射的 RayDifferential 计算
+#ifdef DEBUG_sampleRay
+        std::cout << "refract" << std::endl;
+#endif
+        newDir = refractDir;
+
+        bsdfPdf = vec3((1.0f - F) *bsdf.surface.eta * bsdf.surface.eta);
+        bsdfPdf /= (1.0f - P_reflect);
+
+        next_diff = base_diff;
+
+        if (bsdf.surface.entering)
+            renderData.mediums.insert(bsdf.surface.id, ior, bsdf.surface.baseColor);
+        else
+            renderData.mediums.erase(bsdf.surface.id);
+    }
+
+    if (!finite(newDir))
+        return;
+
+    Ray newRay = {bsdf.surface.position, newDir};
+
+    float roughnessFactor = hitInfo.roughness * regularizationFactor;
+
+#ifdef DEBUG_sampleRay
+    std::cout << "depth: 0" << std::endl;
+    std::cout << "newPos: " << newRay.origin.x << " " << newRay.origin.y << " " << newRay.origin.z << std::endl;
+    std::cout << "newDir: " << newDir.x << " " << newDir.y << " " << newDir.z << std::endl;
+    std::cout << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
+    std::cout << "entering: " << (bsdf.surface.entering ? "true" : "false") << std::endl << std::endl;
+#endif
+
+    vec3 light = sampleRay(newRay, next_diff, model,
+                           renderData, fails,
+                           roughnessFactor, 1);
+
+#ifdef DEBUG_sampleRay
+    std::cout << "Light : " << light.x << " " << light.y << " " << light.z << std::endl;
+    std::cout << std::endl << std::endl;
+#endif
+
+    if (!finite(light)) {
+        std::cerr << "light is NAN! (final)" << std::endl;
+    }
+
+    if (!finite(bsdfPdf)) {
+        std::cerr << "bsdfPdf is NAN! (final)" << std::endl;
+    }
+
+    samples.push_back({bsdfPdf, light});
 }
 
 void accumulateInwardRadiance(RadianceData &radiance, vec3 inradiance) {
-    if (isnan(inradiance)) {
-        // inradiance = vec3(0.0f);
+    if (!finite(inradiance)) {
+        std::cerr << "NaN detected!" << std::endl;
         throw std::runtime_error("NaN detected!");
-        //std::cerr << "Warning: NaN detected! (accumulate)" << std::endl;
     }
     radiance.radiance += inradiance;
     radiance.Var += dot(inradiance, inradiance);
 }
 
-void accumulateInwardRadiance(const BRDF &brdf, const vec3 brdfPdf, const vec3 &light,
+void accumulateInwardRadiance(const vec3 baseColor, const vec3 brdfPdf, const vec3 &light,
                               RadianceData &radiance_d, RadianceData &radiance_s) {
 
     if (light == vec3(0.0f))
         return;
-    vec3 baseColor = (vec3)brdf.surface.baseColor;
-    if (length(baseColor) == 0.0f) {
+    if (baseColor == vec3(0.0f)) {
         accumulateInwardRadiance(radiance_s, light * brdfPdf);
         return;
     }
@@ -125,92 +414,27 @@ void accumulateInwardRadiance(const BRDF &brdf, const vec3 brdfPdf, const vec3 &
     accumulateInwardRadiance(radiance_s, light * (brdfPdf - brdfPdf_base));
 }
 
-void sampleDirectLightFromFirstIntersection(const HitInfo &hitInfo, const vec3 &inDir, const Model &model,
-                                            RenderData &renderData, RadianceData &radiance_Dd, RadianceData &radiance_Ds, int &fails) {
+void sampleDirectLightFromFirstIntersection(const HitInfo &hitInfo, const vec3 &origin, const Model &model,
+                                            RenderData &renderData, RadianceData &radiance_Dd, RadianceData &radiance_Ds) {
 
-    if (isnan(hitInfo.position) || length(hitInfo.emission) > 0)
+    if (!finite(hitInfo.position) || length(hitInfo.emission) > 0)
         return; // 暂不计入直接光照
 
-    BRDF brdf(-inDir, hitInfo);
-    brdf.genTangentSpace();
-    vec3 brdfPdf;
-    vec3 light = sampleDirectLight(brdf, model, renderData.gen, brdfPdf, fails);
-    accumulateInwardRadiance(brdf, brdfPdf, light, radiance_Dd, radiance_Ds);
+    vec3 inDir = normalize(hitInfo.position - origin);
+    BSDF bsdf(-inDir, hitInfo);
+    bsdf.genTangentSpace();
+    vec3 bsdfPdf = vec3(NAN);
+    vec3 light = sampleDirectLight(bsdf, model, renderData.gen, bsdfPdf);
+    accumulateInwardRadiance(hitInfo.baseColor, bsdfPdf, light, radiance_Dd, radiance_Ds);
 }
 
-void sampleRayFromFirstIntersection(const HitInfo &hitInfo, const vec3 &inDir, const RayDifferential base_diff, const Model &model,
-                                    RenderData &renderData, RadianceData &radiance_Id, RadianceData &radiance_Is, int &fails) {
+void initRayDiff(const vec3 &d, const RenderArgs &args, RayDifferential &base_diff) {
+    base_diff.dPdx = vec3(0.0f), base_diff.dPdy = vec3(0.0f);
+    const vec3 dddx = args.accuracy * args.right, dddy = args.accuracy * args.up;
+    float d_dot_d = dot(d, d), d_dot_dddx = dot(d, dddx), d_dot_dddy = dot(d, dddy);
 
-    if (isnan(hitInfo.position) || length(hitInfo.emission) > 0)
-        return; // 暂不计入直接光照
-
-    BRDF brdf(-inDir, hitInfo);
-    brdf.genTangentSpace();
-    vec3 newDirection, brdfPdf;
-    brdf.sample(renderData.gen, newDirection, brdfPdf, fails);
-    if (isnan(newDirection))
-        return;
-    Ray ray = {hitInfo.position, newDirection};
-    vec3 light = sampleRay(ray, base_diff, model, renderData, fails, 1);
-    accumulateInwardRadiance(brdf, brdfPdf, light, radiance_Id, radiance_Is);
-}
-
-void rayCasting(Model &model, const RenderArgs &args, Image &image) {
-    const int
-            width = args.width,
-            height = args.height;
-    vec3
-            view = args.direction,
-            right = args.right,
-            up = args.up,
-            position = args.position;
-    const float
-            accuracy = args.accuracy;
-    for (int x = 0; x < width; x++)
-        for (int y = 0; y < height; y++) {
-
-            float
-                    rayX = static_cast<float>(x) - width / 2.0f,
-                    rayY = static_cast<float>(y) - height / 2.0f;
-            vec3 d = view + accuracy * (rayX * right + rayY * up);
-
-            vec3 D = normalize(d);
-            Ray ray = {position, D};
-
-            vec3 base_dPdx = vec3(0.0f), base_dPdy = vec3(0.0f);
-            vec3 base_dDdx, base_dDdy;
-
-            vec3 dddx = accuracy * right;
-            vec3 dddy = accuracy * up;
-
-            float d_dot_d = dot(d, d);
-            float d_dot_dddx = dot(d, dddx);
-            float d_dot_dddy = dot(d, dddy);
-
-            base_dDdx = (d_dot_d * dddx - d_dot_dddx * d) / (sqrt(d_dot_d) * d_dot_d);
-            base_dDdy = (d_dot_d * dddy - d_dot_dddy * d) / (sqrt(d_dot_d) * d_dot_d);
-
-            HitRecord hit = model.rayHit(ray);
-            HitInfo &Gbuffer = image.Gbuffer[y * width + x];
-
-            if (hit.face == nullptr)
-                continue;
-
-            Gbuffer.position = ray.origin + ray.direction * hit.t_max;
-
-            const vec3 baryCoords = barycentric(hit.face->v[0], hit.face->v[1], hit.face->v[2], Gbuffer.position);
-            getHitAllNormals(*hit.face, ray.direction, baryCoords, Gbuffer.shapeNormal, Gbuffer.surfaceNormal);
-
-            vec3 hit_dPdx, hit_dPdy; // Derivatives of the position, a trivial solution
-
-            const auto &hit_t = hit.t_max;
-            float dtdx = - dot(hit_t * base_dDdx + base_dPdx, Gbuffer.shapeNormal) / dot(ray.direction, Gbuffer.shapeNormal),
-                  dtdy = - dot(hit_t * base_dDdy + base_dPdy, Gbuffer.shapeNormal) / dot(ray.direction, Gbuffer.shapeNormal);
-            hit_dPdx = base_dPdx + dtdx * ray.direction + hit_t * base_dDdx;
-            hit_dPdy = base_dPdy + dtdy * ray.direction + hit_t * base_dDdy;
-
-            getHitTexture(*hit.face, baryCoords, hit_dPdx, hit_dPdy, Gbuffer);
-        }
+    base_diff.dDdx = (d_dot_d * dddx - d * d_dot_dddx) / (sqrt(d_dot_d) * d_dot_d);
+    base_diff.dDdy = (d_dot_d * dddy - d * d_dot_dddy) / (sqrt(d_dot_d) * d_dot_d);
 }
 
 void normalize(RadianceData &radiance, float exposure, int spp) {
@@ -224,43 +448,86 @@ void normalize(RadianceData &radiance, float exposure, int spp) {
 }
 
 void renderPixel(const Model &model, const RenderArgs &args,
-                 RenderData &renderData, Image &image, int id) {
+                 RenderData &renderData, Image &image, int x, int y) {
+    //renderData.gen.mt.seed(x^y);
+#ifdef DEBUG_sampleRay
+    if (x!=48||y!=41)
+        return ;
+#endif
+    const int
+            width = args.width,
+            height = args.height;
+    vec3
+            view = args.direction,
+            right = args.right,
+            up = args.up,
+            position = args.position;
+    const float
+            accuracy = args.accuracy;
+
+    int id = y * width + x;
+    float
+            rayX = static_cast<float>(x) - width / 2.0f,
+            rayY = static_cast<float>(y) - height / 2.0f;
+    vec3 d = view + accuracy * (rayX * right + rayY * up);
     HitInfo &Gbuffer = image.Gbuffer[id];
-    if (isnan(Gbuffer.position))
+
+    RayDifferential base_diff;
+    initRayDiff(d, args, base_diff);
+
+    vec3 Dir = normalize(d);
+    Ray ray = {position, Dir};
+
+    HitRecord hit = model.rayHit(ray);
+    if (hit.t_max == INFINITY) {
+        Gbuffer.position = vec3(NAN);
         return;
+    }
+
+    Gbuffer.position = ray.origin + hit.t_max * ray.direction;
+    vec3 hit_dPdx, hit_dPdy;
+    getHitInfo(hit, ray, base_diff,hit_dPdx, hit_dPdy, Gbuffer);
+    bool opacity = (Gbuffer.opacity > 1.0f - eps_zero);
+    static const int MultiSampleForRefraction = 8;
     const int
             spp_direct = args.spp * args.P_Direct,
-            spp_indirect = args.spp - spp_direct;
+            spp_indirect = (args.spp - spp_direct) * (opacity ? 1 : MultiSampleForRefraction);
     const float
             exposure = args.exposure;
-    vec3 d = Gbuffer.position - args.position;
-    vec3 D = normalize(d); // D
     RadianceData
             &radiance_Dd = image.radiance_Dd[id],
             &radiance_Ds = image.radiance_Ds[id],
             &radiance_Id = image.radiance_Id[id],
             &radiance_Is = image.radiance_Is[id];
-    int trys_direct = 0;
-
-    RayDifferential base_diff;
-
-    base_diff.dPdx = vec3(0.0f), base_diff.dPdy = vec3(0.0f);
-    const vec3 dddx = args.accuracy * args.right, dddy = args.accuracy * args.up;
-    float d_dot_d = dot(d, d), d_dot_dddx = dot(d, dddx), d_dot_dddy = dot(d, dddy);
-
-    base_diff.dDdx = (d_dot_d * dddx - d * d_dot_dddx) / (sqrt(d_dot_d) * d_dot_d);
-    base_diff.dDdy = (d_dot_d * dddy - d * d_dot_dddy) / (sqrt(d_dot_d) * d_dot_d);
 
     for (int T = 0; T < spp_direct; T++)
-        sampleDirectLightFromFirstIntersection(Gbuffer, D, model,
-                                               renderData, radiance_Dd, radiance_Ds, trys_direct);
-    trys_direct += spp_direct;
-    normalize(radiance_Dd, exposure, trys_direct);
-    normalize(radiance_Ds, exposure, trys_direct);
+        sampleDirectLightFromFirstIntersection(
+                Gbuffer, args.position, model,
+                renderData, radiance_Dd, radiance_Ds);
+    normalize(radiance_Dd, exposure, spp_direct);
+    normalize(radiance_Ds, exposure, spp_direct);
+
+    std::vector<LightSample> samples;
     int trys_indirect = 0;
     for (int T = 0; T < spp_indirect; T++)
-        sampleRayFromFirstIntersection(Gbuffer, D, base_diff, model,
-                                       renderData, radiance_Id, radiance_Is, trys_indirect);
+        sampleRayFromFirstIntersection(
+                Gbuffer, args.position, base_diff, model,
+                renderData, samples, trys_indirect);
+    if (samples.empty())
+        return ;
+    float meanClum = 0.0f;
+    for (const auto &sample : samples)
+        meanClum += dot(sample.bsdfPdf*sample.light, RGB_Weight);
+    meanClum /= samples.size();
+
+    static const float clampThreshold = 16.0f;
+    for (auto &sample : samples) {
+        float Clum = dot(sample.bsdfPdf*sample.light, RGB_Weight);
+        float restClum = meanClum - Clum / samples.size();
+        if (Clum/restClum > clampThreshold * samples.size())
+            continue;
+        accumulateInwardRadiance(Gbuffer.baseColor, sample.bsdfPdf, sample.light, radiance_Id, radiance_Is);
+    }
     trys_indirect += spp_indirect;
     normalize(radiance_Id, exposure, trys_indirect);
     normalize(radiance_Is, exposure, trys_indirect);
@@ -273,15 +540,19 @@ void renderPixel(const Model &model, const RenderArgs &args,
 void renderWorker(const Model &model, const RenderArgs &args,
                   RenderData &renderData, Image &image, int xL, int xR) {
     static const int
-            C_calc = 256,
-            C_report = 4096;
+            C_calc = 64,
+            C_report = 1024;
     const int
             width = args.width,
             height = args.height;
+    vec3
+            view = args.direction,
+            right = args.right,
+            up = args.up;
     int cnt = 0;
     for (int y = 0; y < height; y++)
         for (int x = xL; x < xR; x++) {
-            renderPixel(model, args, renderData, image, y * args.width + x);
+            renderPixel(model, args, renderData, image,  x, y);
             cnt++;
             if (cnt == C_calc) {
                 cnt = 0;
@@ -304,18 +575,6 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     std::cout << "Rendering started with " << threads << " threads." << std::endl;
 
     Image image(width, height);
-    rayCasting(model, args, image);
-
-    std::cout << "Ray casting completed. (" << clock()-startTime << " ms)"<< std::endl;
-
-    auto exportImage = [&](const std::string &tag, int shadeOptions) {
-        image.shade(exposure, shadeOptions);
-        image.save((args.savePath + "(" + tag + ").png").c_str());
-    };
-
-    exportImage("DiffuseColor", Image::BaseColor);
-    exportImage("shapeNormal", Image::shapeNormal);
-    exportImage("surfaceNormal", Image::surfaceNormal);
 
     std::atomic<int> renderedPixels(0);
     std::vector<RenderData> datas;
@@ -341,6 +600,16 @@ void render_multiThread(Model &model, const RenderArgs &args) {
 
     std::cout << "Rendering completed in " << clock() - startTime << " ms." << std::endl;
     std::cout << "Direct light samples: " << C_lightSamples << std::endl;
+
+    auto exportImage = [&](const std::string &tag, int shadeOptions) {
+        image.shade(exposure, shadeOptions);
+        image.FXAA();
+        image.save((args.savePath + "(" + tag + ").png").c_str());
+    };
+
+    exportImage("DiffuseColor", Image::BaseColor);
+    exportImage("shapeNormal", Image::shapeNormal);
+    exportImage("surfaceNormal", Image::surfaceNormal);
 
     exportImage("Direct_Diffuse", Image::Direct_Diffuse);
     exportImage("Direct_Specular", Image::Direct_Specular);

@@ -1,7 +1,7 @@
 #include "component.h"
 
 Generator::Generator(unsigned int seed) :
-    mt(seed), U(0.0f, 1.0f) {}
+    mt(seed), U(1e-6f, 1.0f-1e-6f) {}
 
 float Generator::operator()() {
     return U(mt);
@@ -20,9 +20,14 @@ int RandomDistribution::operator()(Generator &gen) const {
     return std::lower_bound(prefixSums.begin(), prefixSums.end(), randomValue) - prefixSums.begin();
 }
 
-LightObject::LightObject() : center(glm::vec3(0)), color(glm::vec3(0)), power(0) {}
+float RandomDistribution::pdf(int index) const {
+    float now = prefixSums[index];
+    if (index > 0)
+        now -= prefixSums[index - 1];
+    return now / prefixSums.back();
+}
 
-VertexData::VertexData() = default;
+LightObject::LightObject() : center(glm::vec3(0)), color(glm::vec3(0)), power(0) {}
 
 VertexData::VertexData(const vec2 &uv, const vec3 &normal) : uv(uv), normal(normal) {}
 
