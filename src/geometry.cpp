@@ -4,7 +4,7 @@
 
 
 bool finite(vec2 v) {
-    return _finite(v.x) || _finite(v.y);
+    return std::isfinite(v.x) || _finite(v.y);
 }
 
 bool finite(vec3 v) {

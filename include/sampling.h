@@ -12,20 +12,24 @@ private:
     [[nodiscard]] vec3 getBRDF(vec3 L) const;
     [[nodiscard]] vec3 getBTDF(vec3 L) const;
 public:
-    vec3 inDir, tangent, bitangent;
+    vec3 inDir;
     HitInfo surface;
 
     BSDF(const vec3 &inDir, const vec3 &hit_position);
     BSDF(const vec3 &inDir, const HitInfo &hitInfo);
 
-    void genTangentSpace();
-    vec3 getBSDF(vec3 outDir) const;
+    [[nodiscard]] vec3 getBSDF(vec3 outDir) const;
     void preciseRefraction(vec3 &outDir, float &F) const;
     void sampleReflection(Generator &gen, vec3 &Dir, vec3 &bsdfPdf, int &fails) const;
 };
 
-const float eps_lightRadius = 5e-3f;
-vec3 sampleDirectLight(const BSDF &bsdf, const Model &model,
-                       Generator &gen, vec3 &bsdfPdf);
+struct LightSample {
+    vec3 bsdfPdf, light;
+    float weight;
+    LightSample(vec3 bsdfPdf, vec3 light, float weight);
+};
+
+[[nodiscard]]
+std::vector<LightSample> sampleDirectLight(const BSDF &bsdf, const Model &model, int sampleCnt, Generator &gen);
 
 #endif // SAMPLING_H

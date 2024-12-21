@@ -27,14 +27,22 @@ void filterVar(RadianceData *radiance, int width, int height) {
     static const float h[3] = {0.25, 0.5, 0.25};
     std::vector<float> varBuffer(width * height, 0.0f);
     for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x)
+        for (int x = 0; x < width; ++x) {
+            vec3 E = vec3(0.0f);
+            float E2 = 0.0f, Var = 0.0f;
             for (int dy = -fliterRadius; dy <= fliterRadius; ++dy)
                 for (int dx = -fliterRadius; dx <= fliterRadius; ++dx) {
                     int nx = x + dx, ny = y + dy;
                     if (nx < 0 || nx >= width || ny < 0 || ny >= height)
                         continue;
-                    varBuffer[y * width + nx] += radiance[ny * width + nx].Var * h[dx + fliterRadius] * h[dy + fliterRadius];
+                    RadianceData &Lq = radiance[ny * width + nx];
+                    float weight = h[dx + fliterRadius] * h[dy + fliterRadius];
+                    E += Lq.radiance * weight;
+                    E2 += dot(Lq.radiance, Lq.radiance) * weight;
+                    Var += Lq.Var * weight;
                 }
+            varBuffer[y * width + x] = Var + E2 - dot(E, E);
+        }
     for (int i = 0; i < width * height; ++i)
         radiance[i].Var = varBuffer[i];
 }
@@ -42,7 +50,7 @@ void filterVar(RadianceData *radiance, int width, int height) {
 float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, const RadianceData &Lq) {
     static const float
             sigma_z = 1.0f,
-            sigma_n = 128.0f,
+            sigma_n = 1024.0f,
             sigma_l = 1.0f,
             sigma_m = 1.0f,
             eps = 1e-2f;
@@ -72,7 +80,7 @@ float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, co
     ));
     weight *= std::exp(- materialDiff / sigma_m);
 
-    weight *= std::max(Gp.roughness, 0.025f);
+    weight *= std::max(Gp.roughness, 0.04f);
 
     return weight;
 }
@@ -261,4 +269,50 @@ void Image::save(const char *file_name) {
 
     fclose(fp);
     png_destroy_write_struct(&png_ptr, &info_ptr);
+}
+
+void accumulateInwardRadiance(RadianceData &radiance, vec3 inradiance, float weight) {
+    if (!finite(inradiance)) {
+        std::cerr << "NaN detected!" << std::endl;
+        throw std::runtime_error("NaN detected!");
+    }
+    radiance.radiance += inradiance * weight;
+    radiance.Var += dot(inradiance, inradiance) * weight;
+}
+
+void accumulateInwardRadiance(const vec3 baseColor, const LightSample &sample,
+                              RadianceData &radiance_d, RadianceData &radiance_s) {
+
+    if (sample.light == vec3(0.0f))
+        return;
+    if (baseColor == vec3(0.0f)) {
+        accumulateInwardRadiance(radiance_s, sample.light * sample.bsdfPdf, sample.weight);
+        return;
+    }
+    vec3 baseColor0 = normalize(baseColor);
+    static constexpr vec3 White =vec3(0.57735026919f); // 1/sqrt(3)
+    float XdotY = dot(baseColor0, White);
+    if (XdotY > 0.999f) {
+        accumulateInwardRadiance(radiance_d, sample.light * sample.bsdfPdf / baseColor, sample.weight);
+        return ;
+    }
+    // Consider Pdf = a * white + b * baseColor
+    vec3 perp = normalize(cross(baseColor0, White));
+    vec3 brdfPdf_p = sample.bsdfPdf - perp * dot(perp, sample.bsdfPdf);
+    float d1 = dot(brdfPdf_p, White);
+    float d2 = dot(brdfPdf_p, baseColor0);
+    float AplusB = (d1+d2) / (1+XdotY);
+    float AminusB = (d1-d2) / (1-XdotY);
+    float B = (AplusB - AminusB) / 2.0f;
+    vec3 brdfPdf_base = B * baseColor0;
+    accumulateInwardRadiance(radiance_d, sample.light * B / length(baseColor), sample.weight);
+    accumulateInwardRadiance(radiance_s, sample.light * (sample.bsdfPdf - brdfPdf_base), sample.weight);
+}
+
+void calcVar(RadianceData &radiance, float exposure) {
+    radiance.radiance *= exposure;
+    radiance.Var *= exposure * exposure;
+    radiance.Var -= dot(radiance.radiance, radiance.radiance);
+    if (radiance.Var < 0.0f)
+        radiance.Var = 0.0f;
 }

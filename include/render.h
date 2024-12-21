@@ -20,7 +20,7 @@ struct MediumData {
 
 class Medium {
 private:
-    std::multimap<int, MediumData> medium;
+    std::multimap<int, MediumData> mediums;
 public:
     void Init();
     void insert(int id, float ior, const vec3 &absorb);
