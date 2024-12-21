@@ -178,10 +178,10 @@ vec3 sampleRay(Ray ray, const RayDifferential &base_diff, const Model &model,
                 bsdfPdf /= P_reflect;
                 if (depth < maxRayDepth)
                     bsdfPdf /= (1.0f - P_RR);
-                if (!finite(light)) {
+                if (!isfinite(light)) {
                     std::cout << "light is NAN! (sampleDirectLight)" << std::endl;
                 }
-                if (!finite(bsdfPdf)) {
+                if (!isfinite(bsdfPdf)) {
                     std::cout << "bsdfPdf is NaN! (sampleDirectLight)" << std::endl;
                 }
 #ifdef DEBUG_sampleRay
@@ -196,7 +196,7 @@ vec3 sampleRay(Ray ray, const RayDifferential &base_diff, const Model &model,
 
         // 采样反射方向并获得 brdfPdf
         bsdf.sampleReflection(renderData.gen, newDir, bsdfPdf, fails);
-        if (!finite(bsdfPdf)) {
+        if (!isfinite(bsdfPdf)) {
             std::cout << "bsdfPdf is NaN! (reflection)" << std::endl;
         }
         bsdfPdf /= P_reflect;
@@ -226,10 +226,10 @@ vec3 sampleRay(Ray ray, const RayDifferential &base_diff, const Model &model,
                 bsdfPdf /= (1.0f - P_reflect);
                 if (depth < maxRayDepth)
                     bsdfPdf /= (1.0f - P_RR);
-                if (!finite(light)) {
+                if (!isfinite(light)) {
                     std::cout << "light is NAN! (sampleDirectLight.refract)" << std::endl;
                 }
-                if (!finite(bsdfPdf)) {
+                if (!isfinite(bsdfPdf)) {
                     std::cout << "btdfPdf is NaN! (sampleDirectLight.refract)" << std::endl;
                 }
 #ifdef DEBUG_sampleRay
@@ -251,7 +251,7 @@ vec3 sampleRay(Ray ray, const RayDifferential &base_diff, const Model &model,
 
         // Todo: 折射的 RayDifferential 计算
         next_diff = base_diff;
-        if (!finite(bsdfPdf)) {
+        if (!isfinite(bsdfPdf)) {
             std::cout << "bsdfPdf is NaN! (refract)" << P_reflect <<std::endl;
         }
 
@@ -262,7 +262,7 @@ vec3 sampleRay(Ray ray, const RayDifferential &base_diff, const Model &model,
     }
 
     // 若方向无效或递归过深，返回 0
-    if (!finite(newDir) || depth == maxRayDepth)
+    if (!isfinite(newDir) || depth == maxRayDepth)
         return vec3(0.0f); // Invalid direction, then return black
 
     Ray newRay = {bsdf.surface.position, newDir};
@@ -279,10 +279,10 @@ vec3 sampleRay(Ray ray, const RayDifferential &base_diff, const Model &model,
                                 renderData, fails,
                                 roughnessFactor, depth+1);
 
-    if (!finite(irradiance)) {
+    if (!isfinite(irradiance)) {
         std::cout << "irradiance is NAN!" << std::endl;
     }
-    if (!finite(bsdfPdf)) {
+    if (!isfinite(bsdfPdf)) {
         std::cout << "bsdfPdf is NaN! " << depth << std::endl;
     }
     return  bsdfPdf * irradiance;
@@ -363,7 +363,7 @@ void sampleIndirectLightFromFirstIntersection(
             renderData.mediums.erase(bsdf.surface.id);
     }
 
-    if (!finite(newDir))
+    if (!isfinite(newDir))
         return;
 
     Ray newRay = {bsdf.surface.position, newDir};
@@ -385,11 +385,11 @@ void sampleIndirectLightFromFirstIntersection(
     std::cout << std::endl << std::endl;
 #endif
 
-    if (!finite(light)) {
+    if (!isfinite(light)) {
         std::cerr << "light is NAN! (final)" << std::endl;
     }
 
-    if (!finite(bsdfPdf)) {
+    if (!isfinite(bsdfPdf)) {
         std::cerr << "bsdfPdf is NAN! (final)" << std::endl;
     }
 
@@ -397,7 +397,7 @@ void sampleIndirectLightFromFirstIntersection(
 }
 
 void accumulateInwardRadiance(RadianceData &radiance, vec3 inradiance) {
-    if (!finite(inradiance)) {
+    if (!isfinite(inradiance)) {
         std::cerr << "NaN detected!" << std::endl;
         throw std::runtime_error("NaN detected!");
     }
@@ -437,7 +437,7 @@ void accumulateInwardRadiance(const vec3 baseColor, const vec3 brdfPdf, const ve
 void sampleDirectLightFromFirstIntersection(const HitInfo &hitInfo, const vec3 &origin, const Model &model,
                                             RenderData &renderData, RadianceData &radiance_Dd, RadianceData &radiance_Ds) {
 
-    if (!finite(hitInfo.position) || length(hitInfo.emission) > 0)
+    if (!isfinite(hitInfo.position) || length(hitInfo.emission) > 0)
         return; // 暂不计入直接光照
 
     vec3 inDir = normalize(hitInfo.position - origin);
@@ -638,10 +638,14 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     std::cout << "Rendering completed in " << clock() - startTime << " ms." << std::endl;
     std::cout << "Direct light samples: " << C_lightSamples << std::endl;
 
-    auto exportImage = [&](const std::string &tag, int shadeOptions) {
+    auto exportImage = [&](const std::string &tag, int shadeOptions, bool exposure = true) {
         image.shade(exposure, shadeOptions);
         image.FXAA();
-        image.save((args.savePath + "(" + tag + ").png").c_str());
+        image.gammaCorrection();
+        if (exposure)
+            image.save((args.savePath + "(" + tag + ")_no_FXAA.png").c_str());
+        else
+            image.save((args.savePath + "(" + tag + ").png").c_str());
     };
 
     exportImage("DiffuseColor", Image::BaseColor);
@@ -653,12 +657,14 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     exportImage("Indirect_Diffuse", Image::Indirect_Diffuse);
     exportImage("Indirect_Specular", Image::Indirect_Specular);
     exportImage("Raw", Image::Full);
+    exportImage("Raw", Image::Full, false);
     image.filter();
     exportImage("Direct_Diffuse_Filter", Image::Direct_Diffuse);
     exportImage("Direct_Specular_Filter", Image::Direct_Specular);
     exportImage("Indirect_Diffuse_Filter", Image::Indirect_Diffuse);
     exportImage("Indirect_Specular_Filter", Image::Indirect_Specular);
     exportImage("Filter", Image::Full);
+    exportImage("Filter", Image::Full, false);
 
     std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;
 }

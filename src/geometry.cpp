@@ -2,13 +2,12 @@
 #include <cfloat>
 #include <iostream>
 
-
-bool finite(vec2 v) {
-    return _finite(v.x) || _finite(v.y);
+bool isfinite(vec2 v) {
+    return std::isfinite(v.x) || std::isfinite(v.y);
 }
 
-bool finite(vec3 v) {
-    return _finite(v.x) || _finite(v.y) || _finite(v.z);
+bool isfinite(vec3 v) {
+    return std::isfinite(v.x) || std::isfinite(v.y) || std::isfinite(v.z);
 }
 
 float sqrt_s(float x) {

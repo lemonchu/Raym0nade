@@ -128,7 +128,7 @@ vec3 BSDF::getBRDF(vec3 L) const {
     ret += Fs * Ds * Gs;
 
 #ifdef RAY_DEBUG
-    if (!finite(ret)) {
+    if (!isfinite(ret)) {
         std::cerr << "Wrong BRDF (getBRDF)" << std::endl;
         std::cerr << "ret: " << ret.x << " " << ret.y << " " << ret.z << std::endl;
         std::cerr << "Cdlin: " << Cdlin.x << " " << Cdlin.y << " " << Cdlin.z << std::endl;
@@ -184,7 +184,7 @@ vec3 BSDF::getBTDF(vec3 L) const {
     vec3 ret = vec3(BTDF);
 
 #ifdef RAY_DEBUG
-    if (!finite(ret)) {
+    if (!isfinite(ret)) {
         std::cerr << "Wrong BTDF (getBTDF)" << std::endl;
         std::cerr << "BTDF: " << BTDF << std::endl;
         std::cerr << "k: " << k << std::endl;
@@ -427,7 +427,7 @@ vec3 sampleDirectLight(const BSDF &bsdf, const Model &model,
     vec3 lightPos;
     float faceFactor;
     sampleLightFace(pos, lightObject, gen, lightPos, faceFactor);
-    if (!finite(lightPos)) {
+    if (!isfinite(lightPos)) {
         bsdfPdf = vec3(0.0f);
         return vec3(0.0f);
     }
@@ -443,7 +443,7 @@ vec3 sampleDirectLight(const BSDF &bsdf, const Model &model,
     clamp(bsdfPdf);
     vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
 
-    if (!finite(bsdfPdf)) {
+    if (!isfinite(bsdfPdf)) {
         std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
         std::cerr << "lightDir: " << lightDir.x << " " << lightDir.y << " " << lightDir.z << std::endl;
         std::cerr << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;

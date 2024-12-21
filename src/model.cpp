@@ -256,7 +256,7 @@ void getHitNormals(const Face& face, const vec3 &inDir, const vec3 &baryCoords,
             + baryCoords[2] * (dot(normalV2, shapeNormal) > threshold ? normalV2 : shapeNormal)
     );
 
-    if (!finite(surfaceNormal_raw)) {
+    if (!isfinite(surfaceNormal_raw)) {
         surfaceNormal_raw = shapeNormal;
         std::cerr << "  getHitNormals : NAN" << std::endl;
     }
@@ -289,7 +289,7 @@ void calcSurfaceNormal(const Face& face, const vec3 &normalMap, const vec3 &shap
             bitangent * normalMap.y +
             surfaceNormal
     );
-    if (!finite(surfaceNormal))
+    if (!isfinite(surfaceNormal))
         surfaceNormal = sav;
 }
 
@@ -309,7 +309,7 @@ void getHitMaterial(const Face& face, const vec3 &baryCoords, const vec3 &hit_dP
     hitInfo.eta = material.ior; // 暂存绝对折射率，后续需要转换为相对折射率
     vec2 dUVdx = getDuv(face, hit_dPdx),
          dUVdy = getDuv(face, hit_dPdy);
-    float duv = (finite(dUVdx) && finite(dUVdx)) ? std::max(length(dUVdx), length(dUVdy)) : NAN;
+    float duv = (isfinite(dUVdx) && isfinite(dUVdx)) ? std::max(length(dUVdx), length(dUVdy)) : NAN;
 
     if (hitInfo.opacity < eps_zero)
         hitInfo.baseColor = material.transmittingColor;
