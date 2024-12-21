@@ -7,41 +7,45 @@ BSDF::BSDF(const vec3 &inDir, const vec3 &hit_position) : inDir(inDir) {
 
 BSDF::BSDF(const vec3 &inDir, const HitInfo &hitInfo) : inDir(inDir), surface(hitInfo) {}
 
-constexpr float PI = 3.14159265358979323846f;
+const float PI = 3.14159265358979323846f;
 
-constexpr float sqr(float x) { return x*x; }
+float sqr(float x) { return x*x; }
 
-constexpr float mix(float a, float b, float t) {
-    return a*(1.0f-t) + b*t;
+float clamp(float x, float a, float b) {
+    return x < a ? a : (x > b ? b : x);
 }
 
-constexpr float pow5(float x) {
+float mix(float a, float b, float t) {
+    return a*(1-t) + b*t;
+}
+
+float pow5(float x) {
     float x2 = x*x;
     return x2*x2*x;
 }
 
-constexpr float SchlickFresnel(float u) {
-    float m = std::clamp(1.0f-u, 0.0f, 1.0f);
+float SchlickFresnel(float u) {
+    float m = clamp(1-u, 0, 1);
     return pow5(m);
 }
 
-constexpr float GTR1(float NdotH, float a) {
-    if (a >= 1.0f) return 1.0f/PI;
+float GTR1(float NdotH, float a) {
+    if (a >= 1) return 1/PI;
     float a2 = a*a;
-    float t = 1.0f + (a2-1.0f)*NdotH*NdotH;
-    return (a2-1.0f) / (PI*log(a2)*t);
+    float t = 1 + (a2-1)*NdotH*NdotH;
+    return (a2-1) / (PI*log(a2)*t);
 }
 
-constexpr float GTR2(float NdotH, float a) {
+float GTR2(float NdotH, float a) {
     float a2 = a*a;
-    float t = 1.0f + (a2-1.0f)*NdotH*NdotH;
+    float t = 1 + (a2-1)*NdotH*NdotH;
     return a2 / (PI * t*t);
 }
 
 float smithG_GGX(float NdotV, float alphaG) {
     float a = alphaG*alphaG;
     float b = NdotV*NdotV;
-    return 1.0f / (NdotV + sqrt(a + b - a*b));
+    return 1 / (NdotV + sqrt(a + b - a*b));
 }
 
 vec3 BSDF::getBRDF(vec3 L) const {
@@ -198,6 +202,76 @@ vec3 BSDF::getBSDF(vec3 outDir) const {
         return getBTDF(outDir);
 }
 
+static const int MaxTrys = 16;
+
+void BSDF::sampleGTR2(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fails) const {
+
+    vec3 tangent, bitangent;
+    getTangentSpaceWithInDir(surface.surfaceNormal, inDir, tangent, bitangent);
+
+    auto sampleGTR2 = [&](vec3 &outDir, float &pdf) -> void {
+        float u = gen(), phi = gen() * 2.0f * PI;
+        float
+            cosTheta = sqrt((1.0f-u) / (1.0f+(sqr(surface.roughness)-1.0f)*u)),
+            sinTheta = sqrt(1 - cosTheta*cosTheta);
+        vec3 H = sinTheta * cos(phi) * tangent
+                + sinTheta * sin(phi) * bitangent
+                + cosTheta * surface.surfaceNormal;
+        outDir = 2.0f * dot(inDir, H) * H - inDir;
+        float LDotH = dot(outDir, H);
+        float LdotN = dot(outDir, surface.surfaceNormal);
+        if (LDotH <= 0.0f || LdotN <= 0.0f) {
+            pdf = 0.0f;
+            return ;
+        }
+        pdf = GTR2(cosTheta, surface.roughness) * cosTheta / (4.0f * LDotH);
+    };
+    for (int T = 1; T <= MaxTrys; T++) {
+        sampleGTR2(outDir, pdf);
+        if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
+            brdfPdf = getBRDF(outDir) / pdf;
+            return;
+        }
+        fails++;
+    }
+    pdf = 0.0f;
+    brdfPdf = vec3(0.0f);
+    outDir = vec3(NAN);
+}
+
+const float clampThreshold = 64.0f;
+void clamp(vec3 &pdf) {
+    float Clum = dot(pdf, RGB_Weight);
+    if (Clum > clampThreshold)
+        pdf /= Clum / clampThreshold;
+}
+
+void BSDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fails) const {
+    vec3 tangent, bitangent;
+    getTangentSpaceWithInDir(surface.surfaceNormal, inDir, tangent, bitangent);
+
+    auto sampleCos = [&]() -> vec3 {
+        float u = gen(), phi = gen() * 2.0f * PI;
+        float d = sqrt(u);
+        float z = sqrt(1 - d*d);
+        float x = d * cos(phi), y = d * sin(phi);
+        return x * tangent + y * bitangent + z * surface.surfaceNormal;
+    };
+    for (int T = 1; T <= MaxTrys; T++) {
+        outDir = sampleCos();
+        pdf = dot(outDir, surface.surfaceNormal) / PI;
+        if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
+            brdfPdf = getBRDF(outDir) / pdf;
+            clamp(brdfPdf);
+            return ;
+        }
+        fails++;
+    }
+    pdf = 0.0f;
+    brdfPdf = vec3(0.0f);
+    outDir = vec3(NAN);
+}
+
 void BSDF::preciseRefraction(vec3 &outDir, float &F) const {
     const vec3 &V = inDir;
     const vec3 &N = surface.surfaceNormal;
@@ -237,86 +311,13 @@ void BSDF::preciseRefraction(vec3 &outDir, float &F) const {
     }*/
 }
 
-constexpr float clampThreshold = 64.0f;
-void clamp(vec3 &pdf) {
-    float Clum = dot(pdf, RGB_Weight);
-    if (Clum > clampThreshold)
-        pdf /= Clum / clampThreshold;
-}
-
-constexpr int MaxTrys = 16;
-
-void BSDF::sampleGTR2(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fails) const {
-    vec3 tangent, bitangent;
-    getTangentSpaceWithInDir(surface.surfaceNormal, inDir, tangent, bitangent);
-
-    auto sampleGTR2 = [&](vec3 &outDir, float &pdf) -> void {
-        float u = gen(), phi = gen() * 2.0f * PI;
-        float
-                cosTheta = sqrt((1.0f-u) / (1.0f+(sqr(surface.roughness)-1.0f)*u)),
-                sinTheta = sqrt(1 - cosTheta*cosTheta);
-        vec3 H = sinTheta * cos(phi) * tangent
-                 + sinTheta * sin(phi) * bitangent
-                 + cosTheta * surface.surfaceNormal;
-        outDir = 2.0f * dot(inDir, H) * H - inDir;
-        float LDotH = dot(outDir, H);
-        float LdotN = dot(outDir, surface.surfaceNormal);
-        if (LDotH <= 0.0f || LdotN <= 0.0f) {
-            pdf = 0.0f;
-            return ;
-        }
-        pdf = GTR2(cosTheta, surface.roughness) * cosTheta / (4.0f * LDotH);
-    };
-    for (int T = 1; T <= MaxTrys; T++) {
-        sampleGTR2(outDir, pdf);
-        if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
-            brdfPdf = getBRDF(outDir) / pdf;
-            clamp(brdfPdf);
-            fails = T-1;
-            return;
-        }
-    }
-    fails = MaxTrys;
-    brdfPdf = vec3(0.0f);
-    outDir = vec3(NAN);
-}
-
-void BSDF::sampleCos(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fail) const {
-    vec3 tangent, bitangent;
-    getTangentSpaceWithInDir(surface.surfaceNormal, inDir, tangent, bitangent);
-
-    auto sampleCos = [&]() -> vec3 {
-        float u = gen(), phi = gen() * 2.0f * PI;
-        float d = sqrt(u);
-        float z = sqrt(1 - d*d);
-        float x = d * cos(phi), y = d * sin(phi);
-        return x * tangent + y * bitangent + z * surface.surfaceNormal;
-    };
-    for (int T = 1; T <= MaxTrys; T++) {
-        outDir = sampleCos();
-        pdf = dot(outDir, surface.surfaceNormal) / PI;
-        if (dot(outDir, surface.shapeNormal) > 0.0f && pdf > 0.0f) {
-            brdfPdf = getBRDF(outDir) / pdf;
-            clamp(brdfPdf);
-            fail = T-1;
-            return ;
-        }
-    }
-    fail = MaxTrys;
-    brdfPdf = vec3(0.0f);
-    outDir = vec3(NAN);
-}
-
 void BSDF::sampleReflection(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails) const {
 
     vec3 Dir1, Dir2, brdfPdf1, brdfPdf2;
-    int fails1 = 0, fails2 = 0;
+    int fail1 = 0, fail2 = 0;
     float pdf1, pdf2;
-    sampleCos(gen, Dir1, brdfPdf1, pdf1, fails1);
-    sampleGTR2(gen, Dir2, brdfPdf2, pdf2, fails2);
-    pdf1 /= (float)fails1;
-    pdf2 /= (float)fails2;
-
+    sampleCos(gen, Dir1, brdfPdf1, pdf1, fail1);
+    sampleGTR2(gen, Dir2, brdfPdf2, pdf2, fail2);
     float p1 = pdf1 / (pdf1 + pdf2);
     /*std::cout << "             roughness: " << surface.roughness << std::endl;
     std::cout << "             BaseColor: " << surface.baseColor.x << " " << surface.baseColor.y << " " << surface.baseColor.z << std::endl;
@@ -327,11 +328,11 @@ void BSDF::sampleReflection(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails
     if (gen() < p1) { // 多重重要性采样 (Multiple Importance Sampling)
         Dir = Dir1;
         brdfPdf = brdfPdf1;
-        fails = fails1;
+        fails += fail1;
     } else {
         Dir = Dir2;
         brdfPdf = brdfPdf2;
-        fails = fails2;
+        fails += fail2;
     }
 }
 
@@ -345,18 +346,28 @@ int sample(const std::vector<float> &weights, float randomValue) {
     return -1;
 }
 
-constexpr float eps_lightRadius = 5e-3f;
-
-void getLightObjectWeights(const vec3 &pos, const BSDF &bsdf, const Model &model,
-                           std::vector<float> &weights) {
+void sampleLightObject(const vec3 &pos, const BSDF &bsdf, const Model &model,
+                       Generator &gen, float &prob, int &lightIndex) {
+    float totalWeight = 0.0f;
+    std::vector<float> weights;
     weights.reserve(model.lightObjects.size());
     for (const auto & lightObject : model.lightObjects)  {
         vec3 lightDir = normalize(lightObject.center - pos);
-        float distance = length(lightObject.center - pos);
-        float Clum = dot(bsdf.getBSDF(lightDir), RGB_Weight);
+        float distance = glm::length(lightObject.center - pos);
+        vec3 bsdfPdf = bsdf.getBSDF(lightDir);
+        float Clum = dot(bsdfPdf, RGB_Weight);
         float weight = Clum * lightObject.power / (distance * distance + eps_lightRadius);
         weights.emplace_back(weight);
+        totalWeight += weight;
     }
+    if (totalWeight == 0.0f) {
+        lightIndex = -1;
+        return;
+    }
+    lightIndex = sample(weights, totalWeight * gen());
+    if (lightIndex == -1)
+        return;
+    prob = weights[lightIndex] / totalWeight;
 }
 
 void generateRandomPointInLightFace(const Face &face, const vec3 &pos,
@@ -391,58 +402,53 @@ void sampleLightFace(const vec3 &pos, const LightObject &lightObject,
     lightPos = vec3(NAN);
 }
 
-LightSample::LightSample(vec3 bsdfPdf, vec3 light, float weight)
-    : bsdfPdf(bsdfPdf), light(light), weight(weight) {}
+vec3 sampleDirectLight(const BSDF &bsdf, const Model &model,
+                       Generator &gen, vec3 &bsdfPdf) {
 
-std::vector<LightSample> sampleDirectLight(const BSDF &bsdf, const Model &model, int sampleCnt, Generator &gen) {
-
+    // vec3 light = vec3(0.0f);
+    // auto &lightObjects = model.lightObjects;
+    // for (const auto& lightObject : lightObjects) {
+    //     float distance = glm::length(lightObject.center - pos);
+    //     float dot = std::max(glm::dot(normalize(lightObject.center - pos), info.normal), 0.00f);
+    //     light += dot * lightObject.color * lightObject.power / (distance * distance + eps_lightRadius);
+    // }
+    // return vec4(light, 1.0f);
     const vec3 &pos = bsdf.surface.position;
 
-    std::vector<float> weights;
-    getLightObjectWeights(pos, bsdf, model, weights);
-    float totalWeight = 0.0f;
-    for (const auto &weight : weights)
-        totalWeight += weight;
-    if (totalWeight < eps_zero)
-        return {LightSample(vec3(0.0f), vec3(0.0f), 1.0f)};
+    float P_lightObject;
+    int lightIndex;
+    sampleLightObject(pos, bsdf, model, gen, P_lightObject, lightIndex);
+    if (lightIndex == -1) {
+        bsdfPdf = vec3(0.0f);
+        return vec3(0.0f);
+    }
+    auto& lightObject = model.lightObjects[lightIndex];
 
-    std::vector<LightSample> samples;
-    for (int T = 0; T < sampleCnt; T++) {
-        int lightIndex = sample(weights, gen() * totalWeight);
-        if (lightIndex == -1) {
-            samples.emplace_back(vec3(0.0f), vec3(0.0f), 1.0f/sampleCnt);
-            continue;
-        }
-        float P_lightObject = weights[lightIndex] / totalWeight;
-        auto& lightObject = model.lightObjects[lightIndex];
-
-        vec3 lightPos;
-        float faceFactor;
-        sampleLightFace(pos, lightObject, gen, lightPos, faceFactor);
-        if (!finite(lightPos)) {
-            samples.emplace_back(vec3(0.0f), vec3(0.0f), 1.0f/sampleCnt);
-            continue;
-        }
-
-        vec3 lightDir = normalize(lightPos - pos);
-        float distance = length(lightPos - pos);
-        if (model.rayHit_test({pos, lightDir}, distance - eps_zero)) {
-            samples.emplace_back(vec3(0.0f), vec3(0.0f), 1.0f/sampleCnt);
-            continue;
-        }
-        vec3 bsdfPdf = bsdf.getBSDF(lightDir) * faceFactor / P_lightObject;
-        clamp(bsdfPdf);
-        vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
-        samples.emplace_back(bsdfPdf, light, 1.0f/sampleCnt);
-
-        if (!finite(bsdfPdf)) {
-            std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
-            std::cerr << "lightDir: " << lightDir.x << " " << lightDir.y << " " << lightDir.z << std::endl;
-            std::cerr << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
-            std::cerr << "faceFactor: " << faceFactor << std::endl;
-            std::cerr << "P_lightObject: " << P_lightObject << std::endl;
-        }
+    vec3 lightPos;
+    float faceFactor;
+    sampleLightFace(pos, lightObject, gen, lightPos, faceFactor);
+    if (!finite(lightPos)) {
+        bsdfPdf = vec3(0.0f);
+        return vec3(0.0f);
     }
 
-    return samples;
+    vec3 lightDir = normalize(lightPos - pos);
+    float distance = length(lightPos - pos);
+    if (model.rayHit_test({pos, lightDir}, distance - eps_zero)) {
+        bsdfPdf = vec3(0.0f);
+        return vec3(0.0f);
+    }
+
+    bsdfPdf = bsdf.getBSDF(lightDir) * faceFactor / P_lightObject;
+    clamp(bsdfPdf);
+    vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
+
+    if (!finite(bsdfPdf)) {
+        std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
+        std::cerr << "lightDir: " << lightDir.x << " " << lightDir.y << " " << lightDir.z << std::endl;
+        std::cerr << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
+        std::cerr << "faceFactor: " << faceFactor << std::endl;
+        std::cerr << "P_lightObject: " << P_lightObject << std::endl;
+    }
+    return light;
 }

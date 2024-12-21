@@ -4,7 +4,6 @@
 #include "geometry.h"
 #include "component.h"
 #include "model.h"
-#include "sampling.h"
 
 struct RadianceData {
     vec3 radiance;
@@ -49,12 +48,5 @@ public:
 
     ~Image();
 };
-
-void accumulateInwardRadiance(RadianceData &radiance, vec3 inradiance, float weight);
-
-void accumulateInwardRadiance(const vec3 baseColor, const LightSample &sample,
-                              RadianceData &radiance_d, RadianceData &radiance_s);
-
-void calcVar(RadianceData &radiance, float exposure);
 
 #endif // IMAGE_H
