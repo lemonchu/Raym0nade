@@ -319,12 +319,19 @@ void BSDF::sampleReflection(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails
     sampleCos(gen, Dir1, brdfPdf1, pdf1, fail1);
     sampleGTR2(gen, Dir2, brdfPdf2, pdf2, fail2);
     float p1 = pdf1 / (pdf1 + pdf2);
-    /*std::cout << "             roughness: " << surface.roughness << std::endl;
+/*
+    std::cout << "             roughness: " << surface.roughness << std::endl;
     std::cout << "             BaseColor: " << surface.baseColor.x << " " << surface.baseColor.y << " " << surface.baseColor.z << std::endl;
     std::cout << "             surfaceNormal: " << surface.surfaceNormal.x << " " << surface.surfaceNormal.y << " " << surface.surfaceNormal.z << std::endl;
-    std::cout << "             Clum1: " << Clum1 << " Clum2: " << Clum2 << std::endl;
+    std::cout << "             inDir: " << inDir.x << " " << inDir.y << " " << inDir.z << std::endl;
+    std::cout << "             VdotN: " << dot(surface.surfaceNormal, inDir) << std::endl;
+    std::cout << "             opacity: " << surface.opacity << std::endl;
+    std::cout << "             eta: " << surface.eta << std::endl;
     std::cout << "             Dir1: " << Dir1.x << " " << Dir1.y << " " << Dir1.z << std::endl;
-    std::cout << "             Dir2: " << Dir2.x << " " << Dir2.y << " " << Dir2.z << std::endl;*/
+    std::cout << "             Dir2: " << Dir2.x << " " << Dir2.y << " " << Dir2.z << std::endl;
+    std::cout << "             brdfPdf1: " << brdfPdf1.x << " " << brdfPdf1.y << " " << brdfPdf1.z << std::endl;
+    std::cout << "             brdfPdf2: " << brdfPdf2.x << " " << brdfPdf2.y << " " << brdfPdf2.z << std::endl;
+*/
     if (gen() < p1) { // 多重重要性采样 (Multiple Importance Sampling)
         Dir = Dir1;
         brdfPdf = brdfPdf1;

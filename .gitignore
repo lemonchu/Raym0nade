@@ -118,8 +118,6 @@ __pycache__/
 *$py.class
 
 # collaboration files
-CMakeLists.txt
-/glm/
 /Documents/
 
 # Model and working files

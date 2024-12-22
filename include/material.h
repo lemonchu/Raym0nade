@@ -39,7 +39,6 @@ public:
 
     static bool loadImageFromDDS(ImageData &imageData, const std::string& filename);
     static bool loadImageFromPNG(ImageData &imageData, const std::string& filename);
-    static bool loadImageFromJPG(ImageData &imageData, const std::string& filename);
     void loadImageFromFile(int index, const std::string& filename);
 
     // New method to load material properties

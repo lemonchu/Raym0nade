@@ -275,7 +275,7 @@ void accumulateInwardRadiance_basic(RadianceData &radiance, vec3 inradiance, flo
     radiance.Var += dot(inradiance, inradiance) * weight;
 }
 
-void accumulateInwardRadiance(const vec3 baseColor, const LightSample &sample,
+void accumulateInwardRadiance(const vec3 &baseColor, const LightSample &sample,
                               RadianceData &radiance_d, RadianceData &radiance_s) {
 
     if (sample.light == vec3(0.0f))

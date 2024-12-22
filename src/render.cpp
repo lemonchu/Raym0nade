@@ -69,10 +69,15 @@ void getHitInfo(const HitRecord &hit, const Ray &ray, const RayDifferential &bas
     // Initialize the hit information Stage 1, we obtain the raw normal.
     getHitNormals(face, ray.direction, baryCoords,
                   hitInfo.shapeNormal, hitInfo.surfaceNormal, hitInfo.entering);
+    vec3 surfaceNormal_raw = hitInfo.surfaceNormal;
 
     // Initialize the hit information Stage 2, we obtain the texture and the tangent space.
     calc_dPdxy(ray, hit.t_max, hitInfo.shapeNormal, base_diff, hit_dPdx, hit_dPdy);
     getHitMaterial(face, baryCoords, hit_dPdx, hit_dPdy, hitInfo);
+    if (dot(hitInfo.surfaceNormal, ray.direction) >= 0.0f)
+        hitInfo.surfaceNormal = surfaceNormal_raw;
+    if (dot(hitInfo.surfaceNormal, ray.direction) >= 0.0f)
+        hitInfo.surfaceNormal = hitInfo.shapeNormal;
 }
 
 // #define DEBUG_sampleRay
@@ -159,10 +164,17 @@ std::vector<LightSample> sampleRay
     if (bsdf.surface.opacity < eps_zero) {
         calcEta(renderData.mediums, bsdf.surface);
         bsdf.preciseRefraction(refractDir, F);
-        if (renderData.mediums.size() == 1) // 在空气中，增加反射采样率
-            P_reflect = P0_reflect + (1.0f - P0_reflect) * F;
-        else
-            P_reflect = F;
+        if (abs(bsdf.surface.eta - 1.0f) < eps_zero) { // 介质内部，不反射
+            P_reflect = 0.0f;
+            F = 0.0f;
+        } else {
+            if (renderData.mediums.size() == 1) // 在空气中，增加反射采样率
+                P_reflect = P0_reflect + (1.0f - P0_reflect) * F;
+            else
+                P_reflect = F;
+            P_reflect = std::max(P_reflect - 1e-3f, 0.0f); // 忽略过小的反射率
+        }
+
 #ifdef DEBUG_sampleRay
         std::cout << "    eta: " << bsdf.surface.eta << std::endl;
         std::cout << "    refractDir: " << refractDir.x << " " << refractDir.y << " " << refractDir.z << std::endl;
@@ -201,7 +213,6 @@ std::vector<LightSample> sampleRay
                     factor /= (1.0f - P_RR);
                 scaling(samples, factor);
 #ifdef DEBUG_sampleRay
-                std::cout << "Light : " << light.x << " " << light.y << " " << light.z << std::endl;
                 std::cout << "bsdfPdf : " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
                 std::cout << "depth :" << depth << std::endl;
                 std::cout << std::endl;
@@ -246,7 +257,6 @@ std::vector<LightSample> sampleRay
                 scaling(samples, factor);
                 passBsdf(samples, absorb);
 #ifdef DEBUG_sampleRay
-                    std::cout << "Light : " << light.x << " " << light.y << " " << light.z << std::endl;
                     std::cout << "bsdfPdf : " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
                     std::cout << "depth :" << depth << std::endl;
                     std::cout << std::endl;
@@ -329,6 +339,7 @@ void sampleIndirectLightFromFirstIntersection(
         // 透明材质
         bsdf.preciseRefraction(refractDir, F);
         P_reflect = P0_reflect + (1.0f - P0_reflect) * F;
+
 #ifdef DEBUG_sampleRay
         std::cout << "    refractDir: " << refractDir.x << " " << refractDir.y << " " << refractDir.z << std::endl;
         std::cout << "    P_reflect: " << P_reflect << std::endl;
@@ -396,7 +407,11 @@ void sampleIndirectLightFromFirstIntersection(
         mulWeight(samplesNew, 1.0f / static_cast<float>(1+fails));
 
 #ifdef DEBUG_sampleRay
-    std::cout << "Light : " << light.x << " " << light.y << " " << light.z << std::endl;
+    for (const auto &sample : samplesNew) {
+        std::cout << "    light: " << sample.light.x << " " << sample.light.y << " " << sample.light.z << std::endl;
+        std::cout << "    bsdfPdf: " << sample.bsdfPdf.x << " " << sample.bsdfPdf.y << " " << sample.bsdfPdf.z << std::endl;
+        std::cout << "    weight: " << sample.weight << std::endl;
+    }
     std::cout << std::endl << std::endl;
 #endif
 
@@ -435,7 +450,7 @@ void renderPixel(const Model &model, const RenderArgs &args,
                  RenderData &renderData, Image &image, int x, int y) {
     //renderData.gen.mt.seed(x^y);
 #ifdef DEBUG_sampleRay
-    if (x!=48||y!=41)
+    if (x!=686||y!=309)
         return ;
 #endif
     const int
@@ -472,7 +487,7 @@ void renderPixel(const Model &model, const RenderArgs &args,
     vec3 hit_dPdx, hit_dPdy;
     getHitInfo(hit, ray, base_diff,hit_dPdx, hit_dPdy, Gbuffer);
     bool opacity = (Gbuffer.opacity > 1.0f - eps_zero);
-    static const int MultiSampleForRefraction = 16;
+    static const int MultiSampleForRefraction = 20;
     const int
             spp_direct = args.spp * args.P_Direct,
             spp_indirect = (args.spp - spp_direct) * (opacity ? 1 : MultiSampleForRefraction);
@@ -567,6 +582,7 @@ void render_multiThread(Model &model, const RenderArgs &args) {
             height = args.height,
             threads = args.threads;
     const vec3 position = args.position;
+    const float exposure = args.exposure;
 
     std::cout << "Rendering started with " << threads << " threads." << std::endl;
 
@@ -601,33 +617,36 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     std::cout << "Rendering completed in " << clock() - startTime << " ms." << std::endl;
     std::cout << "Direct light samples: " << C_lightSamples << std::endl;
 
-    auto exportImage = [&](const std::string &tag, int shadeOptions, bool exposure = true) {
+    auto exportImage = [&](const std::string &tag, int shadeOptions, float exposure, bool doFXAA = false) {
         image.shade(exposure, shadeOptions);
-        image.FXAA();
-        image.gammaCorrection();
-        if (exposure)
-            image.save((args.savePath + "(" + tag + ")_no_FXAA.png").c_str());
-        else
+        if (doFXAA) {
+            image.FXAA();
+            image.gammaCorrection();
             image.save((args.savePath + "(" + tag + ").png").c_str());
+        } else {
+            image.gammaCorrection();
+            image.save((args.savePath + "(" + tag + ").png").c_str());
+        }
     };
 
-    exportImage("DiffuseColor", Image::BaseColor);
-    exportImage("shapeNormal", Image::shapeNormal);
-    exportImage("surfaceNormal", Image::surfaceNormal);
+    exportImage("DiffuseColor", Image::BaseColor, exposure);
+    exportImage("DiffuseColor_FXAA", Image::BaseColor, exposure, true);
+    exportImage("shapeNormal", Image::shapeNormal, exposure);
+    exportImage("surfaceNormal", Image::surfaceNormal, exposure);
 
-    exportImage("Direct_Diffuse", Image::Direct_Diffuse);
-    exportImage("Direct_Specular", Image::Direct_Specular);
-    exportImage("Indirect_Diffuse", Image::Indirect_Diffuse);
-    exportImage("Indirect_Specular", Image::Indirect_Specular);
-    exportImage("Raw", Image::Full);
-    exportImage("Raw", Image::Full, false);
+    exportImage("Direct_Diffuse", Image::Direct_Diffuse, exposure);
+    exportImage("Direct_Specular", Image::Direct_Specular, exposure);
+    exportImage("Indirect_Diffuse", Image::Indirect_Diffuse, exposure);
+    exportImage("Indirect_Specular", Image::Indirect_Specular, exposure);
+    exportImage("Raw", Image::Full, exposure);
+    exportImage("Raw_FXAA", Image::Full, exposure,true);
     image.filter();
-    exportImage("Direct_Diffuse_Filter", Image::Direct_Diffuse);
-    exportImage("Direct_Specular_Filter", Image::Direct_Specular);
-    exportImage("Indirect_Diffuse_Filter", Image::Indirect_Diffuse);
-    exportImage("Indirect_Specular_Filter", Image::Indirect_Specular);
-    exportImage("Filter", Image::Full);
-    exportImage("Filter", Image::Full, false);
+    exportImage("Direct_Diffuse_Filter", Image::Direct_Diffuse, exposure);
+    exportImage("Direct_Specular_Filter", Image::Direct_Specular, exposure);
+    exportImage("Indirect_Diffuse_Filter", Image::Indirect_Diffuse, exposure);
+    exportImage("Indirect_Specular_Filter", Image::Indirect_Specular, exposure);
+    exportImage("Filter",  Image::Full, exposure);
+    exportImage("Filter_FXAA", Image::Full, exposure, true);
 
     std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;
 }

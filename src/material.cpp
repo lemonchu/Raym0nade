@@ -1,6 +1,5 @@
 #include <cstdlib>
 #include <png.h>
-#include <turbojpeg.h>
 #include <stdexcept>
 #include <iostream>
 #include <sstream>
@@ -286,74 +285,10 @@ bool Material::loadImageFromPNG(ImageData &imageData, const std::string &filenam
     return true;
 }
 
-bool Material::loadImageFromJPG(ImageData &imageData, const std::string &filename) {
-    // Open JPEG file
-    FILE *jpegFile = fopen(filename.c_str(), "rb");
-    if (jpegFile == nullptr) {
-        std::cerr << "Error opening JPEG file: " << filename << std::endl;
-        return false;
-    }
-
-    // Create TurboJPEG decompressor instance
-    tjhandle tjInstance = tjInitDecompress();
-    if (tjInstance == nullptr) {
-        std::cerr << "Error initializing TurboJPEG decompressor" << std::endl;
-        fclose(jpegFile);
-        return false;
-    }
-
-    // Read JPEG file content into buffer
-    fseek(jpegFile, 0, SEEK_END);
-    unsigned long jpegSize = ftell(jpegFile);
-    fseek(jpegFile, 0, SEEK_SET);
-    unsigned char *jpegBuf = (unsigned char *) malloc(jpegSize);
-    if (jpegBuf == nullptr) {
-        std::cerr << "Memory allocation failure" << std::endl;
-        tjDestroy(tjInstance);
-        fclose(jpegFile);
-        return false;
-    }
-    fread(jpegBuf, 1, jpegSize, jpegFile);
-    fclose(jpegFile); // Close file as content is already read into buffer
-
-    // Get JPEG image dimensions and components
-    int imgWidth, imgHeight, jpegSubsamp;
-    if (tjDecompressHeader2(tjInstance, jpegBuf, jpegSize, &imgWidth, &imgHeight, &jpegSubsamp) < 0) {
-        std::cerr << "Error getting JPEG image header" << std::endl;
-        free(jpegBuf);
-        tjDestroy(tjInstance);
-        return false;
-    }
-
-    // Set output buffer size based on image dimensions and components
-    int pixelSize = 3; // RGB has 3 components
-    int pitch = imgWidth * pixelSize;
-    imageData.data[0].resize(imgHeight * pitch);
-
-    // Decompress JPEG image to RGB format
-    if (tjDecompress2(tjInstance, jpegBuf, jpegSize, &imageData.data[0][0], imgWidth, pitch, imgHeight, TJPF_RGB,
-                      TJFLAG_FASTDCT) < 0) {
-        std::cerr << "Error decompressing JPEG image" << std::endl;
-        free(jpegBuf);
-        tjDestroy(tjInstance);
-        return false;
-    }
-    imageData.width = imgWidth;
-    imageData.height = imgHeight;
-
-    // Free resources
-    free(jpegBuf);
-    tjDestroy(tjInstance);
-
-    return true;
-}
-
 void Material::loadImageFromFile(int index, const std::string &filename) {
     std::string fileExtension = filename.substr(filename.find_last_of(".") + 1);
     if (fileExtension == "png" || fileExtension == "PNG") {
         loadImageFromPNG(texture[index], filename);
-    } else if (fileExtension == "jpg" || fileExtension == "jpeg" || fileExtension == "JPG" || fileExtension == "JPEG") {
-        loadImageFromJPG(texture[index], filename);
     } else if (fileExtension == "dds" || fileExtension == "DDS") {
         loadImageFromDDS(texture[index], filename);
     } else {

@@ -309,7 +309,9 @@ void getHitMaterial(const Face& face, const vec3 &baryCoords, const vec3 &hit_dP
     hitInfo.eta = material.ior; // 暂存绝对折射率，后续需要转换为相对折射率
     vec2 dUVdx = getDuv(face, hit_dPdx),
          dUVdy = getDuv(face, hit_dPdy);
-    float duv = (isfinite(dUVdx) && isfinite(dUVdx)) ? std::max(length(dUVdx), length(dUVdy)) : NAN;
+    float duv = (isfinite(dUVdx) && isfinite(dUVdx)) ?
+            std::max((length(dUVdx)+length(dUVdy))/2.0f, sqrt(length(dUVdx)*length(dUVdy)))
+            : NAN;
 
     if (hitInfo.opacity < eps_zero)
         hitInfo.baseColor = material.transmittingColor;
