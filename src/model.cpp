@@ -53,7 +53,7 @@ void Model::checkLightObject(Face *meshFaces, aiMesh *mesh, const Material &mate
 
         vec3 textureColor = getAverageEmissiveColor(material, face);
         float Clum = dot(textureColor, RGB_Weight);
-        if (Clum == 0.0f)
+        if (Clum < eps_zero)
             continue;
 
         float area = length(cross(face.v[1] - face.v[0], face.v[2] - face.v[0])) / 2.0f;

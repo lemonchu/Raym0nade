@@ -48,7 +48,7 @@ void filterVar(RadianceData *radiance, int width, int height) {
 }
 
 float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, const RadianceData &Lq) {
-    static const float
+    static constexpr float
             sigma_z = 1.0f,
             sigma_n = 1024.0f,
             sigma_l = 1.0f,
@@ -58,29 +58,38 @@ float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, co
     if (!isfinite(Gq.position))
         return 0.0f;
 
-    float weight = 1.0f;
+    float weight = pow(std::max(0.0f, dot(Gp.surfaceNormal, Gq.surfaceNormal)), sigma_n);
+
+    if (weight < 1e-6f)
+        return 0.0f;
+
+    float k = 0.0f;
 
     vec3 dir = normalize(Gq.position - Gp.position);
     float sinTheta = abs(dot(Gp.shapeNormal, dir));
     float tanTheta = sinTheta / (sqrt(1.0f - sinTheta * sinTheta) + eps_zero);
-    if (tanTheta > 10.0f)
-        return 0.0f;
-    weight *= std::exp(- tanTheta / sigma_z);
-
-    weight *= pow(std::max(0.0f, dot(Gp.surfaceNormal, Gq.surfaceNormal)), sigma_n);
+    k += - tanTheta / sigma_z;
 
     float radianceDiff = length(Lp.radiance - Lq.radiance) /
                            (sigma_l * sqrt(Lp.Var) + eps);
-    weight = (radianceDiff < 10.0f) ? weight * std::exp(-radianceDiff) : 0.0f;
+    k += - radianceDiff;
 
     float materialDiff = length(vec3(
         Gp.metallic - Gq.metallic,
         Gp.specular - Gq.specular,
         Gp.opacity - Gq.opacity
     ));
-    weight *= std::exp(- materialDiff / sigma_m);
+    k += - materialDiff / sigma_m;
+
+    if (k < -7.5f)
+        return 0.0f;
+
+    weight *= exp(k);
 
     weight *= std::max(Gp.roughness, 0.04f);
+
+    if (!isfinite(weight))
+        return 0.0f;
 
     return weight;
 }
@@ -179,10 +188,14 @@ void Image::bloom() {
     static const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
     std::vector<vec3> bloomColor(width * height);
 
-    static const float omega_bloom = 0.2f, threshold = 1.5f;
+    static const float omega_bloom = 0.85f;
     for (int id = 0; id < width * height; ++id) {
-        bloomColor[id] = glm::max(pixelarray[id] - vec3(threshold), vec3(0.0f));
-        bloomColor[id] = glm::pow(bloomColor[id], vec3(omega_bloom));
+        float Clum = dot(pixelarray[id], RGB_Weight);
+        if (Clum < 1.0f)
+            continue;
+        bloomColor[id] = pixelarray[id] / pow(Clum, omega_bloom);
+        for (int k = 0; k < 3; ++k)
+            bloomColor[id][k] = std::max(bloomColor[id][k]-1.0f, 0.0f);
     }
 
     for (int step = 1; step <= 16; step *= 2) {
@@ -196,7 +209,7 @@ void Image::bloom() {
                         int nx = x + kx * step, ny = y + ky * step;
                         if (nx < 0 || nx >= width || ny < 0 || ny >= height)
                             continue;
-                        col += tempBloomColor[ny * width + nx] * h[ky + 2] * h[kx + 2];
+                        col += tempBloomColor[ny * width + nx] * h[ky + filterRadius] * h[kx + filterRadius];
                     }
             }
         for (int id = 0; id < width * height; ++id)
@@ -207,10 +220,26 @@ void Image::bloom() {
 const float GammaFactor = 2.2f;
 
 void Image::gammaCorrection() {
+   auto lumBound = [](float Clum) -> float {
+        return tanh(3.0f * (Clum-0.75f)) / 3.0f + 0.75f;
+    };
     for (int i = 0; i < width * height; ++i) {
-        pixelarray[i] = glm::min(glm::max(pixelarray[i], vec3(0.0f) ), vec3(1.0f));
+        pixelarray[i] = glm::max(pixelarray[i], 0.0f);
+        float Clum = dot(pixelarray[i], RGB_Weight);
+        if (Clum > 0.75f)
+            pixelarray[i] = pixelarray[i] / Clum * lumBound(Clum);
+        pixelarray[i] = glm::min(pixelarray[i], 1.0f);
         pixelarray[i] = glm::pow(pixelarray[i], vec3(1.0f / GammaFactor));
     }
+}
+
+void Image::postProcessing(int shadeOptions, float exposure) {
+    shade(exposure, shadeOptions);
+    if (shadeOptions & DoBloom)
+        bloom();
+    if (shadeOptions & DoFXAA)
+        FXAA();
+    gammaCorrection();
 }
 
 void Image::save(const char *file_name) {
@@ -271,6 +300,10 @@ void accumulateInwardRadiance_basic(RadianceData &radiance, vec3 inradiance, flo
         std::cerr << "NaN detected!" << std::endl;
         throw std::runtime_error("NaN detected!");
     }
+    if (!isfinite(weight)) {
+        std::cerr << "NaN detected! (weight)" << std::endl;
+        throw std::runtime_error("NaN detected!");
+    }
     radiance.radiance += inradiance * weight;
     radiance.Var += dot(inradiance, inradiance) * weight;
 }
@@ -278,17 +311,18 @@ void accumulateInwardRadiance_basic(RadianceData &radiance, vec3 inradiance, flo
 void accumulateInwardRadiance(const vec3 &baseColor, const LightSample &sample,
                               RadianceData &radiance_d, RadianceData &radiance_s) {
 
-    if (sample.light == vec3(0.0f))
+    if (length(sample.light) < eps_zero)
         return;
-    if (baseColor == vec3(0.0f)) {
+    if (length(baseColor) < eps_zero) {
         accumulateInwardRadiance_basic(radiance_s, sample.light * sample.bsdfPdf, sample.weight);
         return;
     }
     vec3 baseColor0 = normalize(baseColor);
     static const vec3 White = normalize(vec3(1.0f));
     float XdotY = dot(baseColor0, White);
-    if (XdotY > 0.999f) {
-        accumulateInwardRadiance_basic(radiance_d, sample.light * sample.bsdfPdf / baseColor, sample.weight);
+    if (XdotY > 0.99f) {
+        float Clum = dot(baseColor0, RGB_Weight);
+        accumulateInwardRadiance_basic(radiance_s, sample.light * sample.bsdfPdf * Clum, sample.weight);accumulateInwardRadiance_basic(radiance_d, sample.light * sample.bsdfPdf / baseColor, sample.weight);
         return ;
     }
     // Consider Pdf = a * white + b * baseColor

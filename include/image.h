@@ -27,7 +27,9 @@ public:
         Direct_Specular = DirectLight | Specular,
         Indirect_Diffuse = IndirectLight | Diffuse,
         Indirect_Specular = IndirectLight | Specular,
-        Full = DirectLight | IndirectLight | Diffuse | Specular | BaseColor | Emission
+        Full = DirectLight | IndirectLight | Diffuse | Specular | BaseColor | Emission,
+        DoBloom = 256,
+        DoFXAA = 512,
     };
     int width, height;
     HitInfo *Gbuffer;
@@ -46,6 +48,8 @@ public:
     void gammaCorrection();
 
     void save(const char* file_name);
+
+    void postProcessing(int shadeOptions, float exposure);
 
     ~Image();
 };
