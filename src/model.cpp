@@ -124,7 +124,7 @@ void Model::processMesh(aiMesh *mesh) {
     }
 
     Face *meshFaces = &faces[offset];
-    if (!material.texture[aiTextureType_EMISSIVE].empty() && skyMap_path != "null")
+    if (!material.texture[aiTextureType_EMISSIVE].empty() && skyMap.empty())
         checkLightObject(meshFaces, mesh, material);
 }
 
@@ -143,6 +143,9 @@ void Model::processMaterial(const std::string &model_folder, const aiScene *scen
 
         for (int j = 0; j < AI_TEXTURE_TYPE_MAX; j++) {
             aiTextureType textureType = (aiTextureType) j;
+            if (j == aiTextureType_EMISSIVE && !skyMap.empty())
+                continue;
+
             unsigned int numTextures = material->GetTextureCount(textureType);
             for (int k = 0; k < numTextures; k++) {
                 aiString path;
@@ -192,6 +195,7 @@ Model::Model(const std::string &model_folder, const std::string &model_name, con
     if (skyMap_path != "null") {
         std::cout << "Loading sky map: " << skyMap_path << std::endl;
         skyMap.load(skyMap_path);
+        std::cout << "skyMap.empty(): " << skyMap.empty() << std::endl;
     }
 
     processMaterial(model_folder, scene);
@@ -347,7 +351,7 @@ bool Model::rayHit_test(Ray ray, float aimDepth) const {
     HitRecord hit(eps_zero, aimDepth + eps_zero);
     for (int T = 0; T < maxRayDepth_hit; T++) {
         kdt.rayHit(ray, hit);
-        if (hit.t_max > aimDepth)
+        if (hit.t_max >= aimDepth)
             return false;
         if (!TransparentTest(ray, hit))
             return true;

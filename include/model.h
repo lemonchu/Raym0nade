@@ -34,7 +34,7 @@ public:
     std::vector<LightObject> lightObjects;
     KDT kdt;
     std::string model_path, skyMap_path;
-    ImageDataHDR skyMap;
+    SkyBox skyMap;
 
     Model();
     Model(const std::string &model_folder, const std::string &model_name, const std::string &skyMap_name);

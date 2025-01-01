@@ -16,11 +16,3 @@ def hdr_to_array(input_hdr_file):
     except Exception as e:
         print(f"Conversion failed: {e}")
         return None, None, None, None
-
-if __name__ == "__main__":
-    filename = "../model/bistro/san_giuseppe_bridge_4k.hdr"
-    try:
-        width, height, channels, data = hdr_to_array(filename)
-        print(f"Loaded HDR image with dimensions: {width}x{height}*{channels}")
-    except Exception as e:
-        print(e)

@@ -149,10 +149,6 @@ void Image::filter() {
 void Image::shade(float exposure, int options) {
     for (int i = 0; i < width * height; ++i) {
         const HitInfo &G = Gbuffer[i];
-        if (!isfinite(G.position)) {
-            pixelarray[i] = vec3(0.0f);
-            continue;
-        }
         if (options & shapeNormal) {
             pixelarray[i] = (G.shapeNormal + vec3(1.0f)) / 2.0f;
             continue;

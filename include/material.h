@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <assimp/material.h>
+#include <Python.h>
 #include "geometry.h"
 
 #define MAX_MIPMAP_LEVEL 8
@@ -22,20 +23,8 @@ public:
     [[nodiscard]] bool hasTransparentPart() const;
 };
 
-class ImageDataHDR {
-private:
-    void InitSunDir();
-public:
-    int width, height;
-    std::vector<float> data;
-    vec3 sunDir;
-    ImageDataHDR();
-    void load(const std::string &filename);
-    [[nodiscard]] bool empty() const;
-    [[nodiscard]] vec3 get(vec3 dir) const;
-};
-
 std::string urlDecode(const std::string &src);
+PyObject *call_image_to_array(const std::string &filename, const std::string &scriptName);
 
 class Material {
 public:
