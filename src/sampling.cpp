@@ -461,14 +461,6 @@ void sampleSkyBox(const SkyBox &skyBox, const vec3 &shapeNormal,
         float cosPhi = dot(Dir, shapeNormal);
         if (cosPhi > 0.0f) {
             light = skyBox.data[pixelIndex] / skyBox.dist.pdf(pixelIndex);
-            if (rand() == 0) {
-                std::cout << "pdf: " << skyBox.dist.pdf(pixelIndex) << std::endl;
-                std::cout << "Dir: " << Dir.x << " " << Dir.y << " " << Dir.z << std::endl;
-                std::cout << "light: " << light.x << " " << light.y << " " << light.z << std::endl;
-                std::cout << "skyBox.data[pixelIndex]: " << skyBox.data[pixelIndex].x << " " << skyBox.data[pixelIndex].y << " " << skyBox.data[pixelIndex].z << std::endl;
-                float Clum = dot(skyBox.data[pixelIndex], RGB_Weight);
-                std::cout << "Clum: " << Clum << std::endl << std::endl;
-            }
             return;
         }
     }
