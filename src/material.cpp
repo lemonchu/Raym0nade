@@ -228,7 +228,8 @@ void ImageDataHDR::load(const std::string &filename) {
     if (pValue != nullptr) {
         PyObject *pWidth = PyTuple_GetItem(pValue, 0);
         PyObject *pHeight = PyTuple_GetItem(pValue, 1);
-        PyObject *pData = PyTuple_GetItem(pValue, 2);
+        PyObject *pChannels = PyTuple_GetItem(pValue, 2);
+        PyObject *pData = PyTuple_GetItem(pValue, 3);
 
         if (pWidth == Py_None) {
             std::cerr << "Invalid width in Python object." << std::endl;

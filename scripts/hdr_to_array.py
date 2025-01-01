@@ -1,40 +1,26 @@
-import os
+import imageio.v2 as imageio
+import numpy as np
 
-def hdr_to_array(filename):
-    if not os.path.exists(filename):
-        raise FileNotFoundError(f"File not found: {filename}")
-    if not os.access(filename, os.R_OK):
-        raise PermissionError(f"File is not readable: {filename}")
-
+def hdr_to_array(input_hdr_file):
     try:
-        import OpenEXR
-        import Imath
-        exr_file = OpenEXR.InputFile(filename)
-        dw = exr_file.header()['dataWindow']
-        width = dw.max.x - dw.min.x + 1
-        height = dw.max.y - dw.min.y + 1
+        hdr_image = imageio.imread(input_hdr_file, format='HDR-FI')
 
-        FLOAT = Imath.PixelType(Imath.PixelType.FLOAT)
-        redstr = exr_file.channel('R', FLOAT)
-        greenstr = exr_file.channel('G', FLOAT)
-        bluestr = exr_file.channel('B', FLOAT)
+        width = hdr_image.shape[1]
+        height = hdr_image.shape[0]
+        channels = hdr_image.shape[2] if len(hdr_image.shape) > 2 else 1
 
-        import numpy as np
-        red = np.frombuffer(redstr, dtype=np.float32)
-        green = np.frombuffer(greenstr, dtype=np.float32)
-        blue = np.frombuffer(bluestr, dtype=np.float32)
+        # Convert the image to a float32 array
+        hdr_array = hdr_image.astype(np.float32)
 
-        data = np.stack([red, green, blue], axis=-1).reshape(height, width, 3)
-
-        return width, height, data
-
+        return width, height, channels, hdr_array
     except Exception as e:
-        raise RuntimeError(f"Failed to load HDR image: {e}")
+        print(f"Conversion failed: {e}")
+        return None, None, None, None
 
 if __name__ == "__main__":
-    filename = "model/Bistro_v5_2/san_giuseppe_bridge_4k.hdr"
+    filename = "../model/bistro/san_giuseppe_bridge_4k.hdr"
     try:
-        width, height, data = hdr_to_array(filename)
-        print(f"Loaded HDR image with dimensions: {width}x{height}")
+        width, height, channels, data = hdr_to_array(filename)
+        print(f"Loaded HDR image with dimensions: {width}x{height}*{channels}")
     except Exception as e:
         print(e)
