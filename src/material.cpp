@@ -326,91 +326,6 @@ void Material::loadMaterialProperties(const aiMaterial *aiMat) {
         if (name == "White_Wine")
             transmittingColor = vec3(0.85f, 0.78f, 0.6f);
     }
-    /*
-        aiColor3D color(0.f, 0.f, 0.f);
-        if (aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, color) == AI_SUCCESS) {
-            std::cout << "Diffuse Color: (" << color.r << ", " << color.g << ", " << color.b << ")" << std::endl;
-        }
-        if (aiMat->Get(AI_MATKEY_COLOR_SPECULAR, color) == AI_SUCCESS) {
-            std::cout << "Specular Color: (" << color.r << ", " << color.g << ", " << color.b << ")" << std::endl;
-        }
-        if (aiMat->Get(AI_MATKEY_COLOR_AMBIENT, color) == AI_SUCCESS) {
-            std::cout << "Ambient Color: (" << color.r << ", " << color.g << ", " << color.b << ")" << std::endl;
-        }
-        if (aiMat->Get(AI_MATKEY_COLOR_TRANSPARENT, color) == AI_SUCCESS) {
-            std::cout << "Transparent Color: (" << color.r << ", " << color.g << ", " << color.b << ")" << std::endl;
-        }
-
-        if (aiMat->Get(AI_MATKEY_COLOR_EMISSIVE, color) == AI_SUCCESS) {
-            std::cout << "Emissive Color: (" << color.r << ", " << color.g << ", " << color.b << ")" << std::endl;
-        }
-        ai_real buf;
-        if (aiMat->Get(AI_MATKEY_SHININESS, buf) == AI_SUCCESS) {
-            std::cout << "Shininess: " << buf << std::endl;
-        }
-        if (aiMat->Get(AI_MATKEY_SHININESS_STRENGTH, buf) == AI_SUCCESS) {
-            std::cout << "Shininess Strength: " << buf << std::endl;
-        }
-        if (aiMat->Get(AI_MATKEY_TRANSPARENCYFACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Transparency Factor: " << buf << std::endl;
-        }
-        if (aiMat->Get(AI_MATKEY_REFLECTIVITY, buf) == AI_SUCCESS) {
-            std::cout << "Reflectivity: " << buf << std::endl;
-        }
-        if (aiMat->Get(AI_MATKEY_REFRACTI, buf) == AI_SUCCESS) {
-            std::cout << "Refraction Index: " << buf << std::endl;
-        }
-        if (aiMat->Get(AI_MATKEY_BUMPSCALING, buf) == AI_SUCCESS) {
-            std::cout << "Bump Scaling: " << buf << std::endl;
-        }
-
-        // AI_MATKEY_SPECULAR_FACTOR
-        if (aiMat->Get(AI_MATKEY_SPECULAR_FACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Specular Factor: " << buf << std::endl;
-        }
-        // AI_MATKEY_METALLIC_FACTOR
-        if (aiMat->Get(AI_MATKEY_METALLIC_FACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Metallic Factor: " << buf << std::endl;
-        }
-        // AI_MATKEY_ROUGHNESS_FACTOR
-        if (aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Roughness Factor: " << buf << std::endl;
-        }
-        // AI_MATKEY_ANISOTROPY_FACTOR
-        if (aiMat->Get(AI_MATKEY_ANISOTROPY_FACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Anisotropy Factor: " << buf << std::endl;
-        }
-        // AI_MATKEY_GLOSSINESS_FACTOR
-        if (aiMat->Get(AI_MATKEY_GLOSSINESS_FACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Glossiness Factor: " << buf << std::endl;
-        }
-        // AI_MATKEY_SHEEN_COLOR_FACTOR
-        if (aiMat->Get(AI_MATKEY_SHEEN_COLOR_FACTOR, color) == AI_SUCCESS) {
-            std::cout << "Sheen Color Factor: (" << color.r << ", " << color.g << ", " << color.b << ")" << std::endl;
-        }
-        // AI_MATKEY_SHEEN_ROUGHNESS_FACTOR
-        if (aiMat->Get(AI_MATKEY_SHEEN_ROUGHNESS_FACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Sheen Roughness Factor: " << buf << std::endl;
-        }
-        // AI_MATKEY_CLEARCOAT_FACTOR
-        if (aiMat->Get(AI_MATKEY_CLEARCOAT_FACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Clearcoat Factor: " << buf << std::endl;
-        }
-        // AI_MATKEY_CLEARCOAT_ROUGHNESS_FACTOR
-        if (aiMat->Get(AI_MATKEY_CLEARCOAT_ROUGHNESS_FACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Clearcoat Roughness Factor: " << buf << std::endl;
-        }
-
-        if (aiMat->Get(AI_MATKEY_VOLUME_ATTENUATION_DISTANCE, buf) == AI_SUCCESS) {
-            std::cout << "Volume Attenuation Distance: " << buf << std::endl;
-        }
-        if (aiMat->Get(AI_MATKEY_VOLUME_ATTENUATION_COLOR, color) == AI_SUCCESS) {
-            std::cout << "Volume Attenuation Color: (" << color.r << ", " << color.g << ", " << color.b << ")" << std::endl;
-        }
-        // AI_MATKEY_TRANSMISSION_FACTOR
-        if (aiMat->Get(AI_MATKEY_TRANSMISSION_FACTOR, buf) == AI_SUCCESS) {
-            std::cout << "Transmission Factor: " << buf << std::endl;
-        }*/
 
     if (texture[aiTextureType_DIFFUSE].hasTransparentPart()) {
         hasFullyTransparentPart = true;
@@ -463,7 +378,7 @@ void Material::getSurfaceData(float u, float v, float &roughness, float &metalli
         return;
     }
     vec4 surfaceData = texture[aiTextureType_SPECULAR].get<vec4>(u, v, 0);
-    roughness = std::max(surfaceData[1], 5e-3f);
+    roughness = std::max(surfaceData[1], 1e-3f);
     metallic = std::min(surfaceData[2], 0.99f);
     roughness *= 0.5f + 0.5f * (1.0f - metallic);
 }

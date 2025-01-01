@@ -325,7 +325,7 @@ void accumulateInwardRadiance(const vec3 &baseColor, const LightSample &sample,
         accumulateInwardRadiance_basic(radiance_s, sample.light * sample.bsdfPdf * Clum, sample.weight);accumulateInwardRadiance_basic(radiance_d, sample.light * sample.bsdfPdf / baseColor, sample.weight);
         return ;
     }
-    // Consider Pdf = a * white + b * baseColor
+    // Consider Pdf = a * white + b * baseColor0
     vec3 perp = normalize(cross(baseColor0, White));
     vec3 bsdfPdf_p = sample.bsdfPdf - perp * dot(perp, sample.bsdfPdf);
     float d1 = dot(bsdfPdf_p, White);

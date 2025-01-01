@@ -69,7 +69,7 @@ vec3 BSDF::getBRDF(vec3 L) const {
         specularTint = 0.0f,
         sheen = 0.0f,
         sheenTint = 0.0f,
-        clearcoat = surface.opacity < eps_zero ? 0.04f : 1.5f,
+        clearcoat = 1.5f,
         clearcoatGloss = 0.2f,
         clearcoatTint = 0.0f;
 
@@ -123,8 +123,9 @@ vec3 BSDF::getBRDF(vec3 L) const {
     float Gr = smithG_GGX(NdotL, .25f) * smithG_GGX(NdotV, .25f);
 
     vec3 ret = ((1.0f/PI) * mix(Fd, ss, subsurface) * Cdlin + Fsheen);
-    ret *= (1.0f - surface.metallic) * surface.opacity;
+    ret *= (1.0f - surface.metallic);
     ret += (0.25f*clearcoat*Gr*Fr*Dr) * glm::mix(vec3(1.0f), Ctint, clearcoatTint);
+    ret *= surface.opacity;
     ret += Fs * Ds * Gs;
 
 #ifdef RAY_DEBUG
@@ -160,26 +161,23 @@ vec3 BSDF::getBRDF(vec3 L) const {
 vec3 BSDF::getBTDF(vec3 L) const {
     const vec3 &N = surface.surfaceNormal;
     float NdotL = dot(surface.surfaceNormal, L);
-    if (NdotL > 0.0f)
+    if (NdotL >= 0.0f)
         return vec3(0.0f);
 
     const vec3 &V = inDir;
 
     vec3 H = normalize(L + surface.eta * V);
 
-    // Microfacet distribution term (GGX)
     float D = GTR2(dot(N, H), surface.roughness);
 
-    // BTDF calculation
-    float BTDF =  D * (-NdotL);
+    float BTDF =  D  * (-NdotL);
 
+    float LdotH = dot(L, H);
     float NdotV = dot(N, V);
-    float HdotL = dot(H, L);
     float HdotV = dot(H, V);
-    BTDF *= abs(HdotL * HdotV)/(abs(NdotL * NdotV) + eps_zero);
-    float k = surface.eta * HdotV + HdotL;
+    BTDF *= abs(LdotH * HdotV)/(abs(NdotL * NdotV) + eps_zero);
+    float k = surface.eta * HdotV + LdotH;
     BTDF /= k*k;
-    BTDF *= surface.eta * surface.eta;
 
     vec3 ret = vec3(BTDF);
 
@@ -204,7 +202,7 @@ vec3 BSDF::getBSDF(vec3 outDir) const {
 
 static const int MaxTrys = 16;
 
-void BSDF::sampleGTR2(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fails) const {
+void BSDF::sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fails) const {
 
     vec3 tangent, bitangent;
     getTangentSpaceWithInDir(surface.surfaceNormal, inDir, tangent, bitangent);
@@ -224,7 +222,7 @@ void BSDF::sampleGTR2(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, i
             pdf = 0.0f;
             return ;
         }
-        pdf = GTR2(cosTheta, surface.roughness) * cosTheta / (4.0f * LDotH);
+        pdf = GTR2(cosTheta, surface.roughness) / (4.0f * LDotH);
     };
     for (int T = 1; T <= MaxTrys; T++) {
         sampleGTR2(outDir, pdf);
@@ -317,7 +315,7 @@ void BSDF::sampleReflection(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails
     int fail1 = 0, fail2 = 0;
     float pdf1, pdf2;
     sampleCos(gen, Dir1, brdfPdf1, pdf1, fail1);
-    sampleGTR2(gen, Dir2, brdfPdf2, pdf2, fail2);
+    sampleBRDF(gen, Dir2, brdfPdf2, pdf2, fail2);
     float p1 = pdf1 / (pdf1 + pdf2);
 /*
     std::cout << "             roughness: " << surface.roughness << std::endl;
@@ -341,6 +339,57 @@ void BSDF::sampleReflection(Generator &gen, vec3 &Dir, vec3 &brdfPdf, int &fails
         brdfPdf = brdfPdf2;
         fails += fail2;
     }
+}
+
+vec3 refract(const vec3 &V, const vec3 &N, float eta) {
+    float NdotV = dot(N, V);
+    float delta = 1.0f - eta * eta * (1.0f - NdotV * NdotV);
+    if (delta < 0.0f)
+        return vec3(NAN);
+    float k = eta * NdotV - sqrt(delta);
+    return k * N - eta * V;
+}
+
+void BSDF::sampleBTDF(Generator &gen, vec3 &outDir, vec3 &btdfPdf, int &fails) const {
+    if (abs(surface.eta - 1.0f) < eps_zero) {
+        outDir = -inDir;
+        btdfPdf = vec3(1.0f);
+        return;
+    }
+    vec3 tangent, bitangent;
+    getTangentSpaceWithInDir(surface.surfaceNormal, inDir, tangent, bitangent);
+    const vec3 &V = inDir;
+
+    auto sampleGTR2 = [&](vec3 &outDir, float &weight) -> void {
+        float u = gen(), phi = gen() * 2.0f * PI;
+        float
+                cosTheta = sqrt((1.0f-u) / (1.0f+(sqr(surface.roughness)-1.0f)*u)),
+                sinTheta = sqrt(1 - cosTheta*cosTheta);
+        vec3 H = sinTheta * cos(phi) * tangent
+                 + sinTheta * sin(phi) * bitangent
+                 + cosTheta * surface.surfaceNormal;
+        outDir = refract(V, H, surface.eta);
+
+        if (!isfinite(outDir)) {
+            weight = 0.0f;
+            return;
+        }
+        float VdotH = dot(V, H);
+        float VdotN = dot(V, surface.surfaceNormal);
+        float HdotN = dot(H, surface.surfaceNormal);
+        weight = abs(VdotH) / abs(VdotN * HdotN);
+    };
+    for (int T = 1; T <= MaxTrys; T++) {
+        float weight;
+        sampleGTR2(outDir, weight);
+        if (weight > 0.0f && dot(outDir, surface.shapeNormal) < 0.0f) {
+            btdfPdf = vec3(weight);
+            return;
+        }
+        fails++;
+    }
+    btdfPdf = vec3(0.0f);
+    outDir = vec3(NAN);
 }
 
 LightSample::LightSample(const vec3 &bsdfPdf, const vec3 &light, float weight) :
@@ -434,7 +483,7 @@ std::vector<LightSample> sampleDirectLight(
         if (model.rayHit_test({pos, lightDir}, distance - eps_zero))
             continue;
 
-        vec3 bsdfPdf = bsdf.getBSDF(lightDir) * faceFactor / P_lightObject;
+        vec3 bsdfPdf = bsdf.getBSDF(lightDir) * faceFactor / P_lightObject * PI;
         clamp(bsdfPdf);
         vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
 

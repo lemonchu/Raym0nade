@@ -307,6 +307,8 @@ void getHitMaterial(const Face& face, const vec3 &baryCoords, const vec3 &hit_dP
     material.getSurfaceData(texUV[0], texUV[1], hitInfo.roughness, hitInfo.metallic);
     hitInfo.opacity = material.opacity;
     hitInfo.eta = material.ior; // 暂存绝对折射率，后续需要转换为相对折射率
+    if (hitInfo.opacity > 1.0f - eps_zero)
+        hitInfo.entering = true;
     vec2 dUVdx = getDuv(face, hit_dPdx),
          dUVdy = getDuv(face, hit_dPdy);
     float duv = (isfinite(dUVdx) && isfinite(dUVdx)) ?

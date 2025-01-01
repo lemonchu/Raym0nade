@@ -7,8 +7,9 @@
 
 class BSDF {
 private:
-    void sampleGTR2(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fails) const;
+    void sampleBRDF(Generator &gen, vec3 &outDir, vec3 &brdfPdf, float &pdf, int &fails) const;
     void sampleCos(Generator &gen, vec3 &Dir, vec3 &brdfPdf, float &pdf, int &fails) const;
+
     [[nodiscard]] vec3 getBRDF(vec3 L) const;
     [[nodiscard]] vec3 getBTDF(vec3 L) const;
 public:
@@ -21,6 +22,7 @@ public:
     [[nodiscard]] vec3 getBSDF(vec3 outDir) const;
     void preciseRefraction(vec3 &outDir, float &F) const;
     void sampleReflection(Generator &gen, vec3 &Dir, vec3 &bsdfPdf, int &fails) const;
+    void sampleBTDF(Generator &gen, vec3 &Dir, vec3 &btdfPdf, int &fails) const;
 };
 
 struct LightSample {
@@ -29,7 +31,7 @@ struct LightSample {
     LightSample(const vec3 &bsdfPdf, const vec3 &light, float weight);
 };
 
-const float eps_lightRadius = 5e-3f;
+const float eps_lightRadius = 1e-3f;
 std::vector<LightSample> sampleDirectLight(const BSDF &bsdf, const Model &model, Generator &gen, int sampleCnt);
 
 #endif // SAMPLING_H
