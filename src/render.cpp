@@ -128,8 +128,11 @@ std::vector<LightSample> sampleRay
     static const int sampleCount[maxRayDepth+1] = {0,1,2,2,3,3,3,4,4,4,4,5,5,5,5,5,6};
 
     HitRecord hit = model.rayHit(ray);
-    if (hit.t_max == INFINITY)
-        return {}; // No intersection
+    if (hit.t_max == INFINITY) {
+        if (excludeDirectLight || model.skyMap.empty())
+            return {};
+        return {LightSample{vec3(1.0f), model.skyMap.get(ray.direction), 1.0f}};
+    }
 
     // 获取表面信息
     BSDF bsdf(-ray.direction, ray.origin + ray.direction * hit.t_max);
@@ -271,11 +274,6 @@ std::vector<LightSample> sampleRay
             next_diff = base_diff;
             // Todo: 折射的 RayDifferential 计算
             next_diff = base_diff;
-            if (rand() == 0) {
-                std::cout << "outDir: " << newDir.x << " " << newDir.y << " " << newDir.z << std::endl;
-                std::cout << "refractDir: " << refractDir.x << " " << refractDir.y << " " << refractDir.z << std::endl;
-                std::cout << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl << std::endl;
-            }
         }
 
         bsdfPdf /= (1.0f - P_reflect);
@@ -470,8 +468,8 @@ void renderPixel(const Model &model, const RenderArgs &args,
 
     int id = y * width + x;
     float
-            rayX = static_cast<float>(x) - static_cast<float>(width) / 2.0f,
-            rayY = static_cast<float>(y) - static_cast<float>(height) / 2.0f;
+            rayX = float(x) - float(width) / 2.0f,
+            rayY = float(y) - float(height) / 2.0f;
     vec3 d = view + accuracy * (rayX * right + rayY * up);
     HitInfo &Gbuffer = image.Gbuffer[id];
 
@@ -484,6 +482,8 @@ void renderPixel(const Model &model, const RenderArgs &args,
     HitRecord hit = model.rayHit(ray);
     if (hit.t_max == INFINITY) {
         Gbuffer.position = vec3(NAN);
+        if (!model.skyMap.empty())
+            Gbuffer.emission = model.skyMap.get(Dir);
         return;
     }
 

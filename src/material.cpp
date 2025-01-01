@@ -4,7 +4,7 @@
 #include <iostream>
 #include <sstream>
 #include "material.h"
-#include <Python.h>
+#include "geometry.h"
 
 std::string urlDecode(const std::string &src) {
     std::string decoded;
@@ -114,7 +114,7 @@ void ImageData::generateMipmaps() {
 
     map_depth = MAX_MIPMAP_LEVEL; // NEVER REMOVE THIS LINE
 
-    std::cout << "--- Generating mipmaps...";
+    // std::cout << "--- Generating mipmaps...";
     for (int level = 1; level < MAX_MIPMAP_LEVEL; ++level) {
         int prevWidth = width >> (level - 1);
         int prevHeight = height >> (level - 1);
@@ -144,10 +144,10 @@ void ImageData::generateMipmaps() {
             }
         }
     }
-    std::cout << map_depth << " levels generated." << std::endl;
+    // std::cout << map_depth << " levels generated." << std::endl;
 }
 
-PyObject *call_dds_to_array(const std::string &filename) {
+PyObject *call_image_to_array(const std::string &filename, const std::string &scriptName) {
     static bool isInitialized = false;
 
     // Initialize the Python interpreter only once
@@ -162,12 +162,12 @@ PyObject *call_dds_to_array(const std::string &filename) {
         Py_DECREF(path);
     }
 
-    PyObject *pName = PyUnicode_DecodeFSDefault("dds_to_array");
+    PyObject *pName = PyUnicode_DecodeFSDefault(scriptName.c_str());
     PyObject *pModule = PyImport_Import(pName);
     Py_DECREF(pName);
 
     if (pModule != nullptr) {
-        PyObject *pFunc = PyObject_GetAttrString(pModule, "dds_to_array");
+        PyObject *pFunc = PyObject_GetAttrString(pModule, scriptName.c_str());
         if (PyCallable_Check(pFunc)) {
             PyObject *pArgs = PyTuple_Pack(1, PyUnicode_FromString(filename.c_str()));
             PyObject *pValue = PyObject_CallObject(pFunc, pArgs);
@@ -188,7 +188,7 @@ PyObject *call_dds_to_array(const std::string &filename) {
 }
 
 bool Material::loadImageFromDDS(ImageData &imageData, const std::string &filename) {
-    PyObject *pValue = call_dds_to_array(filename);
+    PyObject *pValue = call_image_to_array(filename, "dds_to_array");
 
     if (pValue != nullptr) {
         PyObject *pWidth = PyTuple_GetItem(pValue, 0);
@@ -378,7 +378,6 @@ void Material::getSurfaceData(float u, float v, float &roughness, float &metalli
         return;
     }
     vec4 surfaceData = texture[aiTextureType_SPECULAR].get<vec4>(u, v, 0);
-    roughness = std::max(surfaceData[1], 1e-3f);
     metallic = std::min(surfaceData[2], 0.99f);
-    roughness *= 0.5f + 0.5f * (1.0f - metallic);
+    roughness = std::max(surfaceData[1], 1e-3f);
 }

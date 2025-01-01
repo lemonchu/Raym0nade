@@ -124,7 +124,7 @@ void Model::processMesh(aiMesh *mesh) {
     }
 
     Face *meshFaces = &faces[offset];
-    if (!material.texture[aiTextureType_EMISSIVE].empty())
+    if (!material.texture[aiTextureType_EMISSIVE].empty() && skyMap.empty())
         checkLightObject(meshFaces, mesh, material);
 }
 
@@ -143,6 +143,9 @@ void Model::processMaterial(const std::string &model_folder, const aiScene *scen
 
         for (int j = 0; j < AI_TEXTURE_TYPE_MAX; j++) {
             aiTextureType textureType = (aiTextureType) j;
+            if (j == aiTextureType_EMISSIVE && !skyMap.empty())
+                continue;
+
             unsigned int numTextures = material->GetTextureCount(textureType);
             for (int k = 0; k < numTextures; k++) {
                 aiString path;
@@ -172,11 +175,12 @@ void Model::processMaterial(const std::string &model_folder, const aiScene *scen
 
 Model::Model() = default;
 
-Model::Model(const std::string &model_folder, const std::string &model_name) {
+Model::Model(const std::string &model_folder, const std::string &model_name, const std::string &skyMap_name) {
 
     Assimp::Importer importer;
     importer.SetPropertyInteger(AI_CONFIG_PP_PTV_KEEP_HIERARCHY, 1);
     model_path = model_folder + model_name;
+    skyMap_path = (skyMap_name == "null") ? "null" : model_folder + skyMap_name;
     const aiScene* scene = importer.ReadFile(model_path.c_str(),
                                              aiProcess_Triangulate |
                                              aiProcess_PreTransformVertices |
@@ -186,6 +190,12 @@ Model::Model(const std::string &model_folder, const std::string &model_name) {
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
         return ;
+    }
+
+    if (skyMap_path != "null") {
+        std::cout << "Loading sky map: " << skyMap_path << std::endl;
+        skyMap.load(skyMap_path);
+        std::cout << "skyMap.empty(): " << skyMap.empty() << std::endl;
     }
 
     processMaterial(model_folder, scene);
@@ -341,7 +351,7 @@ bool Model::rayHit_test(Ray ray, float aimDepth) const {
     HitRecord hit(eps_zero, aimDepth + eps_zero);
     for (int T = 0; T < maxRayDepth_hit; T++) {
         kdt.rayHit(ray, hit);
-        if (hit.t_max > aimDepth)
+        if (hit.t_max >= aimDepth)
             return false;
         if (!TransparentTest(ray, hit))
             return true;

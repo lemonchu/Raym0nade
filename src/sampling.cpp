@@ -7,8 +7,6 @@ BSDF::BSDF(const vec3 &inDir, const vec3 &hit_position) : inDir(inDir) {
 
 BSDF::BSDF(const vec3 &inDir, const HitInfo &hitInfo) : inDir(inDir), surface(hitInfo) {}
 
-const float PI = 3.14159265358979323846f;
-
 float sqr(float x) { return x*x; }
 
 float clamp(float x, float a, float b) {
@@ -436,66 +434,107 @@ void generateRandomPointInLightFace(const Face &face, const vec3 &pos,
 }
 
 void sampleLightFace(const vec3 &pos, const LightObject &lightObject,
-                     Generator &gen, vec3 &lightPos, float &faceFactor) {
+                     Generator &gen, vec3 &lightPos, int &fails) {
     for (int T = 1; T <= MaxTrys; T++) {
         int faceIndex = lightObject.faceDist(gen);
         const Face& lightFace = lightObject.faces[faceIndex];
         float cosPhi;
         generateRandomPointInLightFace(lightFace, pos, gen, lightPos, cosPhi);
         if (cosPhi > 0.0f) {
-            faceFactor = cosPhi;
-            return;
+            if (gen() < cosPhi)
+                return;
+            else
+                fails++;
         }
     }
     lightPos = vec3(NAN);
+}
+
+void sampleSkyBox(const SkyBox &skyBox, const vec3 &shapeNormal,
+                  Generator &gen, vec3 &Dir, vec3 &light) {
+    for (int T = 1; T <= MaxTrys; T++) {
+        int pixelIndex = skyBox.dist(gen);
+        int u = pixelIndex % skyBox.width, v = pixelIndex / skyBox.width;
+        float phi = PI * (float(v)+0.5f) / float(skyBox.height);
+        float theta = 2.0f * PI * (float(u)+0.5f) / float(skyBox.width);
+        Dir = vec3(-sin(phi) * sin(theta), cos(phi), sin(phi) * cos(theta));
+        float cosPhi = dot(Dir, shapeNormal);
+        if (cosPhi > 0.0f) {
+            light = skyBox.data[pixelIndex] / skyBox.dist.pdf(pixelIndex);
+            if (rand() == 0) {
+                std::cout << "pdf: " << skyBox.dist.pdf(pixelIndex) << std::endl;
+                std::cout << "Dir: " << Dir.x << " " << Dir.y << " " << Dir.z << std::endl;
+                std::cout << "light: " << light.x << " " << light.y << " " << light.z << std::endl;
+                std::cout << "skyBox.data[pixelIndex]: " << skyBox.data[pixelIndex].x << " " << skyBox.data[pixelIndex].y << " " << skyBox.data[pixelIndex].z << std::endl;
+                float Clum = dot(skyBox.data[pixelIndex], RGB_Weight);
+                std::cout << "Clum: " << Clum << std::endl << std::endl;
+            }
+            return;
+        }
+    }
+    Dir = vec3(NAN);
 }
 
 std::vector<LightSample> sampleDirectLight(
         const BSDF &bsdf, const Model &model, Generator &gen, int sampleCnt) {
 
     const vec3 &pos = bsdf.surface.position;
-
-    std::vector<float> weights;
-    getLightObjectWeight(pos, bsdf, model, weights);
-    float totalWeight = 0.0f;
-    for (float weight : weights)
-        totalWeight += weight;
-    if (totalWeight == 0.0f)
-        return {};
-
     std::vector<LightSample> samples;
-    for (int T = 0; T < sampleCnt; T++) {
-        int lightIndex = sample(weights, totalWeight * gen());
-        if (lightIndex == -1)
-            continue;
 
-        float P_lightObject = weights[lightIndex] / totalWeight;
-        auto& lightObject = model.lightObjects[lightIndex];
+    if (model.skyMap.empty()) {
+        std::vector<float> weights;
+        getLightObjectWeight(pos, bsdf, model, weights);
+        float totalWeight = 0.0f;
+        for (float weight : weights)
+            totalWeight += weight;
+        if (totalWeight == 0.0f)
+            return {};
 
-        vec3 lightPos;
-        float faceFactor;
-        sampleLightFace(pos, lightObject, gen, lightPos, faceFactor);
-        if (!isfinite(lightPos))
-            continue;
+        for (int T = 0; T < sampleCnt; T++) {
+            int lightIndex = sample(weights, totalWeight * gen());
+            if (lightIndex == -1)
+                continue;
 
-        vec3 lightDir = normalize(lightPos - pos);
-        float distance = length(lightPos - pos);
-        if (model.rayHit_test({pos, lightDir}, distance - eps_zero))
-            continue;
+            float P_lightObject = weights[lightIndex] / totalWeight;
+            auto& lightObject = model.lightObjects[lightIndex];
 
-        vec3 bsdfPdf = bsdf.getBSDF(lightDir) * faceFactor / P_lightObject * PI;
-        clamp(bsdfPdf);
-        vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
+            vec3 lightPos;
+            float faceFactor;
+            int fails = 0;
+            sampleLightFace(pos, lightObject, gen, lightPos, fails);
+            if (!isfinite(lightPos))
+                continue;
 
-        if (!isfinite(bsdfPdf)) {
-            std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
-            std::cerr << "lightDir: " << lightDir.x << " " << lightDir.y << " " << lightDir.z << std::endl;
-            std::cerr << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
-            std::cerr << "faceFactor: " << faceFactor << std::endl;
-            std::cerr << "P_lightObject: " << P_lightObject << std::endl;
+            vec3 lightDir = normalize(lightPos - pos);
+            float distance = length(lightPos - pos);
+            if (model.rayHit_test({pos, lightDir}, distance - eps_zero))
+                continue;
+
+            vec3 bsdfPdf = bsdf.getBSDF(lightDir) / P_lightObject * PI;
+            clamp(bsdfPdf);
+            vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
+
+            if (!isfinite(bsdfPdf)) {
+                std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
+                std::cerr << "lightDir: " << lightDir.x << " " << lightDir.y << " " << lightDir.z << std::endl;
+                std::cerr << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
+                std::cerr << "faceFactor: " << faceFactor << std::endl;
+                std::cerr << "P_lightObject: " << P_lightObject << std::endl;
+            }
+            samples.emplace_back(bsdfPdf, light, 1.0f / static_cast<float>(sampleCnt*(fails+1)));
         }
-        samples.emplace_back(bsdfPdf, light, 1.0f / static_cast<float>(sampleCnt));
+    } else {
+        for (int T = 0; T < sampleCnt; T++) {
+            vec3 Dir, light;
+            sampleSkyBox(model.skyMap, bsdf.surface.surfaceNormal, gen, Dir, light);
+            if (!isfinite(Dir))
+                continue;
+            if (model.rayHit_test({pos, Dir}, INFINITY))
+                continue;
+            vec3 bsdfPdf = bsdf.getBSDF(Dir) / PI;
+            clamp(bsdfPdf);
+            samples.emplace_back(bsdfPdf, light, 1.0f / static_cast<float>(sampleCnt));
+        }
     }
-
     return samples;
 }

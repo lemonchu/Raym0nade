@@ -5,20 +5,22 @@
 MyConsole::MyConsole() = default;
 
 void MyConsole::createModel(const std::string &model_id) {
-    std::string model_folder, model_name;
-    std::cout << "Enter the model path (e.g., fbx/): ";
-    std::cin >> model_folder;
-    std::cout << "Enter the model name (e.g., model.fbx): ";
-    std::cin >> model_name;
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-
     if (models.find(model_id) != models.end()) {
         std::cout << "Model (" << model_id << ") is already exists." << std::endl;
         return;
     }
+
+    std::string model_folder, model_name, skyMap_name;
+    std::cout << "Enter the model path (e.g., fbx/): ";
+    std::cin >> model_folder;
+    std::cout << "Enter the model name (e.g., model.fbx): ";
+    std::cin >> model_name;
+    std::cout << "Enter the sky map name (e.g., sky.hdr): ";
+    std::cin >> skyMap_name;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     models.emplace(std::piecewise_construct,
                    std::forward_as_tuple(model_id),
-                   std::forward_as_tuple(model_folder, model_name));
+                   std::forward_as_tuple(model_folder, model_name, skyMap_name));
     std::cout << "Model (" << model_id << ") created." << std::endl;
 }
 

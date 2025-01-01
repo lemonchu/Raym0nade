@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <assimp/material.h>
+#include <Python.h>
 #include "geometry.h"
 
 #define MAX_MIPMAP_LEVEL 8
@@ -23,6 +24,7 @@ public:
 };
 
 std::string urlDecode(const std::string &src);
+PyObject *call_image_to_array(const std::string &filename, const std::string &scriptName);
 
 class Material {
 public:

@@ -33,10 +33,11 @@ public:
     std::vector<VertexData> vertexDatas;
     std::vector<LightObject> lightObjects;
     KDT kdt;
-    std::string model_path;
+    std::string model_path, skyMap_path;
+    SkyBox skyMap;
 
     Model();
-    Model(const std::string &model_folder, const std::string &model_name);
+    Model(const std::string &model_folder, const std::string &model_name, const std::string &skyMap_name);
     [[nodiscard]] HitRecord rayHit(Ray ray) const;
     [[nodiscard]] bool rayHit_test(Ray ray, float aimDepth) const;
 };

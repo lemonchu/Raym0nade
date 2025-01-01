@@ -53,4 +53,17 @@ public:
     LightObject();
 };
 
+class SkyBox {
+private:
+    void Init();
+public:
+    int width, height;
+    std::vector<vec3> data;
+    RandomDistribution dist;
+    SkyBox();
+    void load(const std::string &filename);
+    [[nodiscard]] bool empty() const;
+    [[nodiscard]] vec3 get(vec3 dir) const;
+};
+
 #endif // COMPONENT_H
