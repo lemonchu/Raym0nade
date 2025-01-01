@@ -7,8 +7,6 @@ BSDF::BSDF(const vec3 &inDir, const vec3 &hit_position) : inDir(inDir) {
 
 BSDF::BSDF(const vec3 &inDir, const HitInfo &hitInfo) : inDir(inDir), surface(hitInfo) {}
 
-const float PI = 3.14159265358979323846f;
-
 float sqr(float x) { return x*x; }
 
 float clamp(float x, float a, float b) {

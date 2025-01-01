@@ -3,8 +3,9 @@
 #include <stdexcept>
 #include <iostream>
 #include <sstream>
-#include "material.h"
 #include <Python.h>
+#include "material.h"
+#include "geometry.h"
 
 std::string urlDecode(const std::string &src) {
     std::string decoded;
@@ -147,7 +148,7 @@ void ImageData::generateMipmaps() {
     std::cout << map_depth << " levels generated." << std::endl;
 }
 
-PyObject *call_dds_to_array(const std::string &filename) {
+PyObject *call_image_to_array(const std::string &filename, const std::string &scriptName) {
     static bool isInitialized = false;
 
     // Initialize the Python interpreter only once
@@ -162,12 +163,12 @@ PyObject *call_dds_to_array(const std::string &filename) {
         Py_DECREF(path);
     }
 
-    PyObject *pName = PyUnicode_DecodeFSDefault("dds_to_array");
+    PyObject *pName = PyUnicode_DecodeFSDefault(scriptName.c_str());
     PyObject *pModule = PyImport_Import(pName);
     Py_DECREF(pName);
 
     if (pModule != nullptr) {
-        PyObject *pFunc = PyObject_GetAttrString(pModule, "dds_to_array");
+        PyObject *pFunc = PyObject_GetAttrString(pModule, scriptName.c_str());
         if (PyCallable_Check(pFunc)) {
             PyObject *pArgs = PyTuple_Pack(1, PyUnicode_FromString(filename.c_str()));
             PyObject *pValue = PyObject_CallObject(pFunc, pArgs);
@@ -188,7 +189,7 @@ PyObject *call_dds_to_array(const std::string &filename) {
 }
 
 bool Material::loadImageFromDDS(ImageData &imageData, const std::string &filename) {
-    PyObject *pValue = call_dds_to_array(filename);
+    PyObject *pValue = call_image_to_array(filename, "dds_to_array");
 
     if (pValue != nullptr) {
         PyObject *pWidth = PyTuple_GetItem(pValue, 0);
@@ -215,6 +216,115 @@ bool Material::loadImageFromDDS(ImageData &imageData, const std::string &filenam
     }
 
     return true;
+}
+
+ImageDataHDR::ImageDataHDR() : width(0), height(0), sunDir(NAN) {}
+
+void ImageDataHDR::load(const std::string &filename) {
+    std::cout << "Loading HDR image from file: " << filename << std::endl;
+
+    PyObject *pValue = call_image_to_array(filename, "hdr_to_array");
+
+    if (pValue != nullptr) {
+        PyObject *pWidth = PyTuple_GetItem(pValue, 0);
+        PyObject *pHeight = PyTuple_GetItem(pValue, 1);
+        PyObject *pData = PyTuple_GetItem(pValue, 2);
+
+        if (pWidth == Py_None) {
+            std::cerr << "Invalid width in Python object." << std::endl;
+        }
+        if (pHeight == Py_None) {
+            std::cerr << "Invalid height in Python object." << std::endl;
+        }
+        if (pData == Py_None) {
+            std::cerr << "Invalid data in Python object." << std::endl;
+        }
+        if (pWidth != Py_None && pHeight != Py_None && pData != Py_None) {
+            width = PyLong_AsLong(pWidth);
+            height = PyLong_AsLong(pHeight);
+            std::cout << "Image dimensions: " << width << "x" << height << std::endl;
+
+            Py_buffer view;
+            if (PyObject_GetBuffer(pData, &view, PyBUF_SIMPLE) == 0) {
+                float *buffer = static_cast<float*>(view.buf);
+                data.assign(buffer, buffer + view.len / sizeof(float));
+                PyBuffer_Release(&view);
+                std::cout << "Image data loaded successfully." << std::endl;
+            } else {
+                std::cerr << "Failed to get buffer view from Python object." << std::endl;
+            }
+        } else {
+            std::cerr << "Invalid data in Python object." << std::endl;
+        }
+        Py_DECREF(pValue);
+    } else {
+        PyErr_Print();
+        std::cerr << "Failed to call Python function hdr_to_array." << std::endl;
+    }
+
+    InitSunDir();
+    std::cout << "Sun direction initialized." << std::endl;
+}
+
+bool ImageDataHDR::empty() const {
+    return data.empty();
+}
+
+vec3 ImageDataHDR::get(vec3 dir) const {
+    if (data.empty())
+        return vec3(0.0f);
+
+    float theta = atan2(dir.z, dir.x);
+    float phi = acos(dir.y);
+    if (theta < 0.0f) theta += 2.0f * PI;
+
+    int x = static_cast<int>(theta / (2.0f * PI) * width);
+    int y = static_cast<int>(phi / PI * height);
+
+    if (x < 0) x = 0;
+    if (x >= width) x = width - 1;
+    if (y < 0) y = 0;
+    if (y >= height) y = height - 1;
+
+    return vec3(
+            data[(y * width + x) * 3],
+            data[(y * width + x) * 3 + 1],
+            data[(y * width + x) * 3 + 2]
+    );
+}
+
+void ImageDataHDR::InitSunDir() {
+    if (data.empty()) {
+        throw std::runtime_error("Image data is empty");
+    }
+
+    float maxLuminance = 0.0f;
+    int maxIndex = 0;
+
+    for (int i = 0; i < width * height; ++i) {
+        float r = data[i * 3];
+        float g = data[i * 3 + 1];
+        float b = data[i * 3 + 2];
+        float luminance = 0.2126f * r + 0.7152f * g + 0.0722f * b; // Standard luminance calculation
+
+        if (luminance > maxLuminance) {
+            maxLuminance = luminance;
+            maxIndex = i;
+        }
+    }
+
+    int maxX = maxIndex % width;
+    int maxY = maxIndex / width;
+
+    // Convert (maxX, maxY) to cylindrical coordinates
+    float theta = (float(maxX) / width) * 2.0f * PI; // Longitude
+    float phi = (float(maxY) / height) * PI; // Latitude
+
+    sunDir = vec3(
+            sin(phi) * cos(theta),
+            cos(phi),
+            sin(phi) * sin(theta)
+    );
 }
 
 bool Material::loadImageFromPNG(ImageData &imageData, const std::string &filename) {

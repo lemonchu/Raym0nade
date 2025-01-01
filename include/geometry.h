@@ -11,6 +11,7 @@ using vec3 = glm::vec<3, float>;
 using vec4 = glm::vec<4, float>;
 
 constexpr float eps_zero = 1e-4f;
+const float PI = 3.14159265358979323846f;
 
 constexpr vec3 RGB_Weight = vec3(0.3f, 0.6f, 0.1f);
 

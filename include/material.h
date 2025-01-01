@@ -22,6 +22,19 @@ public:
     [[nodiscard]] bool hasTransparentPart() const;
 };
 
+class ImageDataHDR {
+private:
+    void InitSunDir();
+public:
+    int width, height;
+    std::vector<float> data;
+    vec3 sunDir;
+    ImageDataHDR();
+    void load(const std::string &filename);
+    [[nodiscard]] bool empty() const;
+    [[nodiscard]] vec3 get(vec3 dir) const;
+};
+
 std::string urlDecode(const std::string &src);
 
 class Material {
