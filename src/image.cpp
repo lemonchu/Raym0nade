@@ -1,6 +1,7 @@
 #include <vector>
 #include <png.h>
 #include <iostream>
+#include <thread>
 #include "image.h"
 
 RadianceData::RadianceData() : radiance(vec3(0.0f)), Var(0.0f) {}
@@ -140,10 +141,15 @@ void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, i
 }
 
 void Image::filter() {
-    filterRadiance(radiance_Dd, Gbuffer, width, height);
-    filterRadiance(radiance_Ds, Gbuffer, width, height);
-    filterRadiance(radiance_Id, Gbuffer, width, height);
-    filterRadiance(radiance_Is, Gbuffer, width, height);
+    std::thread t1([this]() { filterRadiance(radiance_Dd, Gbuffer, width, height); });
+    std::thread t2([this]() { filterRadiance(radiance_Ds, Gbuffer, width, height); });
+    std::thread t3([this]() { filterRadiance(radiance_Id, Gbuffer, width, height); });
+    std::thread t4([this]() { filterRadiance(radiance_Is, Gbuffer, width, height); });
+
+    t1.join();
+    t2.join();
+    t3.join();
+    t4.join();
 }
 
 void Image::shade(float exposure, int options) {

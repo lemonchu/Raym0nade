@@ -630,26 +630,26 @@ void render_multiThread(Model &model, const RenderArgs &args) {
         image.save((args.savePath + "(" + tag + ").png").c_str());
     };
 
-    exportImage("DiffuseColor", Image::BaseColor, exposure);
-    exportImage("DiffuseColor_FXAA", Image::BaseColor | Image::DoFXAA, exposure);
-    exportImage("shapeNormal", Image::shapeNormal, exposure);
-    exportImage("surfaceNormal", Image::surfaceNormal, exposure);
+    //exportImage("DiffuseColor", Image::BaseColor, exposure);
+    // exportImage("DiffuseColor_FXAA", Image::BaseColor | Image::DoFXAA, exposure);
+    // exportImage("shapeNormal", Image::shapeNormal, exposure);
+    // exportImage("surfaceNormal", Image::surfaceNormal, exposure);
 
-    exportImage("Direct_Diffuse", Image::Direct_Diffuse, exposure);
-    exportImage("Direct_Specular", Image::Direct_Specular, exposure);
-    exportImage("Indirect_Diffuse", Image::Indirect_Diffuse, exposure);
-    exportImage("Indirect_Specular", Image::Indirect_Specular, exposure);
-    exportImage("Raw", Image::Full, exposure);
-    exportImage("Raw_Bloom", Image::Full | Image::DoBloom, exposure);
-    exportImage("Raw_FXAA", Image::Full | Image::DoFXAA, exposure);
+    // exportImage("Direct_Diffuse", Image::Direct_Diffuse, exposure);
+    // exportImage("Direct_Specular", Image::Direct_Specular, exposure);
+    // exportImage("Indirect_Diffuse", Image::Indirect_Diffuse, exposure);
+    // exportImage("Indirect_Specular", Image::Indirect_Specular, exposure);
+    // exportImage("Raw", Image::Full, exposure);
+    // exportImage("Raw_Bloom", Image::Full | Image::DoBloom, exposure);
+    // exportImage("Raw_FXAA", Image::Full | Image::DoFXAA, exposure);
     image.filter();
-    exportImage("Direct_Diffuse_Filter", Image::Direct_Diffuse, exposure);
-    exportImage("Direct_Specular_Filter", Image::Direct_Specular, exposure);
-    exportImage("Indirect_Diffuse_Filter", Image::Indirect_Diffuse, exposure);
-    exportImage("Indirect_Specular_Filter", Image::Indirect_Specular, exposure);
+    // exportImage("Direct_Diffuse_Filter", Image::Direct_Diffuse, exposure);
+    // exportImage("Direct_Specular_Filter", Image::Direct_Specular, exposure);
+    // exportImage("Indirect_Diffuse_Filter", Image::Indirect_Diffuse, exposure);
+    // exportImage("Indirect_Specular_Filter", Image::Indirect_Specular, exposure);
     exportImage("Filter",  Image::Full, exposure);
-    exportImage("Filter_Bloom", Image::Full | Image::DoBloom, exposure);
-    exportImage("Filter_FXAA", Image::Full | Image::DoFXAA, exposure);
+    // exportImage("Filter_Bloom", Image::Full | Image::DoBloom, exposure);
+    // exportImage("Filter_FXAA", Image::Full | Image::DoFXAA, exposure);
 
     std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;
 }
