@@ -6,9 +6,7 @@
 #include "image.h"
 #include "sampling.h"
 
-RenderData::RenderData(int seed) : gen(seed) {
-    C_lightSamples = 0;
-}
+RenderData::RenderData(int seed) : gen(seed), C_lightSamples(0) {}
 
 MediumData::MediumData(float ior, const vec3 &absorb) : ior(ior), absorb(absorb) {}
 
@@ -40,7 +38,7 @@ vec3 Medium::absorb() const {
 }
 
 int Medium::size() const {
-    return static_cast<int>(mediums.size());
+    return int(mediums.size());
 }
 
 void calc_dPdxy(const Ray &ray, float hit_t, const vec3 &normal, const RayDifferential &base_diff,
@@ -426,8 +424,7 @@ void sampleIndirectLightFromFirstIntersection(
 }
 
 void sampleDirectLightFromFirstIntersection(const HitInfo &hitInfo, const vec3 &origin, const Model &model, int spp,
-                                            RenderData &renderData, RadianceData &radiance_Dd,
-                                            RadianceData &radiance_Ds) {
+                                            RenderData &renderData, RadianceData &radiance_Dd, RadianceData &radiance_Ds) {
 
     if (!isfinite(hitInfo.position) || length(hitInfo.emission) > 0)
         return; // 暂不计入直接光照
@@ -492,6 +489,13 @@ void renderPixel(const Model &model, const RenderArgs &args,
     vec3 hit_dPdx, hit_dPdy;
     getHitInfo(hit, ray, base_diff, hit_dPdx, hit_dPdy, Gbuffer);
     bool opacity = (Gbuffer.opacity > 1.0f - eps_zero);
+
+    vec3 sav_baseColor = Gbuffer.baseColor;
+    float Clum = dot(Gbuffer.baseColor, RGB_Weight);
+    if (Clum < 5e-3 || length(Gbuffer.baseColor / Clum - vec3(1.0f)) < 5e-3)
+        Gbuffer.baseColor[0] += 1e-2;
+    // 加入微弱的红色，防止纯黑白，便于分离 baseColor 和 specular(White) 项
+
     static const int MultiSampleForRefraction = 16;
     const int
             spp_direct = args.spp * args.P_Direct,
@@ -532,10 +536,10 @@ void renderPixel(const Model &model, const RenderArgs &args,
     for (const auto &sample: samples)
         meanClum += dot(sample.bsdfPdf * sample.light, RGB_Weight) * sample.weight;
 
-    static const float clampThreshold = 16.0f;
+    static const float clampThreshold = 12.0f;
     for (auto &sample: samples) {
-        float Clum = dot(sample.bsdfPdf * sample.light, RGB_Weight) * sample.weight;
-        if (Clum / (meanClum - Clum + eps_zero) > clampThreshold)
+        float Clum = dot(sample.bsdfPdf*sample.light, RGB_Weight) * sample.weight;
+        if (Clum/(meanClum - Clum + eps_zero) > clampThreshold)
             continue;
         accumulateInwardRadiance(
                 Gbuffer.opacity < eps_zero ? vec3(0.0f) : Gbuffer.baseColor,
@@ -544,11 +548,11 @@ void renderPixel(const Model &model, const RenderArgs &args,
     }
     calcVar(radiance_Id, exposure);
     calcVar(radiance_Is, exposure);
+    Gbuffer.baseColor = sav_baseColor;
 }
 
 struct PixelPos {
     int x, y;
-
     PixelPos(int x, int y) : x(x), y(y) {}
 };
 

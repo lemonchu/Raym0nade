@@ -8,22 +8,20 @@ const float SUBPIXEL_QUALITY = 0.75f;
 const int QUALITY = 12;
 
 void Image::FXAA() {
-    const vec3 *pixel_data = pixelarray;
 
-    // Copy the data to a new array to avoid modifying the original data
-    vec3 *data = new vec3[width * height];
-    for (int y = 0; y < height; y++)
-        for (int x = 0; x < width; x++)
-            data[y * width + x] = clamp(pixel_data[y * width + x], 0.0f, 1.0f);
-
+    vec3 *data = pixelarray;
     vec3 *output = new vec3[width * height];
 
-    auto getLuminance = [](const vec3 &rgb) -> float {
+    auto getLuminance = [](const vec3& rgb) -> float {
         return dot(rgb, RGB_Weight);
     };
 
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
+    for(int y = 0; y < height; y++)
+        for(int x = 0; x < width; x++)
+            data[y * width + x] = glm::clamp(data[y * width + x], 0.0f, 1.0f);
+
+    for(int y = 0; y < height; y++) {
+        for(int x = 0; x < width; x++) {
             float lumaM = getLuminance(data[y * width + x]);
             float lumaN = y > 0 ? getLuminance(data[(y - 1) * width + x]) : lumaM;
             float lumaS = y < height - 1 ? getLuminance(data[(y + 1) * width + x]) : lumaM;
@@ -101,6 +99,5 @@ void Image::FXAA() {
     }
 
     std::memcpy(pixelarray, output, width * height * sizeof(vec3));
-    delete[] data;
     delete[] output;
 }
