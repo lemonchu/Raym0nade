@@ -27,14 +27,14 @@ void Medium::erase(int id) {
 
 float Medium::ior() const {
     float ior = 1.0f;
-    for (const auto &medium : mediums)
+    for (const auto &medium: mediums)
         ior = std::max(ior, medium.second.ior);
     return ior;
 }
 
 vec3 Medium::absorb() const {
     vec3 absorb = vec3(1.0f);
-    for (const auto &medium : mediums)
+    for (const auto &medium: mediums)
         absorb *= medium.second.absorb;
     return absorb;
 }
@@ -44,16 +44,16 @@ int Medium::size() const {
 }
 
 void calc_dPdxy(const Ray &ray, float hit_t, const vec3 &normal, const RayDifferential &base_diff,
-               vec3 &hit_dPdx, vec3 &hit_dPdy) {
-    float dtdx = - dot(base_diff.dPdx + hit_t * base_diff.dDdx, normal) / dot(ray.direction, normal);
-    float dtdy = - dot(base_diff.dPdy + hit_t * base_diff.dDdy, normal) / dot(ray.direction, normal);
+                vec3 &hit_dPdx, vec3 &hit_dPdy) {
+    float dtdx = -dot(base_diff.dPdx + hit_t * base_diff.dDdx, normal) / dot(ray.direction, normal);
+    float dtdy = -dot(base_diff.dPdy + hit_t * base_diff.dDdy, normal) / dot(ray.direction, normal);
     hit_dPdx = base_diff.dPdx + dtdx * ray.direction + hit_t * base_diff.dDdx;
     hit_dPdy = base_diff.dPdy + dtdy * ray.direction + hit_t * base_diff.dDdy;
 }
 
 const vec3 hit_dNdx = glm::vec3{0.0f}, hit_dNdy = glm::vec3{0.0f}; // Derivatives of the normal
 void calc_dDdxy(const Ray &ray, const vec3 &normal, const RayDifferential &base_diff,
-               vec3 &hit_dDdx, vec3 &hit_dDdy) {
+                vec3 &hit_dDdx, vec3 &hit_dDdy) {
 
     float dDNdx = dot(hit_dNdx, ray.direction) + dot(base_diff.dDdx, normal);
     float dDNdy = dot(hit_dNdy, ray.direction) + dot(base_diff.dDdy, normal);
@@ -101,19 +101,19 @@ void calcEta(Medium &mediums, HitInfo &hitInfo) { // 计算相对折射率
 }
 
 void scaling(std::vector<LightSample> &samples, float factor) {
-    for (auto &sample : samples)
+    for (auto &sample: samples)
         sample.bsdfPdf *= factor;
 }
 
 void passBsdf(std::vector<LightSample> &samples, const vec3 &bsdfPdf) {
-    for (auto &sample : samples) {
+    for (auto &sample: samples) {
         sample.light *= sample.bsdfPdf;
         sample.bsdfPdf = bsdfPdf;
     }
 }
 
 void mulWeight(std::vector<LightSample> &samples, float weight) {
-    for (auto &sample : samples)
+    for (auto &sample: samples)
         sample.weight *= weight;
 }
 
@@ -125,7 +125,7 @@ std::vector<LightSample> sampleRay
          RenderData &renderData, float roughnessFactor, bool excludeDirectLight, int depth) {
 
     static const int maxRayDepth = 16;
-    static const int sampleCount[maxRayDepth+1] = {0,1,2,2,3,3,3,4,4,4,4,5,5,5,5,5,6};
+    static const int sampleCount[maxRayDepth + 1] = {0, 1, 2, 2, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 5, 6};
 
     HitRecord hit = model.rayHit(ray);
     if (hit.t_max == INFINITY) {
@@ -268,7 +268,7 @@ std::vector<LightSample> sampleRay
             newDir = ray.direction;
             bsdfPdf = vec3(1.0f);
             next_diff = base_diff;
-        }else {
+        } else {
             bsdf.sampleBTDF(renderData.gen, newDir, bsdfPdf, fails);
             bsdfPdf *= (1.0f - F);
             next_diff = base_diff;
@@ -302,14 +302,14 @@ std::vector<LightSample> sampleRay
 
     std::vector<LightSample> samples =
             sampleRay(newRay, next_diff, model,
-                      renderData, roughnessFactor, doDirectLightSample, depth+1);
+                      renderData, roughnessFactor, doDirectLightSample, depth + 1);
 
     if (!isfinite(bsdfPdf)) {
         std::cout << "bsdfPdf is NaN! " << depth << std::endl;
     }
     passBsdf(samples, bsdfPdf);
     if (fails > 0)
-        mulWeight(samples, 1.0f / static_cast<float>(1+fails));
+        mulWeight(samples, 1.0f / static_cast<float>(1 + fails));
 
     return samples;
 }
@@ -400,11 +400,11 @@ void sampleIndirectLightFromFirstIntersection(
 
     std::vector<LightSample> samplesNew =
             sampleRay(newRay, next_diff, model,
-                       renderData, roughnessFactor, true, 1);
+                      renderData, roughnessFactor, true, 1);
 
     passBsdf(samplesNew, bsdfPdf);
     if (fails > 0)
-        mulWeight(samplesNew, 1.0f / static_cast<float>(1+fails));
+        mulWeight(samplesNew, 1.0f / static_cast<float>(1 + fails));
 
 #ifdef DEBUG_sampleRay
     for (const auto &sample : samplesNew) {
@@ -421,12 +421,13 @@ void sampleIndirectLightFromFirstIntersection(
         std::cerr << "bsdfPdf is NAN! (final)" << std::endl;
     }
 
-    for (const auto &sample : samplesNew)
+    for (const auto &sample: samplesNew)
         samples.push_back(sample);
 }
 
 void sampleDirectLightFromFirstIntersection(const HitInfo &hitInfo, const vec3 &origin, const Model &model, int spp,
-                                            RenderData &renderData, RadianceData &radiance_Dd, RadianceData &radiance_Ds) {
+                                            RenderData &renderData, RadianceData &radiance_Dd,
+                                            RadianceData &radiance_Ds) {
 
     if (!isfinite(hitInfo.position) || length(hitInfo.emission) > 0)
         return; // 暂不计入直接光照
@@ -435,7 +436,7 @@ void sampleDirectLightFromFirstIntersection(const HitInfo &hitInfo, const vec3 &
     BSDF bsdf(-inDir, hitInfo);
     std::vector<LightSample> samples =
             sampleDirectLight(bsdf, model, renderData.gen, spp);
-    for (const auto &sample : samples)
+    for (const auto &sample: samples)
         accumulateInwardRadiance(hitInfo.baseColor, sample, radiance_Dd, radiance_Ds);
 }
 
@@ -489,7 +490,7 @@ void renderPixel(const Model &model, const RenderArgs &args,
 
     Gbuffer.position = ray.origin + hit.t_max * ray.direction;
     vec3 hit_dPdx, hit_dPdy;
-    getHitInfo(hit, ray, base_diff,hit_dPdx, hit_dPdy, Gbuffer);
+    getHitInfo(hit, ray, base_diff, hit_dPdx, hit_dPdy, Gbuffer);
     bool opacity = (Gbuffer.opacity > 1.0f - eps_zero);
     static const int MultiSampleForRefraction = 16;
     const int
@@ -523,18 +524,18 @@ void renderPixel(const Model &model, const RenderArgs &args,
                 Gbuffer, args.position, base_diff, model,
                 renderData, samples);
     if (samples.empty())
-        return ;
+        return;
 
     mulWeight(samples, 1.0f / static_cast<float>(spp_indirect));
 
     float meanClum = 0.0f;
-    for (const auto &sample : samples)
-        meanClum += dot(sample.bsdfPdf*sample.light, RGB_Weight) * sample.weight;
+    for (const auto &sample: samples)
+        meanClum += dot(sample.bsdfPdf * sample.light, RGB_Weight) * sample.weight;
 
     static const float clampThreshold = 16.0f;
-    for (auto &sample : samples) {
-        float Clum = dot(sample.bsdfPdf*sample.light, RGB_Weight) * sample.weight;
-        if (Clum/(meanClum - Clum + eps_zero) > clampThreshold)
+    for (auto &sample: samples) {
+        float Clum = dot(sample.bsdfPdf * sample.light, RGB_Weight) * sample.weight;
+        if (Clum / (meanClum - Clum + eps_zero) > clampThreshold)
             continue;
         accumulateInwardRadiance(
                 Gbuffer.opacity < eps_zero ? vec3(0.0f) : Gbuffer.baseColor,
@@ -547,6 +548,7 @@ void renderPixel(const Model &model, const RenderArgs &args,
 
 struct PixelPos {
     int x, y;
+
     PixelPos(int x, int y) : x(x), y(y) {}
 };
 
@@ -567,13 +569,13 @@ struct TaskQueue {
 
 void render(const Model &model, const RenderArgs &args,
             RenderData &renderData, Image &image, const std::vector<PixelPos> &pixels) {
-    for (const auto &pixel : pixels)
+    for (const auto &pixel: pixels)
         renderPixel(model, args, renderData, image, pixel.x, pixel.y);
 }
 
 void renderWorker(const Model &model, const RenderArgs &args,
                   TaskQueue &taskQueue, RenderData &renderData, Image &image) {
-    while(true) {
+    while (true) {
         std::vector<PixelPos> pixels;
         int flag = taskQueue.getTask(pixels);
         if (flag == -1)
@@ -614,11 +616,11 @@ void render_multiThread(Model &model, const RenderArgs &args) {
         threadPool.emplace_back([&](int index) {
             renderWorker(model, args, taskQueue, datas[index], image);
         }, i);
-    for (auto &thread : threadPool)
+    for (auto &thread: threadPool)
         thread.join();
 
     int C_lightSamples = 0;
-    for (const auto &data : datas)
+    for (const auto &data: datas)
         C_lightSamples += data.C_lightSamples;
 
     std::cout << "Rendering completed in " << clock() - startTime << " ms." << std::endl;
@@ -630,26 +632,26 @@ void render_multiThread(Model &model, const RenderArgs &args) {
         image.save((args.savePath + "(" + tag + ").png").c_str());
     };
 
-    //exportImage("DiffuseColor", Image::BaseColor, exposure);
-    // exportImage("DiffuseColor_FXAA", Image::BaseColor | Image::DoFXAA, exposure);
-    // exportImage("shapeNormal", Image::shapeNormal, exposure);
-    // exportImage("surfaceNormal", Image::surfaceNormal, exposure);
+    exportImage("DiffuseColor", Image::BaseColor, exposure);
+    exportImage("DiffuseColor_FXAA", Image::BaseColor | Image::DoFXAA, exposure);
+    exportImage("shapeNormal", Image::shapeNormal, exposure);
+    exportImage("surfaceNormal", Image::surfaceNormal, exposure);
 
-    // exportImage("Direct_Diffuse", Image::Direct_Diffuse, exposure);
-    // exportImage("Direct_Specular", Image::Direct_Specular, exposure);
-    // exportImage("Indirect_Diffuse", Image::Indirect_Diffuse, exposure);
-    // exportImage("Indirect_Specular", Image::Indirect_Specular, exposure);
-    // exportImage("Raw", Image::Full, exposure);
-    // exportImage("Raw_Bloom", Image::Full | Image::DoBloom, exposure);
-    // exportImage("Raw_FXAA", Image::Full | Image::DoFXAA, exposure);
+    exportImage("Direct_Diffuse", Image::Direct_Diffuse, exposure);
+    exportImage("Direct_Specular", Image::Direct_Specular, exposure);
+    exportImage("Indirect_Diffuse", Image::Indirect_Diffuse, exposure);
+    exportImage("Indirect_Specular", Image::Indirect_Specular, exposure);
+    exportImage("Raw", Image::Full, exposure);
+    exportImage("Raw_Bloom", Image::Full | Image::DoBloom, exposure);
+    exportImage("Raw_FXAA", Image::Full | Image::DoFXAA, exposure);
     image.filter();
-    // exportImage("Direct_Diffuse_Filter", Image::Direct_Diffuse, exposure);
-    // exportImage("Direct_Specular_Filter", Image::Direct_Specular, exposure);
-    // exportImage("Indirect_Diffuse_Filter", Image::Indirect_Diffuse, exposure);
-    // exportImage("Indirect_Specular_Filter", Image::Indirect_Specular, exposure);
-    exportImage("Filter",  Image::Full, exposure);
-    // exportImage("Filter_Bloom", Image::Full | Image::DoBloom, exposure);
-    // exportImage("Filter_FXAA", Image::Full | Image::DoFXAA, exposure);
+    exportImage("Direct_Diffuse_Filter", Image::Direct_Diffuse, exposure);
+    exportImage("Direct_Specular_Filter", Image::Direct_Specular, exposure);
+    exportImage("Indirect_Diffuse_Filter", Image::Indirect_Diffuse, exposure);
+    exportImage("Indirect_Specular_Filter", Image::Indirect_Specular, exposure);
+    exportImage("Filter", Image::Full, exposure);
+    exportImage("Filter_Bloom", Image::Full | Image::DoBloom, exposure);
+    exportImage("Filter_FXAA", Image::Full | Image::DoFXAA, exposure);
 
     std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;
 }

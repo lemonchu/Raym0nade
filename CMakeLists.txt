@@ -18,15 +18,23 @@ include_directories(
 file(GLOB_RECURSE PROJECT_SOURCES "src/*.cpp")
 
 add_executable(Demo main.cpp ${PROJECT_SOURCES})
+add_executable(FXAA fxaa.cpp ${PROJECT_SOURCES})
 
 # Set the working directory to the root directory
-set_target_properties(Demo PROPERTIES
+set_target_properties(Demo FXAA PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
 target_link_libraries(Demo PUBLIC
+        assimp::assimp
+        PNG::PNG
+        ZLIB::ZLIB
+        Python3::Python
+)
+
+target_link_libraries(FXAA PUBLIC
         assimp::assimp
         PNG::PNG
         ZLIB::ZLIB
