@@ -571,6 +571,10 @@ void accumulateInwardRadiance(const vec3 &baseColor, const LightSample &sample,
     if (length(sample.light) < eps_zero)
         return;
     vec3 baseColor0 = normalize(baseColor);
+    if (length(baseColor) < eps_zero) {
+        accumulateInwardRadiance_basic(radiance_s, sample.light * sample.bsdfPdf, sample.weight);
+        return;
+    }
     static const vec3 White = normalize(vec3(1.0f));
     float XdotY = dot(baseColor0, White);
     if (XdotY > 0.99f) {
