@@ -41,6 +41,8 @@ public:
     Photo(int width, int height);
     Photo(const char* file_name);
 
+    void spatialClamp();
+
     void filter();
 
     void shade(int options);

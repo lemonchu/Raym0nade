@@ -535,7 +535,7 @@ void renderPixel(const Model &model, const RenderArgs &args,
     for (const auto &sample: samples)
         meanClum += dot(sample.bsdfPdf * sample.light, RGB_Weight) * sample.weight;
 
-    static const float clampThreshold = 12.0f;
+    static const float clampThreshold = 16.0f;
     for (auto &sample: samples) {
         float Clum = dot(sample.bsdfPdf*sample.light, RGB_Weight) * sample.weight;
         if (Clum/(meanClum - Clum + eps_zero) > clampThreshold)
@@ -643,6 +643,7 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     exportImage("shapeNormal", Photo::shapeNormal);
     exportImage("surfaceNormal", Photo::surfaceNormal);
 
+    photo.spatialClamp();
     exportImage("Direct_Diffuse", Photo::Direct_Diffuse);
     exportImage("Direct_Specular", Photo::Direct_Specular);
     exportImage("Indirect_Diffuse", Photo::Indirect_Diffuse);

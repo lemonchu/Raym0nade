@@ -27,6 +27,60 @@ Photo::~Photo() {
     delete[] radiance_Is;
 }
 
+void clamp(RadianceData *radiance, int width, int height) {
+    const int filterRadius = 3;
+    const float h[7] = {0.03125, 0.109375, 0.21875, 0.28125, 0.21875, 0.109375, 0.03125};
+    std::vector<float> Clum(width * height, 0.0f);
+    std::vector<float> blurredClum1(width * height, 0.0f);
+    std::vector<float> blurredClum2(width * height, 0.0f);
+
+    // Calculate luminance for each pixel
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+            Clum[y * width + x] = dot(radiance[y * width + x].radiance, RGB_Weight);
+
+    // Apply horizontal 7x1 Gaussian blur to the luminance values
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            float sum = 0.0f;
+            for (int dx = -filterRadius; dx <= filterRadius; ++dx) {
+                int nx = x + dx;
+                if (nx >= 0 && nx < width)
+                    sum += Clum[y * width + nx] * h[dx + filterRadius];
+            }
+            blurredClum1[y * width + x] = sum;
+        }
+
+    // Apply vertical 1x7 Gaussian blur to the luminance values
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            float sum = 0.0f;
+            for (int dy = -filterRadius; dy <= filterRadius; ++dy) {
+                int ny = y + dy;
+                if (ny >= 0 && ny < height)
+                    sum += blurredClum1[ny * width + x] * h[dy + filterRadius];
+            }
+            blurredClum2[y * width + x] = sum;
+        }
+
+    static const float clampThreshold = 36.0f;
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            float &lum = Clum[y * width + x];
+            float blurredLum =
+                    blurredClum2[y * width + x] - h[filterRadius] * h[filterRadius] * lum;
+            if (lum > clampThreshold * blurredLum)
+                radiance[y * width + x].radiance *= blurredLum / (lum + eps_zero) / (1.0f - h[filterRadius] * h[filterRadius]);
+        }
+}
+
+void Photo::spatialClamp() {
+    clamp(radiance_Dd, width, height);
+    clamp(radiance_Ds, width, height);
+    clamp(radiance_Id, width, height);
+    clamp(radiance_Is, width, height);
+}
+
 void filterVar(RadianceData *radiance, int width, int height) {
     static const int fliterRadius = 1;
     static const float h[3] = {0.25, 0.5, 0.25};
