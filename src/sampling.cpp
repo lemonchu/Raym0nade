@@ -440,12 +440,9 @@ void sampleLightFace(const vec3 &pos, const LightObject &lightObject,
         const Face& lightFace = lightObject.faces[faceIndex];
         float cosPhi;
         generateRandomPointInLightFace(lightFace, pos, gen, lightPos, cosPhi);
-        if (cosPhi > 0.0f) {
-            if (gen() < cosPhi)
-                return;
-            else
-                fails++;
-        }
+        if (cosPhi > 0.0f && gen() < cosPhi)
+            return;
+        fails++;
     }
     lightPos = vec3(NAN);
 }
@@ -502,9 +499,9 @@ std::vector<LightSample> sampleDirectLight(
             if (model.rayHit_test({pos, lightDir}, distance - eps_zero))
                 continue;
 
-            vec3 bsdfPdf = bsdf.getBSDF(lightDir) / P_lightObject * PI;
+            vec3 bsdfPdf = bsdf.getBSDF(lightDir);
             clamp(bsdfPdf);
-            vec3 light = lightObject.power * lightObject.color / (distance * distance + eps_lightRadius);
+            vec3 light = 2.0f * PI * lightObject.power * lightObject.color / (distance * distance + eps_lightRadius) / P_lightObject;
 
             if (!isfinite(bsdfPdf)) {
                 std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
@@ -523,7 +520,7 @@ std::vector<LightSample> sampleDirectLight(
                 continue;
             if (model.rayHit_test({pos, Dir}, INFINITY))
                 continue;
-            vec3 bsdfPdf = bsdf.getBSDF(Dir) / PI;
+            vec3 bsdfPdf = bsdf.getBSDF(Dir);
             clamp(bsdfPdf);
             samples.emplace_back(bsdfPdf, light, 1.0f / static_cast<float>(sampleCnt));
         }

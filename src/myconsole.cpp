@@ -30,46 +30,38 @@ void MyConsole::createRenderArgs(const std::string &str) {
         return;
     }
 
-    vec3 direction, right, up;
-    float D, R, U, accuracy, exposure, P_Direct;
-    int width, height, spp, threads;
-    std::string savePath;
+    RenderArgs &arg = renderArgs[str];
+
+    auto read = [](vec3 &v) {
+        std::cin >> v.x >> v.y >> v.z;
+    };
 
     std::cout << "direction (x,y,z): ";
-    std::cin >> direction.x >> direction.y >> direction.z;
+    read(arg.direction);
 
     std::cout << "right (x,y,z): ";
-    std::cin >> right.x >> right.y >> right.z;
+    read(arg.right);
 
     std::cout << "up (x,y,z): ";
-    std::cin >> up.x >> up.y >> up.z;
+    read(arg.up);
 
     std::cout << "position (D,R,U): ";
+    float D, R, U;
     std::cin >> D >> R >> U;
-    glm::vec3 position = D * direction + R * right + U * up;
+    arg.position = D * arg.direction + R * arg.right + U * arg.up;
 
-    std::cout << "accuracy: ";
-    std::cin >> accuracy;
-
-    std::cout << "exposure: ";
-    std::cin >> exposure;
+    std::cout << "accuracy, focus, CoC, exposure: ";
+    std::cin >> arg.accuracy >> arg.focus >> arg.CoC >> arg.exposure;
 
     std::cout << "width, height: ";
-    std::cin >> width >> height;
+    std::cin >> arg.width >> arg.height;
 
-    std::cout << "spp: ";
-    std::cin >> spp;
-
-    std::cout << "threads: ";
-    std::cin >> threads;
-
-    std::cout << "P_Direct: ";
-    std::cin >> P_Direct;
+    std::cout << "spp, threads, P_Direct: : ";
+    std::cin >> arg.spp >> arg.threads >> arg.P_Direct;
 
     std::cout << "savePath: ";
-    std::cin >> savePath;
+    std::cin >> arg.savePath;
 
-    renderArgs[str] = {position, direction, up, right, accuracy, exposure, P_Direct, width, height, spp, threads, savePath};
     std::cout << "RenderArgs (" << str << ") created." << std::endl;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 }

@@ -269,7 +269,6 @@ std::vector<LightSample> sampleRay
         } else {
             bsdf.sampleBTDF(renderData.gen, newDir, bsdfPdf, fails);
             bsdfPdf *= (1.0f - F);
-            next_diff = base_diff;
             // Todo: 折射的 RayDifferential 计算
             next_diff = base_diff;
         }
@@ -447,7 +446,7 @@ void initRayDiff(const vec3 &d, const RenderArgs &args, RayDifferential &base_di
 }
 
 void renderPixel(const Model &model, const RenderArgs &args,
-                 RenderData &renderData, Image &image, int x, int y) {
+                 RenderData &renderData, Photo &image, int x, int y) {
     //renderData.gen.mt.seed(x^y);
 #ifdef DEBUG_sampleRay
     if (x!=373||y!=30)
@@ -491,14 +490,14 @@ void renderPixel(const Model &model, const RenderArgs &args,
     bool opacity = (Gbuffer.opacity > 1.0f - eps_zero);
 
     vec3 sav_baseColor = Gbuffer.baseColor;
-    float Clum = dot(Gbuffer.baseColor, RGB_Weight);
-    if (Clum < 5e-3 || length(Gbuffer.baseColor / Clum - vec3(1.0f)) < 5e-3)
+    float Clum0 = dot(Gbuffer.baseColor, RGB_Weight);
+    if (Clum0 < 5e-3 || length(Gbuffer.baseColor / Clum0 - vec3(1.0f)) < 5e-3)
         Gbuffer.baseColor[0] += 1e-2;
     // 加入微弱的红色，防止纯黑白，便于分离 baseColor 和 specular(White) 项
 
     static const int MultiSampleForRefraction = 16;
     const int
-            spp_direct = args.spp * args.P_Direct,
+            spp_direct = int(float(args.spp) * args.P_Direct),
             spp_indirect = (args.spp - spp_direct) * (opacity ? 1 : MultiSampleForRefraction);
     const float
             exposure = args.exposure;
@@ -559,6 +558,9 @@ struct PixelPos {
 struct TaskQueue {
     std::vector<std::vector<PixelPos>> tasks;
     std::mutex mtx;
+    int beginTime;
+
+    TaskQueue() : beginTime(clock()) {}
 
     int getTask(std::vector<PixelPos> &task) {
         std::lock_guard<std::mutex> lock(mtx);
@@ -566,19 +568,19 @@ struct TaskQueue {
             return -1;
         task = tasks.back();
         tasks.pop_back();
-        std::cout << "Task: " << tasks.size() << std::endl;
+        std::cout << "Task: " << tasks.size() << " time(" << clock() - beginTime << ")" << std::endl;
         return 0;
     }
 };
 
 void render(const Model &model, const RenderArgs &args,
-            RenderData &renderData, Image &image, const std::vector<PixelPos> &pixels) {
+            RenderData &renderData, Photo &image, const std::vector<PixelPos> &pixels) {
     for (const auto &pixel: pixels)
         renderPixel(model, args, renderData, image, pixel.x, pixel.y);
 }
 
 void renderWorker(const Model &model, const RenderArgs &args,
-                  TaskQueue &taskQueue, RenderData &renderData, Image &image) {
+                  TaskQueue &taskQueue, RenderData &renderData, Photo &image) {
     while (true) {
         std::vector<PixelPos> pixels;
         int flag = taskQueue.getTask(pixels);
@@ -594,12 +596,12 @@ void render_multiThread(Model &model, const RenderArgs &args) {
             width = args.width,
             height = args.height,
             threads = args.threads;
-    const vec3 position = args.position;
-    const float exposure = args.exposure;
 
     std::cout << "Rendering started with " << threads << " threads." << std::endl;
 
-    Image image(width, height);
+    Photo photo(width, height);
+    photo.exposure = args.exposure;
+
     TaskQueue taskQueue;
     for (int y = 0; y < height; y++) {
         std::vector<PixelPos> task;
@@ -618,7 +620,7 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     threadPool.reserve(threads);
     for (int i = 0; i < threads; i++)
         threadPool.emplace_back([&](int index) {
-            renderWorker(model, args, taskQueue, datas[index], image);
+            renderWorker(model, args, taskQueue, datas[index], photo);
         }, i);
     for (auto &thread: threadPool)
         thread.join();
@@ -631,31 +633,44 @@ void render_multiThread(Model &model, const RenderArgs &args) {
     std::cout << "Direct light samples: " << C_lightSamples << std::endl;
 
     auto exportImage = [&]
-            (const std::string &tag, int shadeOptions, float exposure) {
-        image.postProcessing(shadeOptions, exposure);
-        image.save((args.savePath + "(" + tag + ").png").c_str());
+            (const std::string &tag, int shadeOptions) {
+        photo.postProcessing(shadeOptions);
+        photo.save((args.savePath + "(" + tag + ").png").c_str());
     };
 
-    exportImage("DiffuseColor", Image::BaseColor, exposure);
-    exportImage("DiffuseColor_FXAA", Image::BaseColor | Image::DoFXAA, exposure);
-    exportImage("shapeNormal", Image::shapeNormal, exposure);
-    exportImage("surfaceNormal", Image::surfaceNormal, exposure);
+    exportImage("DiffuseColor", Photo::BaseColor);
+    exportImage("DiffuseColor_FXAA", Photo::BaseColor | Photo::DoFXAA);
+    exportImage("shapeNormal", Photo::shapeNormal);
+    exportImage("surfaceNormal", Photo::surfaceNormal);
 
-    exportImage("Direct_Diffuse", Image::Direct_Diffuse, exposure);
-    exportImage("Direct_Specular", Image::Direct_Specular, exposure);
-    exportImage("Indirect_Diffuse", Image::Indirect_Diffuse, exposure);
-    exportImage("Indirect_Specular", Image::Indirect_Specular, exposure);
-    exportImage("Raw", Image::Full, exposure);
-    exportImage("Raw_Bloom", Image::Full | Image::DoBloom, exposure);
-    exportImage("Raw_FXAA", Image::Full | Image::DoFXAA, exposure);
-    image.filter();
-    exportImage("Direct_Diffuse_Filter", Image::Direct_Diffuse, exposure);
-    exportImage("Direct_Specular_Filter", Image::Direct_Specular, exposure);
-    exportImage("Indirect_Diffuse_Filter", Image::Indirect_Diffuse, exposure);
-    exportImage("Indirect_Specular_Filter", Image::Indirect_Specular, exposure);
-    exportImage("Filter", Image::Full, exposure);
-    exportImage("Filter_Bloom", Image::Full | Image::DoBloom, exposure);
-    exportImage("Filter_FXAA", Image::Full | Image::DoFXAA, exposure);
+    exportImage("Direct_Diffuse", Photo::Direct_Diffuse);
+    exportImage("Direct_Specular", Photo::Direct_Specular);
+    exportImage("Indirect_Diffuse", Photo::Indirect_Diffuse);
+    exportImage("Indirect_Specular", Photo::Indirect_Specular);
+    exportImage("Raw", Photo::Full);
+    exportImage("Raw_Bloom", Photo::Full | Photo::DoBloom);
+    exportImage("Raw_FXAA", Photo::Full | Photo::DoFXAA);
+    exportImage("Raw_Bloom_FXAA", Photo::Full | Photo::DoBloom | Photo::DoFXAA);
+    photo.filter();
+    exportImage("Direct_Diffuse_Filter", Photo::Direct_Diffuse);
+    exportImage("Direct_Specular_Filter", Photo::Direct_Specular);
+    exportImage("Indirect_Diffuse_Filter", Photo::Indirect_Diffuse);
+    exportImage("Indirect_Specular_Filter", Photo::Indirect_Specular);
+    exportImage("Filter", Photo::Full);
+    exportImage("Filter_Bloom", Photo::Full | Photo::DoBloom);
+    exportImage("Filter_FXAA", Photo::Full | Photo::DoFXAA);
+    exportImage("Filter_Bloom_FXAA", Photo::Full | Photo::DoBloom | Photo::DoFXAA);
+
+    if (args.CoC > eps_zero) {
+        photo.focus = args.focus;
+        photo.CoC = args.CoC;
+        photo.cameraPosition = args.position;
+        exportImage("BaseColor_DepthFieldBlur", Photo::BaseColor | Photo::DoDepthFieldBlur);
+        exportImage("Filter_DepthFieldBlur", Photo::Full | Photo::DoDepthFieldBlur);
+        exportImage("Filter_DepthFieldBlur_Bloom", Photo::Full | Photo::DoDepthFieldBlur | Photo::DoBloom);
+        exportImage("Filter_DepthFieldBlur_FXAA", Photo::Full | Photo::DoDepthFieldBlur | Photo::DoFXAA);
+        exportImage("Filter_DepthFieldBlur_Bloom_FXAA", Photo::Full | Photo::DoDepthFieldBlur | Photo::DoBloom | Photo::DoFXAA);
+    }
 
     std::cout << "Post processing finished. Total: " << clock() - startTime << " ms." << std::endl;
 }

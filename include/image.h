@@ -12,7 +12,7 @@ struct RadianceData {
     RadianceData();
 };
 
-class Image {
+class Photo {
 public:
     enum ShadeOption {
         BaseColor = 1,
@@ -30,30 +30,35 @@ public:
         Full = DirectLight | IndirectLight | Diffuse | Specular | BaseColor | Emission,
         DoBloom = 256,
         DoFXAA = 512,
+        DoDepthFieldBlur = 1024
     };
     int width, height;
+    float exposure, focus, CoC;
+    vec3 cameraPosition;
     HitInfo *Gbuffer;
     RadianceData *radiance_Dd, *radiance_Ds, *radiance_Id, *radiance_Is;
     vec3 *pixelarray;
-    Image(int width, int height);
-    Image(const char* file_name);
+    Photo(int width, int height);
+    Photo(const char* file_name);
 
     void filter();
 
-    void shade(float exposure, int options);
-
-    void FXAA();
+    void shade(int options);
 
     void bloom();
+
+    void depthFeildBlur();
+
+    void FXAA();
 
     void gammaCorrection();
     void reverseGammaCorrection();
 
     void save(const char* file_name);
 
-    void postProcessing(int shadeOptions, float exposure);
+    void postProcessing(int shadeOptions);
 
-    ~Image();
+    ~Photo();
 
 private:
     void load(const char* file_name);

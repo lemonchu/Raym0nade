@@ -7,7 +7,9 @@
 
 struct RenderArgs {
     vec3 position, direction, up, right;
-    float accuracy, exposure, P_Direct; // 胶片距离为 1.0，每个像素的偏移量为 accuracy
+    float accuracy, focus, CoC, exposure, P_Direct;
+        // 胶片距离为 1.0，每个像素的偏移量为 accuracy
+        // CoC 是弥散圆半径（像素）, CoC = 0 表示无景深
     int width, height, spp, threads;
     std::string savePath;
 };

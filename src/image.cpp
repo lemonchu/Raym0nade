@@ -6,7 +6,7 @@
 
 RadianceData::RadianceData() : radiance(vec3(0.0f)), Var(0.0f) {}
 
-Image::Image(int width, int height) : width(width), height(height) {
+Photo::Photo(int width, int height) : width(width), height(height) {
     Gbuffer = new HitInfo[width * height];
     radiance_Dd = new RadianceData[width * height];
     radiance_Ds = new RadianceData[width * height];
@@ -15,11 +15,11 @@ Image::Image(int width, int height) : width(width), height(height) {
     pixelarray = new vec3[width * height];
 }
 
-Image::Image(const char *file_name): radiance_Dd(nullptr), radiance_Ds(nullptr), radiance_Id(nullptr), radiance_Is(nullptr), pixelarray(nullptr), Gbuffer(nullptr) {
+Photo::Photo(const char *file_name) : radiance_Dd(nullptr), radiance_Ds(nullptr), radiance_Id(nullptr), radiance_Is(nullptr), pixelarray(nullptr), Gbuffer(nullptr) {
     load(file_name);
 }
 
-Image::~Image() {
+Photo::~Photo() {
     delete[] Gbuffer;
     delete[] radiance_Dd;
     delete[] radiance_Ds;
@@ -144,7 +144,7 @@ void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, i
     filterRadiance(radiance, Gbuffer, width, height, 16);
 }
 
-void Image::filter() {
+void Photo::filter() {
     std::thread t1([this]() { filterRadiance(radiance_Dd, Gbuffer, width, height); });
     std::thread t2([this]() { filterRadiance(radiance_Ds, Gbuffer, width, height); });
     std::thread t3([this]() { filterRadiance(radiance_Id, Gbuffer, width, height); });
@@ -156,7 +156,7 @@ void Image::filter() {
     t4.join();
 }
 
-void Image::shade(float exposure, int options) {
+void Photo::shade(int options) {
     for (int i = 0; i < width * height; ++i) {
         const HitInfo &G = Gbuffer[i];
         if (options & shapeNormal) {
@@ -189,12 +189,12 @@ void Image::shade(float exposure, int options) {
     }
 }
 
-void Image::bloom() {
+void Photo::bloom() {
     static const int filterRadius = 2;
     static const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
     std::vector<vec3> bloomColor(width * height);
 
-    static const float omega_bloom = 0.85f;
+    static const float omega_bloom = 0.6f;
     for (int id = 0; id < width * height; ++id) {
         float Clum = dot(pixelarray[id], RGB_Weight);
         if (Clum < 1.0f)
@@ -223,9 +223,175 @@ void Image::bloom() {
     }
 }
 
+void Photo::depthFeildBlur() {
+    struct PixelPos {
+        int x, y;
+        float depth;
+        PixelPos(int x, int y, float depth) : x(x), y(y), depth(depth) {}
+    };
+    std::vector<PixelPos> pixels;
+    std::vector<vec3> blurredPixelArray(width * height, vec3(0.0f));
+    std::vector<float> rest(width * height, 1.0f);
+
+    pixels.reserve(width * height);
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            float depth = length(Gbuffer[y * width + x].position - cameraPosition);
+            pixels.emplace_back(x, y, depth);
+        }
+
+    std::sort(pixels.begin(), pixels.end(), [](const PixelPos &a, const PixelPos &b) {
+        return a.depth < b.depth;
+    });
+
+    for (const PixelPos &pixel : pixels) {
+        int x = pixel.x, y = pixel.y;
+        float depth = pixel.depth;
+        constexpr float MaxCoC = 96.0f;
+        float CoC0 = std::min(CoC * abs(1.0f - focus / depth), MaxCoC);
+
+        int radius = int(CoC0 + eps_zero);
+        float totalWeight = 0.0f;
+
+        for (int dy = -radius; dy <= radius; ++dy) {
+            int xLen = int(sqrt(CoC0 * CoC0 - dy * dy));
+            for (int dx = -xLen; dx <= xLen; ++dx) {
+                int nx = x + dx, ny = y + dy;
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height)
+                    continue;
+                float weight = CoC0 - sqrtf(dx * dx + dy * dy);
+                if (weight < 0.0f)
+                    continue;
+                totalWeight += weight;
+            }
+        }
+
+        vec3 color = pixelarray[y * width + x];
+
+        for (int dy = -radius; dy <= radius; ++dy) {
+            int xLen = int(sqrt(CoC0 * CoC0 - dy * dy));
+            for (int dx = -xLen; dx <= xLen; ++dx) {
+                int nx = x + dx, ny = y + dy;
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height)
+                    continue;
+                float weight = (CoC0 - sqrtf(dx * dx + dy * dy)) / totalWeight;
+                if (weight < 0.0f)
+                    continue;
+                vec3 &now = blurredPixelArray[ny * width + nx];
+                if (weight > rest[ny * width + nx]) {
+                    now += color * rest[ny * width + nx];
+                    rest[ny * width + nx] = 0.0f;
+                } else {
+                    now += color * weight;
+                    rest[ny * width + nx] -= weight;
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < width * height; ++i)
+        pixelarray[i] = blurredPixelArray[i] + rest[i] * pixelarray[i];
+}
+
+const float EDGE_THRESHOLD_MIN = 0.0312f;
+const float EDGE_THRESHOLD_MAX = 0.125f;
+const float SUBPIXEL_QUALITY = 0.75f;
+const int QUALITY = 12;
+
+void Photo::FXAA() {
+
+    const vec3 *data = pixelarray;
+    vec3 *output = new vec3[width * height];
+
+    auto getLuminance = [](const vec3& rgb) -> float {
+        return dot(rgb, RGB_Weight);
+    };
+
+    for(int y = 0; y < height; y++) {
+        for(int x = 0; x < width; x++) {
+            float lumaM = getLuminance(data[y * width + x]);
+            float lumaN = y > 0 ? getLuminance(data[(y - 1) * width + x]) : lumaM;
+            float lumaS = y < height - 1 ? getLuminance(data[(y + 1) * width + x]) : lumaM;
+            float lumaE = x < width - 1 ? getLuminance(data[y * width + x + 1]) : lumaM;
+            float lumaW = x > 0 ? getLuminance(data[y * width + x - 1]) : lumaM;
+
+            float rangeMin = std::min({lumaN, lumaS, lumaE, lumaW});
+            float rangeMax = std::max({lumaN, lumaS, lumaE, lumaW});
+            float range = rangeMax - rangeMin;
+
+            if (range < std::max(EDGE_THRESHOLD_MIN, rangeMax * EDGE_THRESHOLD_MAX)) {
+                output[y * width + x] = data[y * width + x];
+                continue;
+            }
+
+            float lumaNW = (y > 0 && x > 0) ? getLuminance(data[(y - 1) * width + x - 1]) : lumaM;
+            float lumaNE = (y > 0 && x < width - 1) ? getLuminance(data[(y - 1) * width + x + 1]) : lumaM;
+            float lumaSW = (y < height - 1 && x > 0) ? getLuminance(data[(y + 1) * width + x - 1]) : lumaM;
+            float lumaSE = (y < height - 1 && x < width - 1) ? getLuminance(data[(y + 1) * width + x + 1]) : lumaM;
+
+            float edgeHorz = std::abs((lumaNW + lumaW + lumaSW) - (lumaNE + lumaE + lumaSE)) * (1.0f / 3.0f);
+            float edgeVert = std::abs((lumaNW + lumaN + lumaNE) - (lumaSW + lumaS + lumaSE)) * (1.0f / 3.0f);
+
+            bool isHorizontal = edgeHorz >= edgeVert;
+
+            float stepLength = isHorizontal ? 1.0f / float(width) : 1.0f / float(height);
+            float gradientStep = std::clamp(
+                    (isHorizontal ? edgeHorz : edgeVert) / range,
+                    -2.0f,
+                    2.0f
+            );
+
+            vec2 uv(float(x) / float(width), float(y) / float(height));
+            vec3 finalColor = data[y * width + x];
+            float bestDelta = 0.0f;
+
+            for (int i = 0; i < QUALITY; i++) {
+                vec2 offset(
+                        isHorizontal ? 0.0f : gradientStep * stepLength * float(i + 1),
+                        isHorizontal ? gradientStep * stepLength * float(i + 1) : 0.0f
+                );
+
+                vec2 sampleUv = uv + offset;
+                if (sampleUv.x < 0.0f || sampleUv.x > 1.0f || sampleUv.y < 0.0f || sampleUv.y > 1.0f) {
+                    continue;
+                }
+
+                int sx = int(sampleUv.x * float(width));
+                int sy = int(sampleUv.y * float(height));
+                sx = std::clamp(sx, 0, width - 1);
+                sy = std::clamp(sy, 0, height - 1);
+
+                vec3 sampleColor = data[sy * width + sx];
+                float sampleLuma = getLuminance(sampleColor);
+                float delta = std::abs(sampleLuma - lumaM);
+
+                if (delta > bestDelta) {
+                    bestDelta = delta;
+                    finalColor = sampleColor;
+                }
+            }
+
+            float subPixelOffset = std::min(
+                    (std::abs(lumaN + lumaS - 2.0f * lumaM) * 2.0f +
+                     std::abs(lumaE + lumaW - 2.0f * lumaM)) * 0.25f,
+                    1.0f
+            );
+
+            output[y * width + x] = mix(
+                    data[y * width + x],
+                    finalColor,
+                    subPixelOffset * SUBPIXEL_QUALITY
+            );
+        }
+    }
+
+    std::memcpy(pixelarray, output, width * height * sizeof(vec3));
+    delete[] output;
+}
+
 const float GammaFactor = 2.2f;
 
-void Image::gammaCorrection() {
+void Photo::gammaCorrection() {
    auto lumBound = [](float Clum) -> float {
         return tanh(3.0f * (Clum-0.75f)) / 3.0f + 0.75f;
     };
@@ -239,16 +405,18 @@ void Image::gammaCorrection() {
     }
 }
 
-void Image::postProcessing(int shadeOptions, float exposure) {
-    shade(exposure, shadeOptions);
+void Photo::postProcessing(int shadeOptions) {
+    shade(shadeOptions);
+    if (shadeOptions & DoDepthFieldBlur)
+        depthFeildBlur();
     if (shadeOptions & DoBloom)
         bloom();
+    gammaCorrection();
     if (shadeOptions & DoFXAA)
         FXAA();
-    gammaCorrection();
 }
 
-void Image::save(const char *file_name) {
+void Photo::save(const char *file_name) {
 
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
     png_infop info_ptr = png_create_info_struct(png_ptr);
@@ -301,7 +469,7 @@ void Image::save(const char *file_name) {
     png_destroy_write_struct(&png_ptr, &info_ptr);
 }
 
-void Image::load(const char* file_name) {
+void Photo::load(const char* file_name) {
     FILE *fp = fopen(file_name, "rb");
     if (!fp) {
         std::cerr << "Could not open file for reading" << std::endl;
@@ -377,10 +545,9 @@ void Image::load(const char* file_name) {
     png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
 }
 
-void Image::reverseGammaCorrection() {
-    for (int i = 0; i < width * height; ++i) {
+void Photo::reverseGammaCorrection() {
+    for (int i = 0; i < width * height; ++i)
         pixelarray[i] = glm::pow(pixelarray[i], vec3(GammaFactor));
-    }
 }
 
 void accumulateInwardRadiance_basic(RadianceData &radiance, vec3 inradiance, float weight) {
@@ -413,8 +580,8 @@ void accumulateInwardRadiance(const vec3 &baseColor, const LightSample &sample,
     float AminusB = (d1-d2) / (1-XdotY);
     float B = (AplusB - AminusB) / 2.0f;
     vec3 brdfPdf_base = B * baseColor0;
-    accumulateInwardRadiance_basic(
-            radiance_d, sample.light * B / length(baseColor), sample.weight);
-    accumulateInwardRadiance_basic(
-            radiance_s, sample.light * (sample.bsdfPdf - brdfPdf_base), sample.weight);
+    accumulateInwardRadiance_basic
+        (radiance_d, sample.light * B / length(baseColor), sample.weight);
+    accumulateInwardRadiance_basic
+        (radiance_s, sample.light * (sample.bsdfPdf - brdfPdf_base), sample.weight);
 }

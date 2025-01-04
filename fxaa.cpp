@@ -4,7 +4,7 @@
 
 int main() {
     const char* file_name = "./output/raw_2.png";
-    Image png_to_be_fxaa(file_name);
+    Photo png_to_be_fxaa(file_name);
 
     png_to_be_fxaa.reverseGammaCorrection();
     png_to_be_fxaa.FXAA();
