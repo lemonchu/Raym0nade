@@ -488,7 +488,6 @@ std::vector<LightSample> sampleDirectLight(
             auto& lightObject = model.lightObjects[lightIndex];
 
             vec3 lightPos;
-            float faceFactor;
             int fails = 0;
             sampleLightFace(pos, lightObject, gen, lightPos, fails);
             if (!isfinite(lightPos))
@@ -507,7 +506,6 @@ std::vector<LightSample> sampleDirectLight(
                 std::cerr << "Wrong bsdf (sampleDirectLight_)" << std::endl;
                 std::cerr << "lightDir: " << lightDir.x << " " << lightDir.y << " " << lightDir.z << std::endl;
                 std::cerr << "bsdfPdf: " << bsdfPdf.x << " " << bsdfPdf.y << " " << bsdfPdf.z << std::endl;
-                std::cerr << "faceFactor: " << faceFactor << std::endl;
                 std::cerr << "P_lightObject: " << P_lightObject << std::endl;
             }
             samples.emplace_back(bsdfPdf, light, 1.0f / static_cast<float>(sampleCnt*(fails+1)));

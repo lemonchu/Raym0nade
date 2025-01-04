@@ -491,8 +491,8 @@ void renderPixel(const Model &model, const RenderArgs &args,
 
     vec3 sav_baseColor = Gbuffer.baseColor;
     float Clum0 = dot(Gbuffer.baseColor, RGB_Weight);
-    if (Clum0 < 5e-3 || length(Gbuffer.baseColor / Clum0 - vec3(1.0f)) < 5e-3)
-        Gbuffer.baseColor[0] += 1e-2;
+    if (Clum0 < 2e-2 || (Clum0 < 0.8f && length(Gbuffer.baseColor / Clum0 - vec3(1.0f)) < 2e-2))
+        Gbuffer.baseColor[0] += 4e-2;
     // 加入微弱的红色，防止纯黑白，便于分离 baseColor 和 specular(White) 项
 
     static const int MultiSampleForRefraction = 16;

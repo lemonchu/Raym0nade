@@ -553,11 +553,13 @@ void Photo::reverseGammaCorrection() {
 void accumulateInwardRadiance_basic(RadianceData &radiance, vec3 inradiance, float weight) {
     if (!isfinite(inradiance)) {
         std::cerr << "NaN detected!" << std::endl;
-        throw std::runtime_error("NaN detected!");
+        //throw std::runtime_error("NaN detected!");
+        return;
     }
     if (!isfinite(weight)) {
         std::cerr << "NaN detected! (weight)" << std::endl;
-        throw std::runtime_error("NaN detected!");
+        //throw std::runtime_error("NaN detected!");
+        return;
     }
     radiance.radiance += inradiance * weight;
     radiance.Var += dot(inradiance, inradiance) * weight;
@@ -571,6 +573,10 @@ void accumulateInwardRadiance(const vec3 &baseColor, const LightSample &sample,
     vec3 baseColor0 = normalize(baseColor);
     static const vec3 White = normalize(vec3(1.0f));
     float XdotY = dot(baseColor0, White);
+    if (XdotY > 0.99f) {
+        accumulateInwardRadiance_basic(radiance_d, sample.light * sample.bsdfPdf / baseColor, sample.weight);
+        return;
+    }
     // Consider Pdf = a * white + b * baseColor0
     vec3 perp = normalize(cross(baseColor0, White));
     vec3 bsdfPdf_p = sample.bsdfPdf - perp * dot(perp, sample.bsdfPdf);
