@@ -52,12 +52,9 @@ void Model::checkLightObject(Face *meshFaces, aiMesh *mesh, const Material &mate
         auto &face = meshFaces[j];
 
         vec3 textureColor = getAverageEmissiveColor(material, face);
-        float Clum = dot(textureColor, RGB_Weight);
-        if (Clum < eps_zero)
-            continue;
-
-        float area = length(cross(face.v[1] - face.v[0], face.v[2] - face.v[0])) / 2.0f;
-        if (area < eps_zero)
+        float Clum = dot(textureColor, RGB_Weight),
+              area = length(cross(face.v[1] - face.v[0], face.v[2] - face.v[0])) / 2.0f;
+        if (Clum < eps_zero || area < eps_zero)
             continue;
 
         color += textureColor * area;
@@ -69,10 +66,8 @@ void Model::checkLightObject(Face *meshFaces, aiMesh *mesh, const Material &mate
         lightObjects.pop_back();
         return ;
     }
-    lightObject.powerDensity = 1.0f;
     lightObject.color = color / dot(color, RGB_Weight);
     for (unsigned int j = 0; j < lightObject.faces.size(); j++) {
-        faceWeights[j] *= lightObject.powerDensity;
         lightObject.power += faceWeights[j];
         lightObject.center += lightObject.faces[j].center() * faceWeights[j];
     }
@@ -81,41 +76,40 @@ void Model::checkLightObject(Face *meshFaces, aiMesh *mesh, const Material &mate
     lightObject.center /= lightObject.power;
 
     std::cout << "Light object with power: " << lightObject.power
-              << ", power density: " << lightObject.powerDensity
               << ", color:" << lightObject.color.x << ", " << lightObject.color.y << ", " << lightObject.color.z
               << ", position:" << lightObject.center.x << ", " << lightObject.center.y << ", "
               << lightObject.center.z << std::endl;
 }
 
+vec3 aiToGlm(const aiVector3D &v) {
+    return vec3(v.x, v.y, v.z);
+}
+
 void Model::processMesh(aiMesh *mesh) {
 
     unsigned int offset = vertexDatas.size();
-    for (unsigned int j = 0; j < mesh->mNumVertices; j++) {
-        aiVector3D texCoord = mesh->mTextureCoords[0][j];
-        aiVector3D normal = mesh->mNormals[j];
+    for (unsigned int j = 0; j < mesh->mNumVertices; j++)
         vertexDatas.emplace_back(
-                vec2(texCoord.x, texCoord.y),
-                vec3(normal.x, normal.y, normal.z)
+                vec2(aiToGlm( mesh->mTextureCoords[0][j])),
+                aiToGlm(mesh->mNormals[j])
         );
-    }
 
     const auto &material = materials[mesh->mMaterialIndex];
     VertexData *vData = &vertexDatas[offset];
     offset = faces.size();
     for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
-        aiFace &face0 = mesh->mFaces[j];
+        const aiFace &face0 = mesh->mFaces[j];
 
-        // Apply transformation to vertices
-        glm::vec3 transformedVertex[3];
-        for (int k = 0; k < 3; ++k) {
-            aiVector3D vertex = mesh->mVertices[face0.mIndices[k]];
-            transformedVertex[k] = vec3(vertex.x, vertex.y, vertex.z);
-        }
+        vec3 vertex[3] = {
+            aiToGlm(mesh->mVertices[face0.mIndices[0]]),
+            aiToGlm(mesh->mVertices[face0.mIndices[1]]),
+            aiToGlm(mesh->mVertices[face0.mIndices[2]])
+        };
 
         faces.push_back({
-                {transformedVertex[0],
-                 transformedVertex[1],
-                 transformedVertex[2]},
+                {vertex[0],
+                 vertex[1],
+                 vertex[2]},
                 {&vData[face0.mIndices[0]],
                  &vData[face0.mIndices[1]],
                  &vData[face0.mIndices[2]]},
@@ -177,6 +171,7 @@ Model::Model() = default;
 
 Model::Model(const std::string &model_folder, const std::string &model_name, const std::string &skyMap_name) {
 
+    // 用 Assimp 加载模型
     Assimp::Importer importer;
     importer.SetPropertyInteger(AI_CONFIG_PP_PTV_KEEP_HIERARCHY, 1);
     model_path = model_folder + model_name;
@@ -192,27 +187,31 @@ Model::Model(const std::string &model_folder, const std::string &model_name, con
         return ;
     }
 
-    if (skyMap_path != "null") {
-        std::cout << "Loading sky map: " << skyMap_path << std::endl;
-        skyMap.load(skyMap_path);
-        std::cout << "skyMap.empty(): " << skyMap.empty() << std::endl;
-    }
-
+    // 加载材质
     processMaterial(model_folder, scene);
 
-    unsigned int vertexCnt = vertexCount(scene);
-    std::cout << "Vertices: " << vertexCnt << std::endl;
+    // 加载 mesh
+    unsigned int
+        vertexCnt = vertexCount(scene),
+        faceCnt = faceCount(scene);
     vertexDatas.reserve(vertexCnt);
-    unsigned int faceCnt = faceCount(scene);
-    std::cout << "faces: " << faceCnt << std::endl;
     faces.reserve(faceCnt);
+    std::cout << "Vertices: " << vertexCnt << std::endl
+              << "faces: " << faceCnt << std::endl;
 
     for (int i = 0; i < scene->mNumMeshes; i++)
         processMesh(scene->mMeshes[i]);
 
     importer.FreeScene();
 
-    kdt.build(faces);
+    // 加载天空盒
+    if (skyMap_path != "null") {
+        std::cout << "Loading sky map: " << skyMap_path << std::endl;
+        skyMap.load(skyMap_path);
+    }
+
+    // 建立 BVH
+    bvh.build(faces);
 }
 
 bool TransparentTest(const Ray &ray, const HitRecord &hit) {
@@ -220,12 +219,12 @@ bool TransparentTest(const Ray &ray, const HitRecord &hit) {
     const Material& material = *face.material;
     if (!material.hasFullyTransparentPart)
         return false;
-    const vec3 intersection = ray.origin + ray.direction * hit.t_max;
-    const vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
+    vec3 intersection = ray.origin + ray.direction * hit.t_max;
+    vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
     vec2 texUV =
-            baryCoords[0] * face.data[0]->uv
-            + baryCoords[1] * face.data[1]->uv
-            + baryCoords[2] * face.data[2]->uv;
+            baryCoords[0] * face.data[0]->uv +
+            baryCoords[1] * face.data[1]->uv +
+            baryCoords[2] * face.data[2]->uv;
     vec4 diffuseColor = material.getDiffuseColor(texUV[0], texUV[1], NAN);
     return diffuseColor[3] < eps_zero;
 }
@@ -252,47 +251,42 @@ void getHitNormals(const Face& face, const vec3 &inDir, const vec3 &baryCoords,
     if (area > areaThreshold)
         return;
 
-    vec3 normalV0 = face.data[0]->normal;
-    vec3 normalV1 = face.data[1]->normal;
-    vec3 normalV2 = face.data[2]->normal;
+    vec3 normalV0 = face.data[0]->normal,
+         normalV1 = face.data[1]->normal,
+         normalV2 = face.data[2]->normal;
     reverseFix(normalV0, shapeNormal);
     reverseFix(normalV1, shapeNormal);
     reverseFix(normalV2, shapeNormal);
 
-    static const float threshold = 0.85f;
+    static const float dotThreshold = 0.85f;
     surfaceNormal_raw = normalize(
-            baryCoords[0] * (dot(normalV0, shapeNormal) > threshold ? normalV0 : shapeNormal)
-            + baryCoords[1] * (dot(normalV1, shapeNormal) > threshold ? normalV1 : shapeNormal)
-            + baryCoords[2] * (dot(normalV2, shapeNormal) > threshold ? normalV2 : shapeNormal)
+            baryCoords[0] * (dot(normalV0, shapeNormal) > dotThreshold ? normalV0 : shapeNormal)
+            + baryCoords[1] * (dot(normalV1, shapeNormal) > dotThreshold ? normalV1 : shapeNormal)
+            + baryCoords[2] * (dot(normalV2, shapeNormal) > dotThreshold ? normalV2 : shapeNormal)
     );
 
-    if (!isfinite(surfaceNormal_raw)) {
+    if (!isfinite(surfaceNormal_raw))
         surfaceNormal_raw = shapeNormal;
-        std::cerr << "  getHitNormals : NAN" << std::endl;
-    }
 }
 
 vec2 getDuv(const Face &face, const vec3 &hit_dPdx) {
     vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], face.v[0] + hit_dPdx);
-    vec2 texUV0 = face.data[0]->uv;
-    vec2 texUV1 =
-            baryCoords[0] * face.data[0]->uv +
-            baryCoords[1] * face.data[1]->uv +
-            baryCoords[2] * face.data[2]->uv;
-    return texUV1 - texUV0;
+    return (baryCoords[0] - 1.0f) * face.data[0]->uv +
+           baryCoords[1] * face.data[1]->uv +
+           baryCoords[2] * face.data[2]->uv;
 }
 
 void calcSurfaceNormal(const Face& face, const vec3 &normalMap, const vec3 &shapeNormal,
                        vec3 &surfaceNormal) {
-    vec3 edge1 = face.v[1] - face.v[0];
-    vec3 edge2 = face.v[2] - face.v[0];
-    vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv;
-    vec2 deltaUV2 = face.data[2]->uv - face.data[0]->uv;
+    vec3 edge1 = face.v[1] - face.v[0],
+         edge2 = face.v[2] - face.v[0];
+    vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv,
+         deltaUV2 = face.data[2]->uv - face.data[0]->uv;
     float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
-    vec3 tangentBasisU = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
-    vec3 tangentBasisV = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
-    vec3 tangent = normalize(tangentBasisU - shapeNormal * dot(shapeNormal, tangentBasisU));
-    vec3 bitangent = normalize(tangentBasisV - shapeNormal * dot(shapeNormal, tangentBasisV) - tangent * dot(tangent, tangentBasisV));
+    vec3 tangentBasisU = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2),
+         tangentBasisV = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
+    vec3 tangent = normalize(tangentBasisU - shapeNormal * dot(shapeNormal, tangentBasisU)),
+         bitangent = normalize(tangentBasisV - shapeNormal * dot(shapeNormal, tangentBasisV) - tangent * dot(tangent, tangentBasisV));
     vec3 sav = surfaceNormal;
     surfaceNormal = normalize(
             tangent * normalMap.x +
@@ -322,8 +316,7 @@ void getHitMaterial(const Face& face, const vec3 &baryCoords, const vec3 &hit_dP
     vec2 dUVdx = getDuv(face, hit_dPdx),
          dUVdy = getDuv(face, hit_dPdy);
     float duv = (isfinite(dUVdx) && isfinite(dUVdx)) ?
-            std::max((length(dUVdx)+length(dUVdy))/2.0f, sqrt(length(dUVdx)*length(dUVdy)))
-            : NAN;
+            (length(dUVdx)+length(dUVdy))/2.0f : NAN;
 
     if (hitInfo.opacity < eps_zero)
         hitInfo.baseColor = material.transmittingColor;
@@ -339,7 +332,7 @@ const int maxRayDepth_hit = 8;
 HitRecord Model::rayHit(Ray ray) const {
     HitRecord hit(eps_zero, INFINITY);
     for (int T = 0; T < maxRayDepth_hit; T++) {
-        kdt.rayHit(ray, hit);
+        bvh.rayHit(ray, hit);
         if (hit.t_max == INFINITY || !TransparentTest(ray, hit))
             return hit;
         hit = HitRecord(hit.t_max + eps_zero, INFINITY);
@@ -350,7 +343,7 @@ HitRecord Model::rayHit(Ray ray) const {
 bool Model::rayHit_test(Ray ray, float aimDepth) const {
     HitRecord hit(eps_zero, aimDepth + eps_zero);
     for (int T = 0; T < maxRayDepth_hit; T++) {
-        kdt.rayHit(ray, hit);
+        bvh.rayHit(ray, hit);
         if (hit.t_max >= aimDepth)
             return false;
         if (!TransparentTest(ray, hit))

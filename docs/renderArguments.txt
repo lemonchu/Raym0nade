@@ -76,8 +76,21 @@ create args arg_interior_counter
 5.5 -4.7 -4.8
 0.0005 0.0 0.0 64.0
 2048 1152
-512 30 0.7
+640 30 0.7
 output/Bistro
 
 render bistro arg_interior_counter
+
+外景桌面2
+create args arg_table5
+-0.7513 0 -0.65
+0.66 0 -0.7513
+0 -1 0
+-18.25 -0.2 -2.2
+0.0012 16.0 8.0 50.0
+1024 576
+0 12 0.7
+output/Bistro
+
+render bistro arg_table5
 

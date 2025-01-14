@@ -6,7 +6,7 @@
 #include <assimp/postprocess.h>
 #include "material.h"
 #include "component.h"
-#include "kdt.h"
+#include "bvh.h"
 #include <Python.h>
 
 struct HitInfo {
@@ -32,7 +32,7 @@ public:
     std::vector<Face> faces;
     std::vector<VertexData> vertexDatas;
     std::vector<LightObject> lightObjects;
-    KDT kdt;
+    BVH bvh;
     std::string model_path, skyMap_path;
     SkyBox skyMap;
 

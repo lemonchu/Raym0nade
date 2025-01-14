@@ -47,7 +47,7 @@ public:
 class LightObject {
 public:
     vec3 center, color;
-    float power, powerDensity;
+    float power;
     std::vector<Face> faces;
     RandomDistribution faceDist;
     LightObject();

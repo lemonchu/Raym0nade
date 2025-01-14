@@ -4,18 +4,18 @@
 #include "component.h"
 #include "geometry.h"
 
-struct KDT_Node {
+struct BVH_Node {
     Box box;
     int faceL, faceR;
-    KDT_Node();
+    BVH_Node();
 };
 
-class KDT {
-    KDT_Node *node;
+class BVH {
+    BVH_Node *node;
     Face *faces;
 public:
 
-    KDT();
+    BVH();
 
     void dfs_build(int u, int faceL, int faceR);
 
@@ -25,7 +25,7 @@ public:
 
     void rayHit(const Ray &ray, HitRecord &closest_hit) const;
 
-    ~KDT();
+    ~BVH();
 };
 
 #endif //KDT_H

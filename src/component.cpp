@@ -30,7 +30,7 @@ float RandomDistribution::pdf(int index) const {
     return now / prefixSums.back();
 }
 
-LightObject::LightObject() : center(glm::vec3(0)), color(glm::vec3(0)), power(0) {}
+LightObject::LightObject() : center(vec3(0)), color(vec3(0)), power(0) {}
 
 VertexData::VertexData(const vec2 &uv, const vec3 &normal) : uv(uv), normal(normal) {}
 
@@ -40,16 +40,8 @@ vec3 Face::center() const {
 
 Box Face::aabb() const {
     return Box(
-            vec3(
-                    std::min(v[0][0],std::min(v[1][0],v[2][0])),
-                    std::min(v[0][1],std::min(v[1][1],v[2][1])),
-                    std::min(v[0][2],std::min(v[1][2],v[2][2]))
-            ),
-            vec3(
-                    std::max(v[0][0],std::max(v[1][0],v[2][0])),
-                    std::max(v[0][1],std::max(v[1][1],v[2][1])),
-                    std::max(v[0][2],std::max(v[1][2],v[2][2]))
-            )
+            glm::min(v[0], glm::min(v[1], v[2])),
+            glm::max(v[0], glm::max(v[1], v[2]))
     );
 }
 
@@ -133,8 +125,8 @@ vec3 SkyBox::get(vec3 dir) const {
     float phi = acos(dir.y);
     if (theta < 0.0f) theta += 2.0f * PI;
 
-    int u = static_cast<int>(theta / (2.0f * PI) * width);
-    int v = static_cast<int>(phi / PI * height);
+    int u = static_cast<int>(theta / (2.0f * PI) * float(width));
+    int v = static_cast<int>(phi / PI * float(height));
 
     if (u < 0) u = 0;
     if (u >= width) u = width - 1;

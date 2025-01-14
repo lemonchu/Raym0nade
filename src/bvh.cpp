@@ -1,8 +1,8 @@
 #include <algorithm>
 #include <iostream>
-#include "kdt.h"
+#include "bvh.h"
 
-KDT_Node::KDT_Node() : faceL(0), faceR(0) {}
+BVH_Node::BVH_Node() : faceL(0), faceR(0) {}
 
 template<int axis>
 bool cmp(const Face &A, const Face &B) {
@@ -11,11 +11,11 @@ bool cmp(const Face &A, const Face &B) {
 
 bool (*cmpFunc[3])(const Face &, const Face &) = {cmp<0>, cmp<1>, cmp<2>};
 
-KDT::KDT() : node(nullptr), faces(nullptr) {}
+BVH::BVH() : node(nullptr), faces(nullptr) {}
 
 const unsigned int LeafBagSize = 10;
 
-void KDT::dfs_build(int u, int faceL, int faceR) {
+void BVH::dfs_build(int u, int faceL, int faceR) {
     if (faceR - faceL <= LeafBagSize) {
         node[u].faceL = faceL;
         node[u].faceR = faceR;
@@ -45,15 +45,15 @@ int nodeCount(int u, int n) {
     return (n <= LeafBagSize) ? u : nodeCount(u<<1|1, (n+1)>>1);
 }
 
-void KDT::build(std::vector<Face> &faces0) {
+void BVH::build(std::vector<Face> &faces0) {
     int size = nodeCount(1, int(faces0.size())) + 1;
-    node = new KDT_Node[size];
+    node = new BVH_Node[size];
     faces = &faces0.front();
     dfs_build(1, 0, int(faces0.size()));
-    std::cout << "KDT has built with size " << size << std::endl;
+    std::cout << "BVH has built with size " << size << std::endl;
 }
 
-void KDT::dfs_rayHit(int u, const Ray &ray, HitRecord &closest_hit) const {
+void BVH::dfs_rayHit(int u, const Ray &ray, HitRecord &closest_hit) const {
     if (node[u].faceR) {
         for (int i = node[u].faceL; i < node[u].faceR; i++) {
             const Face &face = faces[i];
@@ -87,10 +87,10 @@ void KDT::dfs_rayHit(int u, const Ray &ray, HitRecord &closest_hit) const {
     }
 }
 
-void KDT::rayHit(const Ray &ray, HitRecord &closest_hit) const {
+void BVH::rayHit(const Ray &ray, HitRecord &closest_hit) const {
     dfs_rayHit(1, ray, closest_hit);
 }
 
-KDT::~KDT() {
+BVH::~BVH() {
     delete[] node;
 }

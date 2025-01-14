@@ -106,13 +106,14 @@ void filterVar(RadianceData *radiance, int width, int height) {
         radiance[i].Var = varBuffer[i];
 }
 
-float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, const RadianceData &Lq) {
+float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, const RadianceData &Lq, bool specular) {
     static constexpr float
             sigma_z = 1.0f,
             sigma_n = 1024.0f,
             sigma_l = 1.0f,
             sigma_m = 1.0f,
-            eps = 1e-2f;
+            eps = 1e-2f,
+            eps_r = 4e-2f;
 
     if (!isfinite(Gq.position))
         return 0.0f;
@@ -145,7 +146,8 @@ float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, co
 
     weight *= exp(k);
 
-    weight *= std::max(Gp.roughness, 0.04f);
+    if (specular)
+        weight *= std::max(Gp.roughness, eps_r);
 
     if (!isfinite(weight))
         return 0.0f;
@@ -153,7 +155,7 @@ float getWeight(const HitInfo &Gp, const HitInfo &Gq, const RadianceData &Lp, co
     return weight;
 }
 
-void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, int height, int step) {
+void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, int height, bool specular, int step) {
 
     static const int filterRadius = 2;
     static const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
@@ -175,7 +177,7 @@ void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, i
                     RadianceData &Lq = radiance[ny * width + nx];
                     const HitInfo &Gq = Gbuffer[ny * width + nx];
                     if (dx != 0 || dy != 0)
-                        weight *= getWeight(Gp, Gq, Lp, Lq);
+                        weight *= getWeight(Gp, Gq, Lp, Lq, specular);
                     weightSum += weight;
                     radianceBuffer[y * width + x] += Lq.radiance * weight;
                     varBuffer[y * width + x] += Lq.Var * weight * weight;
@@ -189,20 +191,20 @@ void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, i
     }
 }
 
-void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, int height) {
+void filterRadiance(RadianceData *radiance, const HitInfo *Gbuffer, int width, int height, bool specular) {
     filterVar(radiance, width, height);
-    filterRadiance(radiance, Gbuffer, width, height, 1);
-    filterRadiance(radiance, Gbuffer, width, height, 2);
-    filterRadiance(radiance, Gbuffer, width, height, 4);
-    filterRadiance(radiance, Gbuffer, width, height, 8);
-    filterRadiance(radiance, Gbuffer, width, height, 16);
+    filterRadiance(radiance, Gbuffer, width, height, specular, 1);
+    filterRadiance(radiance, Gbuffer, width, height, specular,2);
+    filterRadiance(radiance, Gbuffer, width, height, specular,4);
+    filterRadiance(radiance, Gbuffer, width, height, specular,8);
+    filterRadiance(radiance, Gbuffer, width, height, specular,16);
 }
 
 void Photo::filter() {
-    std::thread t1([this]() { filterRadiance(radiance_Dd, Gbuffer, width, height); });
-    std::thread t2([this]() { filterRadiance(radiance_Ds, Gbuffer, width, height); });
-    std::thread t3([this]() { filterRadiance(radiance_Id, Gbuffer, width, height); });
-    std::thread t4([this]() { filterRadiance(radiance_Is, Gbuffer, width, height); });
+    std::thread t1([this]() { filterRadiance(radiance_Dd, Gbuffer, width, height, false); });
+    std::thread t2([this]() { filterRadiance(radiance_Ds, Gbuffer, width, height, true); });
+    std::thread t3([this]() { filterRadiance(radiance_Id, Gbuffer, width, height, false); });
+    std::thread t4([this]() { filterRadiance(radiance_Is, Gbuffer, width, height, true); });
 
     t1.join();
     t2.join();
@@ -248,14 +250,14 @@ void Photo::bloom() {
     static const float h[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
     std::vector<vec3> bloomColor(width * height);
 
-    static const float omega_bloom = 0.6f;
+    static const float omega_bloom = 0.65f; // Bloom 强度
     for (int id = 0; id < width * height; ++id) {
         float Clum = dot(pixelarray[id], RGB_Weight);
         if (Clum < 1.0f)
             continue;
         bloomColor[id] = pixelarray[id] / pow(Clum, omega_bloom);
         for (int k = 0; k < 3; ++k)
-            bloomColor[id][k] = std::max(bloomColor[id][k]-1.0f, 0.0f);
+            bloomColor[id][k] = std::max(bloomColor[id][k] - 1.0f, 0.0f);
     }
 
     for (int step = 1; step <= 16; step *= 2) {
@@ -273,7 +275,7 @@ void Photo::bloom() {
                     }
             }
         for (int id = 0; id < width * height; ++id)
-            pixelarray[id] += bloomColor[id] / 8.0f;
+            pixelarray[id] += bloomColor[id] / 6.0f;
     }
 }
 
@@ -285,7 +287,7 @@ void Photo::depthFeildBlur() {
     };
     std::vector<PixelPos> pixels;
     std::vector<vec3> blurredPixelArray(width * height, vec3(0.0f));
-    std::vector<float> rest(width * height, 1.0f);
+    std::vector<float> gained(width * height, 0.0f);
 
     pixels.reserve(width * height);
     for (int y = 0; y < height; ++y)
@@ -294,33 +296,40 @@ void Photo::depthFeildBlur() {
             pixels.emplace_back(x, y, depth);
         }
 
-    std::sort(pixels.begin(), pixels.end(), [](const PixelPos &a, const PixelPos &b) {
+    auto cmp = [](const PixelPos &a, const PixelPos &b) {
         return a.depth < b.depth;
-    });
+    };
+    std::stable_sort(pixels.begin(), pixels.end(), cmp);
 
-    for (const PixelPos &pixel : pixels) {
+    constexpr float gainThreshold = 0.99f;
+    for (int i = 0; i < width*height; i++) {
+        const PixelPos &pixel = pixels[i];
         int x = pixel.x, y = pixel.y;
-        float depth = pixel.depth;
-        constexpr float MaxCoC = 96.0f;
-        float CoC0 = std::min(CoC * abs(1.0f - focus / depth), MaxCoC);
 
-        int radius = int(CoC0 + eps_zero);
+        constexpr float MaxCoC = 96.0f;
+        float CoC0 = std::min(CoC * abs(1.0f - focus / pixel.depth) + eps_zero, MaxCoC);
+
+        int radius = int(CoC0);
+        vec3 color = pixelarray[y * width + x];
         float totalWeight = 0.0f;
 
         for (int dy = -radius; dy <= radius; ++dy) {
             int xLen = int(sqrt(CoC0 * CoC0 - dy * dy));
-            for (int dx = -xLen; dx <= xLen; ++dx) {
-                int nx = x + dx, ny = y + dy;
-                if (nx < 0 || nx >= width || ny < 0 || ny >= height)
-                    continue;
-                float weight = CoC0 - sqrtf(dx * dx + dy * dy);
-                if (weight < 0.0f)
-                    continue;
+            int xl, xr;
+            for (xl = -xLen; xl <= 0; xl++) {
+                float weight = std::min(CoC0 - sqrtf(xl * xl + dy * dy), 1.0f);
+                if (weight == 1.0f)
+                    break;
                 totalWeight += weight;
             }
+            for (xr = xLen; xr > 0; xr--) {
+                float weight = std::min(CoC0 - sqrtf(xr * xr + dy * dy), 1.0f);
+                if (weight == 1.0f)
+                    break;
+                totalWeight += weight;
+            }
+            totalWeight += xr - xl + 1;
         }
-
-        vec3 color = pixelarray[y * width + x];
 
         for (int dy = -radius; dy <= radius; ++dy) {
             int xLen = int(sqrt(CoC0 * CoC0 - dy * dy));
@@ -328,23 +337,22 @@ void Photo::depthFeildBlur() {
                 int nx = x + dx, ny = y + dy;
                 if (nx < 0 || nx >= width || ny < 0 || ny >= height)
                     continue;
-                float weight = (CoC0 - sqrtf(dx * dx + dy * dy)) / totalWeight;
-                if (weight < 0.0f)
+                float weight = std::min(CoC0 - sqrtf(dx * dx + dy * dy), 1.0f) / totalWeight;
+                if (weight < eps_zero)
                     continue;
-                vec3 &now = blurredPixelArray[ny * width + nx];
-                if (weight > rest[ny * width + nx]) {
-                    now += color * rest[ny * width + nx];
-                    rest[ny * width + nx] = 0.0f;
-                } else {
-                    now += color * weight;
-                    rest[ny * width + nx] -= weight;
-                }
+                int id = ny * width + nx;
+                if (gained[id] + weight > gainThreshold)
+                    weight = gainThreshold - gained[id];
+                if (weight < eps_zero)
+                    continue;
+                blurredPixelArray[id] += color * weight;
+                gained[id] += weight;
             }
         }
     }
 
     for (int i = 0; i < width * height; ++i)
-        pixelarray[i] = blurredPixelArray[i] + rest[i] * pixelarray[i];
+        pixelarray[i] = blurredPixelArray[i] / gained[i];
 }
 
 const float EDGE_THRESHOLD_MIN = 0.0312f;
