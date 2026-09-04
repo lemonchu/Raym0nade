@@ -14,6 +14,8 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 endif()
 
+include(CTest)
+
 option(RAYM0NADE_BUILD_RENDERER "Build the interactive renderer" ON)
 option(RAYM0NADE_BUILD_FXAA "Build the standalone FXAA tool" ON)
 
@@ -36,13 +38,9 @@ if(MSVC AND NOT Python3_LIBRARY_DEBUG)
     set(RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_HEADER
         "${PROJECT_BINARY_DIR}/generated/raym0nade/python_debug_compatibility.hpp"
     )
-    get_filename_component(
-        RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_DIRECTORY
-        "${RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_HEADER}"
-        DIRECTORY
-    )
-    file(MAKE_DIRECTORY "${RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_DIRECTORY}")
-    file(WRITE "${RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_HEADER}" [=[
+    file(CONFIGURE
+        OUTPUT "${RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_HEADER}"
+        CONTENT [=[
 #pragma once
 
 #if defined(_MSC_VER) && defined(_DEBUG)
@@ -54,6 +52,7 @@ if(MSVC AND NOT Python3_LIBRARY_DEBUG)
 #    include <Python.h>
 #endif
 ]=]
+        @ONLY
     )
     set_property(SOURCE src/python_image_loader.cpp APPEND PROPERTY
         COMPILE_OPTIONS
@@ -166,4 +165,44 @@ if(RAYM0NADE_BUILD_FXAA)
     target_link_libraries(raym0nade_fxaa PRIVATE Raym0nade::core)
     raym0nade_enable_warnings(raym0nade_fxaa)
     raym0nade_set_runtime_directory(raym0nade_fxaa)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(raym0nade_tests tests/core_tests.cpp)
+    target_link_libraries(raym0nade_tests PRIVATE Raym0nade::core)
+    raym0nade_enable_warnings(raym0nade_tests)
+    raym0nade_set_runtime_directory(raym0nade_tests)
+
+    add_executable(raym0nade_render_tests tests/render_smoke_tests.cpp)
+    target_link_libraries(raym0nade_render_tests PRIVATE Raym0nade::core)
+    target_compile_definitions(raym0nade_render_tests PRIVATE
+        "RAYM0NADE_TEST_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+        "RAYM0NADE_TEST_BINARY_DIR=\"${PROJECT_BINARY_DIR}\""
+    )
+    raym0nade_enable_warnings(raym0nade_render_tests)
+    raym0nade_set_runtime_directory(raym0nade_render_tests)
+
+    add_executable(raym0nade_console_tests
+        tests/console_tests.cpp
+        src/console.cpp
+    )
+    target_link_libraries(raym0nade_console_tests PRIVATE Raym0nade::core)
+    raym0nade_enable_warnings(raym0nade_console_tests)
+    raym0nade_set_runtime_directory(raym0nade_console_tests)
+
+    add_test(NAME core COMMAND raym0nade_tests)
+    add_test(NAME render-smoke COMMAND raym0nade_render_tests)
+    add_test(NAME console COMMAND raym0nade_console_tests)
+
+    if(WIN32)
+        get_filename_component(
+            RAYM0NADE_PYTHON_RUNTIME_DIR
+            "${Python3_EXECUTABLE}"
+            DIRECTORY
+        )
+        set_tests_properties(core render-smoke console PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:${RAYM0NADE_PYTHON_RUNTIME_DIR};PATH=path_list_prepend:${RAYM0NADE_PYTHON_RUNTIME_DIR}/Library/bin"
+        )
+    endif()
 endif()

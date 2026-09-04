@@ -39,7 +39,7 @@ int ConsoleApplication::run() {
             continue;
         }
         if (!execute(commandLine)) {
-            return commandLine == "exit" ? 0 : 1;
+            return 0;
         }
     }
 }

@@ -344,6 +344,7 @@ void ModelBuilder::processMesh(const aiMesh& mesh) {
 
     Material& material = model_.materials_[mesh.mMaterialIndex];
     const std::size_t firstMeshFace = model_.faces_.size();
+    std::size_t nonFiniteFaceCount = 0;
     for (unsigned int index = 0; index < mesh.mNumFaces; ++index) {
         const aiFace& sourceFace = mesh.mFaces[index];
         if (sourceFace.mNumIndices != 3U) {
@@ -355,13 +356,26 @@ void ModelBuilder::processMesh(const aiMesh& mesh) {
         if (i0 >= mesh.mNumVertices || i1 >= mesh.mNumVertices || i2 >= mesh.mNumVertices) {
             throw std::runtime_error("Mesh contains an out-of-range vertex index.");
         }
+        const vec3 vertices[3]{
+            toVector(mesh.mVertices[i0]),
+            toVector(mesh.mVertices[i1]),
+            toVector(mesh.mVertices[i2]),
+        };
+        if (!isFinite(vertices[0]) || !isFinite(vertices[1]) || !isFinite(vertices[2])) {
+            ++nonFiniteFaceCount;
+            continue;
+        }
         model_.faces_.push_back(Face{
-            {toVector(mesh.mVertices[i0]), toVector(mesh.mVertices[i1]), toVector(mesh.mVertices[i2])},
+            {vertices[0], vertices[1], vertices[2]},
             {&model_.vertexData_[vertexOffset + i0],
              &model_.vertexData_[vertexOffset + i1],
              &model_.vertexData_[vertexOffset + i2]},
             &material,
         });
+    }
+    if (nonFiniteFaceCount > 0) {
+        std::cerr << "Skipped " << nonFiniteFaceCount
+                  << " triangle(s) with non-finite vertex coordinates.\n";
     }
 
     const std::size_t meshFaceCount = model_.faces_.size() - firstMeshFace;

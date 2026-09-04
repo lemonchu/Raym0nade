@@ -14,7 +14,8 @@ public:
     ConsoleApplication(std::istream& input, std::ostream& output, std::ostream& error);
 
     int run();
-    bool execute(const std::string& commandLine);
+    // Returns false only when the parsed command requests a successful shutdown.
+    [[nodiscard]] bool execute(const std::string& commandLine);
 
 private:
     void createModel(const std::string& id);

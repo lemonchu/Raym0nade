@@ -84,18 +84,16 @@ void Bvh::buildNode(std::size_t nodeIndex, std::size_t firstFace, std::size_t fa
 }
 
 void Bvh::intersectNode(
-    std::size_t nodeIndex, const Ray& ray, HitRecord& closestHit) const noexcept {
-    if (nodeIndex >= nodes_.size()) {
+    std::size_t nodeIndex,
+    const Ray& ray,
+    float nodeMinimum,
+    float nodeMaximum,
+    HitRecord& closestHit) const noexcept {
+    if (nodeIndex >= nodes_.size() || nodeMinimum >= closestHit.tMaximum) {
         return;
     }
 
     const Node& node = nodes_[nodeIndex];
-    float nodeMinimum = closestHit.tMinimum;
-    float nodeMaximum = closestHit.tMaximum;
-    if (!raym0nade::intersect(ray, node.bounds, nodeMinimum, nodeMaximum)) {
-        return;
-    }
-
     if (node.faceCount > 0) {
         const std::size_t faceEnd = node.firstFace + node.faceCount;
         for (std::size_t index = node.firstFace; index < faceEnd; ++index) {
@@ -116,10 +114,12 @@ void Bvh::intersectNode(
         return;
     }
 
-    float leftMinimum = closestHit.tMinimum;
-    float leftMaximum = closestHit.tMaximum;
-    float rightMinimum = closestHit.tMinimum;
-    float rightMaximum = closestHit.tMaximum;
+    const float traversalMinimum = std::max(nodeMinimum, closestHit.tMinimum);
+    const float traversalMaximum = std::min(nodeMaximum, closestHit.tMaximum);
+    float leftMinimum = traversalMinimum;
+    float leftMaximum = traversalMaximum;
+    float rightMinimum = traversalMinimum;
+    float rightMaximum = traversalMaximum;
     const bool intersectsLeft = raym0nade::intersect(
         ray, nodes_[leftChild].bounds, leftMinimum, leftMaximum);
     const bool intersectsRight = raym0nade::intersect(
@@ -127,20 +127,30 @@ void Bvh::intersectNode(
 
     if (intersectsLeft && intersectsRight) {
         if (leftMinimum <= rightMinimum) {
-            intersectNode(leftChild, ray, closestHit);
+            intersectNode(leftChild, ray, leftMinimum, leftMaximum, closestHit);
             if (rightMinimum < closestHit.tMaximum) {
-                intersectNode(rightChild, ray, closestHit);
+                intersectNode(
+                    rightChild,
+                    ray,
+                    rightMinimum,
+                    std::min(rightMaximum, closestHit.tMaximum),
+                    closestHit);
             }
         } else {
-            intersectNode(rightChild, ray, closestHit);
+            intersectNode(rightChild, ray, rightMinimum, rightMaximum, closestHit);
             if (leftMinimum < closestHit.tMaximum) {
-                intersectNode(leftChild, ray, closestHit);
+                intersectNode(
+                    leftChild,
+                    ray,
+                    leftMinimum,
+                    std::min(leftMaximum, closestHit.tMaximum),
+                    closestHit);
             }
         }
     } else if (intersectsLeft) {
-        intersectNode(leftChild, ray, closestHit);
+        intersectNode(leftChild, ray, leftMinimum, leftMaximum, closestHit);
     } else if (intersectsRight) {
-        intersectNode(rightChild, ray, closestHit);
+        intersectNode(rightChild, ray, rightMinimum, rightMaximum, closestHit);
     }
 }
 
@@ -148,7 +158,12 @@ void Bvh::intersect(const Ray& ray, HitRecord& closestHit) const noexcept {
     if (empty()) {
         return;
     }
-    intersectNode(0, ray, closestHit);
+
+    float rootMinimum = closestHit.tMinimum;
+    float rootMaximum = closestHit.tMaximum;
+    if (raym0nade::intersect(ray, nodes_.front().bounds, rootMinimum, rootMaximum)) {
+        intersectNode(0, ray, rootMinimum, rootMaximum, closestHit);
+    }
 }
 
 bool Bvh::empty() const noexcept {

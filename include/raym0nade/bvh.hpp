@@ -29,7 +29,12 @@ private:
     };
 
     void buildNode(std::size_t nodeIndex, std::size_t firstFace, std::size_t faceEnd);
-    void intersectNode(std::size_t nodeIndex, const Ray& ray, HitRecord& closestHit) const noexcept;
+    void intersectNode(
+        std::size_t nodeIndex,
+        const Ray& ray,
+        float nodeMinimum,
+        float nodeMaximum,
+        HitRecord& closestHit) const noexcept;
 
     std::vector<Node> nodes_;
     Face* faces_{nullptr};

@@ -1,0 +1,11 @@
+newmtl MatteRed
+Kd 0.8 0.2 0.1
+d 1.0
+Ns 16.0
+illum 2
+
+newmtl AreaLight
+Kd 1.0 1.0 1.0
+Ke 20.0 20.0 20.0
+d 1.0
+illum 2
