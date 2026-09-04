@@ -1,0 +1,13 @@
+#pragma once
+
+// Standard Windows Python distributions normally expose only the release ABI.
+// Hide _DEBUG only while Python.h is parsed, then restore it so that the rest of
+// the translation unit keeps the application's normal Debug configuration.
+#if defined(_MSC_VER) && defined(_DEBUG)
+#    pragma push_macro("_DEBUG")
+#    undef _DEBUG
+#    include <Python.h>
+#    pragma pop_macro("_DEBUG")
+#else
+#    include <Python.h>
+#endif

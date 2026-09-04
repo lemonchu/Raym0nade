@@ -1,96 +1,177 @@
+#include "raym0nade/bvh.hpp"
+
 #include <algorithm>
-#include <iostream>
-#include "bvh.h"
+#include <cmath>
+#include <cstddef>
+#include <limits>
 
-BVH_Node::BVH_Node() : faceL(0), faceR(0) {}
+namespace raym0nade {
+namespace {
 
-template<int axis>
-bool cmp(const Face &A, const Face &B) {
-    return A.center()[axis] < B.center()[axis];
+constexpr std::size_t kLeafFaceCount = 10;
+
+float centroidCoordinate(const Face& face, int axis) noexcept {
+    const float coordinate = face.center()[axis];
+    return std::isfinite(coordinate) ? coordinate : 0.0F;
 }
 
-bool (*cmpFunc[3])(const Face &, const Face &) = {cmp<0>, cmp<1>, cmp<2>};
+}  // namespace
 
-BVH::BVH() : node(nullptr), faces(nullptr) {}
-
-const unsigned int LeafBagSize = 10;
-
-void BVH::dfs_build(int u, int faceL, int faceR) {
-    if (faceR - faceL <= LeafBagSize) {
-        node[u].faceL = faceL;
-        node[u].faceR = faceR;
-        node[u].box = Box(vec3(INFINITY),vec3(-INFINITY));
-        for (int i = faceL; i < faceR; i++)
-            node[u].box = node[u].box + faces[i].aabb();
+void Bvh::build(std::vector<Face>& faces) {
+    nodes_.clear();
+    faces_ = nullptr;
+    if (faces.empty()) {
         return;
     }
-    vec3 Em = vec3(0), Em2 = vec3(0);
-    for (int i = faceL; i < faceR; i++) {
-        vec3 m = faces[i].center();
-        Em += m;
-        Em2 += m * m;
+
+    faces_ = faces.data();
+    nodes_.emplace_back();
+    buildNode(0, 0, faces.size());
+}
+
+void Bvh::buildNode(std::size_t nodeIndex, std::size_t firstFace, std::size_t faceEnd) {
+    Box bounds;
+    for (std::size_t index = firstFace; index < faceEnd; ++index) {
+        bounds = merge(bounds, faces_[index].bounds());
     }
-    vec3 D = Em2 - Em * Em / (float)(faceR - faceL);
+
+    const std::size_t faceCount = faceEnd - firstFace;
+    if (faceCount <= kLeafFaceCount) {
+        nodes_[nodeIndex].bounds = bounds;
+        nodes_[nodeIndex].firstFace = firstFace;
+        nodes_[nodeIndex].faceCount = faceCount;
+        return;
+    }
+
+    vec3 centroidMinimum{std::numeric_limits<float>::infinity()};
+    vec3 centroidMaximum{-std::numeric_limits<float>::infinity()};
+    for (std::size_t index = firstFace; index < faceEnd; ++index) {
+        const vec3 centroid{
+            centroidCoordinate(faces_[index], 0),
+            centroidCoordinate(faces_[index], 1),
+            centroidCoordinate(faces_[index], 2),
+        };
+        centroidMinimum = glm::min(centroidMinimum, centroid);
+        centroidMaximum = glm::max(centroidMaximum, centroid);
+    }
+
+    const vec3 extent = centroidMaximum - centroidMinimum;
     int axis = 0;
-    if (D[1] > D[0]) axis = 1;
-    if (D[2] > D[0] && D[2] > D[1]) axis = 2;
-    int faceM = (faceR + faceL) / 2;
-    std::nth_element(faces+faceL, faces+faceM, faces+faceR, cmpFunc[axis]);
-    dfs_build(u<<1, faceL, faceM);
-    dfs_build(u<<1|1, faceM, faceR);
-    node[u].box = node[u<<1].box + node[u<<1|1].box;
+    if (extent.y > extent.x) {
+        axis = 1;
+    }
+    if (extent.z > extent[axis]) {
+        axis = 2;
+    }
+
+    const std::size_t middleFace = firstFace + faceCount / 2;
+    std::nth_element(
+        faces_ + firstFace,
+        faces_ + middleFace,
+        faces_ + faceEnd,
+        [axis](const Face& lhs, const Face& rhs) {
+            return centroidCoordinate(lhs, axis) < centroidCoordinate(rhs, axis);
+        });
+
+    const std::size_t firstChild = nodes_.size();
+    nodes_.resize(nodes_.size() + 2);
+    nodes_[nodeIndex].bounds = bounds;
+    nodes_[nodeIndex].firstFace = firstChild;
+    nodes_[nodeIndex].faceCount = 0;
+
+    buildNode(firstChild, firstFace, middleFace);
+    buildNode(firstChild + 1, middleFace, faceEnd);
 }
 
-int nodeCount(int u, int n) {
-    return (n <= LeafBagSize) ? u : nodeCount(u<<1|1, (n+1)>>1);
-}
+void Bvh::intersectNode(
+    std::size_t nodeIndex,
+    const Ray& ray,
+    float nodeMinimum,
+    float nodeMaximum,
+    HitRecord& closestHit) const noexcept {
+    if (nodeIndex >= nodes_.size() || nodeMinimum >= closestHit.tMaximum) {
+        return;
+    }
 
-void BVH::build(std::vector<Face> &faces0) {
-    int size = nodeCount(1, int(faces0.size())) + 1;
-    node = new BVH_Node[size];
-    faces = &faces0.front();
-    dfs_build(1, 0, int(faces0.size()));
-    std::cout << "BVH has built with size " << size << std::endl;
-}
-
-void BVH::dfs_rayHit(int u, const Ray &ray, HitRecord &closest_hit) const {
-    if (node[u].faceR) {
-        for (int i = node[u].faceL; i < node[u].faceR; i++) {
-            const Face &face = faces[i];
-            float t = RayTriangleIntersection(ray, face.v[0], face.v[1], face.v[2]);
-            if (closest_hit.t_min < t && t < closest_hit.t_max) {
-                closest_hit.t_max = t;
-                closest_hit.face = &face;
+    const Node& node = nodes_[nodeIndex];
+    if (node.faceCount > 0) {
+        const std::size_t faceEnd = node.firstFace + node.faceCount;
+        for (std::size_t index = node.firstFace; index < faceEnd; ++index) {
+            const Face& face = faces_[index];
+            const float distance = intersectTriangle(
+                ray, face.vertices[0], face.vertices[1], face.vertices[2]);
+            if (distance > closestHit.tMinimum && distance < closestHit.tMaximum) {
+                closestHit.tMaximum = distance;
+                closestHit.face = &face;
             }
         }
         return;
     }
 
-    float
-        tL0 = closest_hit.t_min,
-        tR0 = closest_hit.t_max,
-        tL1 = closest_hit.t_min,
-        tR1 = closest_hit.t_max;
-    rayInBox(ray, node[u<<1].box, tL0, tR0);
-    rayInBox(ray, node[u<<1|1].box, tL1, tR1);
+    const std::size_t leftChild = node.firstFace;
+    const std::size_t rightChild = leftChild + 1;
+    if (rightChild >= nodes_.size()) {
+        return;
+    }
 
-    if (tL0 < tL1) {
-        if (tL0 < tR0)
-            dfs_rayHit(u<<1, ray, closest_hit);
-        if (tL1 < tR1 && tL1 < closest_hit.t_max)
-            dfs_rayHit(u<<1|1, ray, closest_hit);
-    } else {
-        if (tL1 < tR1)
-            dfs_rayHit(u<<1|1, ray, closest_hit);
-        if (tL0 < tR0 && tL0 < closest_hit.t_max)
-            dfs_rayHit(u<<1, ray, closest_hit);
+    const float traversalMinimum = std::max(nodeMinimum, closestHit.tMinimum);
+    const float traversalMaximum = std::min(nodeMaximum, closestHit.tMaximum);
+    float leftMinimum = traversalMinimum;
+    float leftMaximum = traversalMaximum;
+    float rightMinimum = traversalMinimum;
+    float rightMaximum = traversalMaximum;
+    const bool intersectsLeft = raym0nade::intersect(
+        ray, nodes_[leftChild].bounds, leftMinimum, leftMaximum);
+    const bool intersectsRight = raym0nade::intersect(
+        ray, nodes_[rightChild].bounds, rightMinimum, rightMaximum);
+
+    if (intersectsLeft && intersectsRight) {
+        if (leftMinimum <= rightMinimum) {
+            intersectNode(leftChild, ray, leftMinimum, leftMaximum, closestHit);
+            if (rightMinimum < closestHit.tMaximum) {
+                intersectNode(
+                    rightChild,
+                    ray,
+                    rightMinimum,
+                    std::min(rightMaximum, closestHit.tMaximum),
+                    closestHit);
+            }
+        } else {
+            intersectNode(rightChild, ray, rightMinimum, rightMaximum, closestHit);
+            if (leftMinimum < closestHit.tMaximum) {
+                intersectNode(
+                    leftChild,
+                    ray,
+                    leftMinimum,
+                    std::min(leftMaximum, closestHit.tMaximum),
+                    closestHit);
+            }
+        }
+    } else if (intersectsLeft) {
+        intersectNode(leftChild, ray, leftMinimum, leftMaximum, closestHit);
+    } else if (intersectsRight) {
+        intersectNode(rightChild, ray, rightMinimum, rightMaximum, closestHit);
     }
 }
 
-void BVH::rayHit(const Ray &ray, HitRecord &closest_hit) const {
-    dfs_rayHit(1, ray, closest_hit);
+void Bvh::intersect(const Ray& ray, HitRecord& closestHit) const noexcept {
+    if (empty()) {
+        return;
+    }
+
+    float rootMinimum = closestHit.tMinimum;
+    float rootMaximum = closestHit.tMaximum;
+    if (raym0nade::intersect(ray, nodes_.front().bounds, rootMinimum, rootMaximum)) {
+        intersectNode(0, ray, rootMinimum, rootMaximum, closestHit);
+    }
 }
 
-BVH::~BVH() {
-    delete[] node;
+bool Bvh::empty() const noexcept {
+    return nodes_.empty() || faces_ == nullptr;
 }
+
+std::size_t Bvh::nodeCount() const noexcept {
+    return nodes_.size();
+}
+
+}  // namespace raym0nade

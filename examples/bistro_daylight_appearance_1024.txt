@@ -1,0 +1,15 @@
+create model bistro_daylight
+model/Bistro_v5_2/
+BistroExterior.fbx
+san_giuseppe_bridge_4k.hdr
+create settings daylight_appearance_1024
+0.96718 -0.2 -0.156768
+0.16 0 0.987117
+-0.1974234 -0.9798 0.032
+-16.5 -0.5 -2.25
+0.00205 15.0 0.0 12.0
+1024 576
+64 0 0.7
+output/BistroDaylightAppearance1024
+render bistro_daylight daylight_appearance_1024
+exit

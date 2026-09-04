@@ -1,383 +1,489 @@
-#include <cstdlib>
-#include <png.h>
-#include <stdexcept>
-#include <iostream>
-#include <sstream>
-#include "material.h"
-#include "geometry.h"
+#include "raym0nade/material.hpp"
 
-std::string urlDecode(const std::string &src) {
+#include <png.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+#include "python_image_loader.hpp"
+
+namespace raym0nade {
+namespace {
+
+class FileHandle {
+public:
+    explicit FileHandle(const std::filesystem::path& filename) {
+#if defined(_WIN32) && defined(_MSC_VER)
+        if (_wfopen_s(&file_, filename.c_str(), L"rb") != 0) {
+            file_ = nullptr;
+        }
+#elif defined(_WIN32)
+        file_ = _wfopen(filename.c_str(), L"rb");
+#else
+        file_ = std::fopen(filename.c_str(), "rb");
+#endif
+        if (file_ == nullptr) {
+            throw std::runtime_error("Failed to open image: " + filename.string());
+        }
+    }
+
+    FileHandle(const FileHandle&) = delete;
+    FileHandle& operator=(const FileHandle&) = delete;
+
+    ~FileHandle() {
+        if (file_ != nullptr) {
+            std::fclose(file_);
+        }
+    }
+
+    [[nodiscard]] FILE* get() const noexcept {
+        return file_;
+    }
+
+private:
+    FILE* file_{nullptr};
+};
+
+class PngImageHandle {
+public:
+    PngImageHandle() {
+        image_.version = PNG_IMAGE_VERSION;
+    }
+
+    PngImageHandle(const PngImageHandle&) = delete;
+    PngImageHandle& operator=(const PngImageHandle&) = delete;
+
+    ~PngImageHandle() {
+        png_image_free(&image_);
+    }
+
+    [[nodiscard]] png_image& get() noexcept {
+        return image_;
+    }
+
+private:
+    png_image image_{};
+};
+
+std::uint8_t component(
+    const std::vector<std::uint8_t>& pixels, std::size_t pixelIndex, int channels, int requestedChannel) {
+    const std::size_t base = pixelIndex * static_cast<std::size_t>(channels);
+    if (channels == 1) {
+        return requestedChannel == 3 ? 255 : pixels[base];
+    }
+    if (channels == 2) {
+        return requestedChannel == 3 ? pixels[base + 1] : pixels[base];
+    }
+    if (requestedChannel == 3) {
+        return channels >= 4 ? pixels[base + 3] : 255;
+    }
+    return pixels[base + static_cast<std::size_t>(requestedChannel)];
+}
+
+template <typename Vector>
+Vector pixel(const std::vector<std::uint8_t>& pixels, std::size_t pixelIndex, int channels);
+
+template <>
+vec3 pixel<vec3>(const std::vector<std::uint8_t>& pixels, std::size_t pixelIndex, int channels) {
+    return vec3{
+               static_cast<float>(component(pixels, pixelIndex, channels, 0)),
+               static_cast<float>(component(pixels, pixelIndex, channels, 1)),
+               static_cast<float>(component(pixels, pixelIndex, channels, 2))} /
+           255.0F;
+}
+
+template <>
+vec4 pixel<vec4>(const std::vector<std::uint8_t>& pixels, std::size_t pixelIndex, int channels) {
+    return vec4{
+               static_cast<float>(component(pixels, pixelIndex, channels, 0)),
+               static_cast<float>(component(pixels, pixelIndex, channels, 1)),
+               static_cast<float>(component(pixels, pixelIndex, channels, 2)),
+               static_cast<float>(component(pixels, pixelIndex, channels, 3))} /
+           255.0F;
+}
+
+int wrapIndex(int value, int extent) noexcept {
+    value %= extent;
+    return value < 0 ? value + extent : value;
+}
+
+float wrapUnit(float value) noexcept {
+    if (!std::isfinite(value)) {
+        return 0.0F;
+    }
+    const float wrapped = value - std::floor(value);
+    return wrapped >= 0.0F && wrapped < 1.0F ? wrapped : 0.0F;
+}
+
+int mipExtent(int baseExtent, std::size_t level) noexcept {
+    int extent = std::max(baseExtent, 1);
+    for (std::size_t index = 0; index < level && extent > 1; ++index) {
+        extent = extent / 2 + extent % 2;
+    }
+    return extent;
+}
+
+template <typename Vector>
+Vector bilinearSample(
+    const std::vector<std::uint8_t>& pixels,
+    int width,
+    int height,
+    int channels,
+    float u,
+    float v) {
+    const float x = wrapUnit(u) * static_cast<float>(width);
+    const float y = wrapUnit(v) * static_cast<float>(height);
+    const int unwrappedX = static_cast<int>(std::floor(x));
+    const int unwrappedY = static_cast<int>(std::floor(y));
+    const float blendX = x - static_cast<float>(unwrappedX);
+    const float blendY = y - static_cast<float>(unwrappedY);
+
+    const int x0 = wrapIndex(unwrappedX, width);
+    const int y0 = wrapIndex(unwrappedY, height);
+    const int x1 = (x0 + 1) % width;
+    const int y1 = (y0 + 1) % height;
+
+    const auto index = [width](int sampleX, int sampleY) {
+        return static_cast<std::size_t>(sampleY) * static_cast<std::size_t>(width) +
+               static_cast<std::size_t>(sampleX);
+    };
+    const Vector c00 = pixel<Vector>(pixels, index(x0, y0), channels);
+    const Vector c01 = pixel<Vector>(pixels, index(x1, y0), channels);
+    const Vector c10 = pixel<Vector>(pixels, index(x0, y1), channels);
+    const Vector c11 = pixel<Vector>(pixels, index(x1, y1), channels);
+    const Vector top = c00 * (1.0F - blendX) + c01 * blendX;
+    const Vector bottom = c10 * (1.0F - blendX) + c11 * blendX;
+    return top * (1.0F - blendY) + bottom * blendY;
+}
+
+float mipDepth(float footprint, int textureWidth) noexcept {
+    if (!isFinite(footprint) || footprint <= 0.0F || textureWidth <= 0) {
+        return 0.0F;
+    }
+    return std::max(0.0F, std::log2(footprint * static_cast<float>(textureWidth)));
+}
+
+void convertToLinear(vec4& value) noexcept {
+    constexpr float gamma = 2.2F;
+    value.r = std::pow(std::max(value.r, 0.0F), gamma);
+    value.g = std::pow(std::max(value.g, 0.0F), gamma);
+    value.b = std::pow(std::max(value.b, 0.0F), gamma);
+}
+
+bool isHexDigit(char value) noexcept {
+    return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
+           (value >= 'A' && value <= 'F');
+}
+
+unsigned int hexValue(char value) noexcept {
+    if (value >= '0' && value <= '9') {
+        return static_cast<unsigned int>(value - '0');
+    }
+    if (value >= 'a' && value <= 'f') {
+        return static_cast<unsigned int>(value - 'a' + 10);
+    }
+    return static_cast<unsigned int>(value - 'A' + 10);
+}
+
+}  // namespace
+
+void ImageData::setBaseLevel(
+    int imageWidth, int imageHeight, int channelCount, std::vector<std::uint8_t> pixels) {
+    if (imageWidth <= 0 || imageHeight <= 0 || channelCount < 1 || channelCount > 4) {
+        throw std::invalid_argument("Invalid image dimensions or channel count.");
+    }
+    const std::size_t width = static_cast<std::size_t>(imageWidth);
+    const std::size_t height = static_cast<std::size_t>(imageHeight);
+    const std::size_t channels = static_cast<std::size_t>(channelCount);
+    const std::size_t maximumSize = std::numeric_limits<std::size_t>::max();
+    if (width > maximumSize / height || width * height > maximumSize / channels) {
+        throw std::invalid_argument("Image dimensions overflow the addressable buffer size.");
+    }
+    const std::size_t expectedSize = width * height * channels;
+    if (pixels.size() != expectedSize) {
+        throw std::invalid_argument("Image buffer size does not match its dimensions.");
+    }
+
+    width_ = imageWidth;
+    height_ = imageHeight;
+    channels_ = channelCount;
+    for (auto& level : levels_) {
+        level.clear();
+    }
+    levels_[0] = std::move(pixels);
+    mipLevelCount_ = 1;
+}
+
+void ImageData::generateMipmaps() {
+    if (empty()) {
+        return;
+    }
+
+    for (std::size_t level = 1; level < kMaxMipmapLevels; ++level) {
+        const int previousWidth = mipExtent(width_, level - 1);
+        const int previousHeight = mipExtent(height_, level - 1);
+        if (previousWidth == 1 && previousHeight == 1) {
+            break;
+        }
+        const int currentWidth = previousWidth / 2 + previousWidth % 2;
+        const int currentHeight = previousHeight / 2 + previousHeight % 2;
+
+        auto& current = levels_[level];
+        const auto& previous = levels_[level - 1];
+        current.resize(static_cast<std::size_t>(currentWidth) * static_cast<std::size_t>(currentHeight) *
+                       static_cast<std::size_t>(channels_));
+        for (int y = 0; y < currentHeight; ++y) {
+            for (int x = 0; x < currentWidth; ++x) {
+                for (int channel = 0; channel < channels_; ++channel) {
+                    unsigned int sum = 0;
+                    for (int offsetY = 0; offsetY < 2; ++offsetY) {
+                        for (int offsetX = 0; offsetX < 2; ++offsetX) {
+                            const int sourceX = (x * 2 + offsetX) % previousWidth;
+                            const int sourceY = (y * 2 + offsetY) % previousHeight;
+                            const std::size_t sourceIndex =
+                                (static_cast<std::size_t>(sourceY) * static_cast<std::size_t>(previousWidth) +
+                                 static_cast<std::size_t>(sourceX)) *
+                                    static_cast<std::size_t>(channels_) +
+                                static_cast<std::size_t>(channel);
+                            sum += previous[sourceIndex];
+                        }
+                    }
+                    const std::size_t destinationIndex =
+                        (static_cast<std::size_t>(y) * static_cast<std::size_t>(currentWidth) +
+                         static_cast<std::size_t>(x)) *
+                            static_cast<std::size_t>(channels_) +
+                        static_cast<std::size_t>(channel);
+                    current[destinationIndex] = static_cast<std::uint8_t>(sum / 4U);
+                }
+            }
+        }
+        mipLevelCount_ = level + 1;
+    }
+}
+
+namespace {
+
+template <typename Vector>
+Vector sampleImage(
+    const std::array<std::vector<std::uint8_t>, kMaxMipmapLevels>& levels,
+    std::size_t mipLevelCount,
+    int width,
+    int height,
+    int channels,
+    float u,
+    float v,
+    float depth) {
+    if (mipLevelCount == 0 || levels[0].empty() || !isFinite(u) || !isFinite(v)) {
+        return Vector{0.0F};
+    }
+    if (!isFinite(depth)) {
+        depth = 0.0F;
+    }
+
+    depth = std::clamp(depth, 0.0F, static_cast<float>(mipLevelCount - 1));
+    const auto level = static_cast<std::size_t>(depth);
+    const std::size_t nextLevel = std::min(level + 1, mipLevelCount - 1);
+    const float levelBlend = depth - static_cast<float>(level);
+    v = 1.0F - v;
+
+    const int levelWidth = mipExtent(width, level);
+    const int levelHeight = mipExtent(height, level);
+    const int nextWidth = mipExtent(width, nextLevel);
+    const int nextHeight = mipExtent(height, nextLevel);
+    const Vector first = bilinearSample<Vector>(levels[level], levelWidth, levelHeight, channels, u, v);
+    const Vector second =
+        bilinearSample<Vector>(levels[nextLevel], nextWidth, nextHeight, channels, u, v);
+    return first * (1.0F - levelBlend) + second * levelBlend;
+}
+
+}  // namespace
+
+vec3 ImageData::sampleRgb(float u, float v, float depth) const {
+    return sampleImage<vec3>(levels_, mipLevelCount_, width_, height_, channels_, u, v, depth);
+}
+
+vec4 ImageData::sampleRgba(float u, float v, float depth) const {
+    return sampleImage<vec4>(levels_, mipLevelCount_, width_, height_, channels_, u, v, depth);
+}
+
+bool ImageData::empty() const noexcept {
+    return mipLevelCount_ == 0 || levels_[0].empty();
+}
+
+bool ImageData::hasTransparency() const noexcept {
+    if (empty() || (channels_ != 2 && channels_ != 4)) {
+        return false;
+    }
+    const int alphaChannel = channels_ - 1;
+    for (std::size_t index = static_cast<std::size_t>(alphaChannel); index < levels_[0].size();
+         index += static_cast<std::size_t>(channels_)) {
+        if (levels_[0][index] < 255U) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int ImageData::width() const noexcept {
+    return width_;
+}
+
+int ImageData::height() const noexcept {
+    return height_;
+}
+
+int ImageData::channels() const noexcept {
+    return channels_;
+}
+
+std::size_t ImageData::mipLevelCount() const noexcept {
+    return mipLevelCount_;
+}
+
+std::string urlDecode(const std::string& source) {
     std::string decoded;
-    char ch;
-    int i, ii;
-    for (i = 0; i < src.length(); i++) {
-        if (int(src[i]) == 37) {
-            sscanf(src.substr(i + 1, 2).c_str(), "%x", &ii);
-            ch = static_cast<char>(ii);
-            decoded += ch;
-            i = i + 2;
+    decoded.reserve(source.size());
+    for (std::size_t index = 0; index < source.size(); ++index) {
+        if (source[index] == '%' && index + 2 < source.size() && isHexDigit(source[index + 1]) &&
+            isHexDigit(source[index + 2])) {
+            const unsigned int value = hexValue(source[index + 1]) * 16U + hexValue(source[index + 2]);
+            decoded.push_back(static_cast<char>(value));
+            index += 2;
         } else {
-            decoded += src[i];
+            decoded.push_back(source[index]);
         }
     }
     return decoded;
 }
 
-template<typename Vec>
-Vec get_basic(const std::vector<uint8_t> &data, int index);
-
-template<>
-vec3 get_basic<vec3>(const std::vector<uint8_t> &data, int index) {
-    return vec3(
-            static_cast<float>(data[index]),
-            static_cast<float>(data[index + 1]),
-            static_cast<float>(data[index + 2])
-    ) / 255.0f;
+ImageData Material::loadDds(const std::filesystem::path& filename) {
+    detail::ByteImage decoded = detail::loadByteImage(filename, "dds_to_array");
+    ImageData image;
+    image.setBaseLevel(
+        decoded.width, decoded.height, decoded.channels, std::move(decoded.pixels));
+    image.generateMipmaps();
+    return image;
 }
 
-template<>
-vec4 get_basic<vec4>(const std::vector<uint8_t> &data, int index) {
-    return vec4(
-            static_cast<float>(data[index]),
-            static_cast<float>(data[index + 1]),
-            static_cast<float>(data[index + 2]),
-            static_cast<float>(data[index + 3])
-    ) / 255.0f;
-}
-
-template<typename Vec>
-Vec get_bilinear(const std::vector<uint8_t>& data, int width, int height, float u, float v) {
-
-    static constexpr auto _mod = [](int &x, int m) -> void {
-        if (x < 0 || x >= m) {
-            x %= m;
-            if (x < 0) x += m;
-        }
-    };
-
-    static const int BitWidth = std::is_same<Vec, vec3>::value ? 3 : 4;
-    float x = u * float(width), y = v * float(height);
-    int x0 = int(floorf(x)), y0 = int(floorf(y));
-    float dx = x - float(x0), dy = y - float(y0);
-    _mod(x0, width);
-    _mod(y0, height);
-    int x1 = (x0 + 1) % width, y1 = (y0 + 1) % height;
-
-    Vec c00 = get_basic<Vec>(data, (y0 * width + x0) * BitWidth);
-    Vec c01 = get_basic<Vec>(data, (y0 * width + x1) * BitWidth);
-    Vec c10 = get_basic<Vec>(data, (y1 * width + x0) * BitWidth);
-    Vec c11 = get_basic<Vec>(data, (y1 * width + x1) * BitWidth);
-    Vec c0 = c00 * (1.0f - dx) + c01 * dx;
-    Vec c1 = c10 * (1.0f - dx) + c11 * dx;
-
-    Vec ret = c0 * (1.0f - dy) + c1 * dy;
-
-    if (dx < 0.0f || dy < 0.0f)
-        std::cout << "dx: " << dx << " dy: " << dy << std::endl;
-
-    return c0 * (1.0f - dy) + c1 * dy;
-}
-
-template<typename Vec>
-Vec ImageData::get(float u, float v, float depth) const {
-    v = 1.0f - v;
-    depth = std::max(std::min(depth, static_cast<float>(map_depth - 1)), 0.0f);
-
-    int level = static_cast<int>(depth);
-    int nextLevel = std::min(level + 1, map_depth - 1);
-    float levelBlend = depth - float(level);
-
-    Vec ret1 = get_bilinear<Vec>(data[level], width >> level, height >> level, u, v);
-    Vec ret2 = get_bilinear<Vec>(data[nextLevel], width >> nextLevel, height >> nextLevel, u, v);
-
-    return ret1 * (1.0f - levelBlend) + ret2 * levelBlend;
-}
-
-ImageData::ImageData() : width(0), height(0), channels(0), map_depth(0) {}
-
-bool ImageData::empty() const {
-    return data[0].empty();
-}
-
-bool ImageData::hasTransparentPart() const {
-    for (int i = 3; i < data[0].size(); i += 4)
-        if (data[0][i] < 255)
-            return true;
-    return false;
-}
-
-Material::Material() :
-    hasFullyTransparentPart(false), opacity(1.0f), ior(1.0f),
-    transmittingColor(0.0f), roughness(0.8f), id(0) {}
-
-void ImageData::generateMipmaps() {
-
-    map_depth = MAX_MIPMAP_LEVEL; // NEVER REMOVE THIS LINE
-
-    // std::cout << "--- Generating mipmaps...";
-    for (int level = 1; level < MAX_MIPMAP_LEVEL; ++level) {
-        int prevWidth = width >> (level - 1);
-        int prevHeight = height >> (level - 1);
-        int currWidth = width >> level;
-        int currHeight = height >> level;
-
-        if (currWidth == 0 || currHeight == 0){
-            map_depth = level;
-            break;
-        }
-
-        data[level].resize(currWidth * currHeight * channels);
-
-        for (int y = 0; y < currHeight; ++y) {
-            for (int x = 0; x < currWidth; ++x) {
-                for (int c = 0; c < channels; ++c) {
-                    int sum = 0;
-                    for (int dy = 0; dy < 2; ++dy) {
-                        for (int dx = 0; dx < 2; ++dx) {
-                            int px = (x * 2 + dx) % prevWidth;
-                            int py = (y * 2 + dy) % prevHeight;
-                            sum += data[level - 1][(py * prevWidth + px) * channels + c];
-                        }
-                    }
-                    data[level][(y * currWidth + x) * channels + c] = sum / 4;
-                }
-            }
-        }
-    }
-    // std::cout << map_depth << " levels generated." << std::endl;
-}
-
-PyObject *call_image_to_array(const std::string &filename, const std::string &scriptName) {
-    static bool isInitialized = false;
-
-    // Initialize the Python interpreter only once
-    if (!isInitialized) {
-        Py_Initialize();
-        isInitialized = true;
-
-        // Add the scripts directory to the Python path
-        PyObject *sysPath = PySys_GetObject("path");
-        PyObject *path = PyUnicode_DecodeFSDefault("scripts");
-        PyList_Append(sysPath, path);
-        Py_DECREF(path);
+ImageData Material::loadPng(const std::filesystem::path& filename) {
+    FileHandle file{filename};
+    PngImageHandle handle;
+    png_image& png = handle.get();
+    if (png_image_begin_read_from_stdio(&png, file.get()) == 0) {
+        const std::string error = png.message;
+        throw std::runtime_error("Failed to read PNG header from " + filename.string() + ": " + error);
     }
 
-    PyObject *pName = PyUnicode_DecodeFSDefault(scriptName.c_str());
-    PyObject *pModule = PyImport_Import(pName);
-    Py_DECREF(pName);
+    png.format = PNG_FORMAT_RGBA;
+    const std::size_t width = static_cast<std::size_t>(png.width);
+    const std::size_t height = static_cast<std::size_t>(png.height);
+    constexpr std::size_t channelCount = 4;
+    const std::size_t maximumSize = std::numeric_limits<std::size_t>::max();
+    if (width == 0 || height == 0 ||
+        width > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        height > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        width > maximumSize / height || width * height > maximumSize / channelCount) {
+        throw std::runtime_error("PNG dimensions are not supported: " + filename.string());
+    }
+    std::vector<std::uint8_t> pixels(width * height * channelCount);
+    if (png_image_finish_read(&png, nullptr, pixels.data(), 0, nullptr) == 0) {
+        const std::string error = png.message;
+        throw std::runtime_error("Failed to decode PNG " + filename.string() + ": " + error);
+    }
 
-    if (pModule != nullptr) {
-        PyObject *pFunc = PyObject_GetAttrString(pModule, scriptName.c_str());
-        if (PyCallable_Check(pFunc)) {
-            PyObject *pArgs = PyTuple_Pack(1, PyUnicode_FromString(filename.c_str()));
-            PyObject *pValue = PyObject_CallObject(pFunc, pArgs);
-            Py_DECREF(pArgs);
-            Py_XDECREF(pFunc);
-            Py_DECREF(pModule);
-            return pValue;
-        } else {
-            PyErr_Print();
-            Py_XDECREF(pFunc);
-            Py_DECREF(pModule);
-        }
+    ImageData image;
+    image.setBaseLevel(static_cast<int>(png.width), static_cast<int>(png.height), 4, std::move(pixels));
+    image.generateMipmaps();
+    return image;
+}
+
+void Material::loadTexture(TextureSlot slot, const std::filesystem::path& filename) {
+    if (static_cast<std::size_t>(slot) >= textures_.size()) {
+        throw std::invalid_argument("Texture slot is out of range.");
+    }
+    std::string extension = filename.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+
+    if (extension == ".png") {
+        texture(slot) = loadPng(filename);
+    } else if (extension == ".dds") {
+        texture(slot) = loadDds(filename);
     } else {
-        PyErr_Print();
+        throw std::runtime_error("Unsupported texture format: " + filename.string());
     }
-
-    return nullptr;
+    if (slot == TextureSlot::diffuse) {
+        hasCutoutTransparency = texture(slot).hasTransparency();
+    }
 }
 
-bool Material::loadImageFromDDS(ImageData &imageData, const std::string &filename) {
-    PyObject *pValue = call_image_to_array(filename, "dds_to_array");
-
-    if (pValue != nullptr) {
-        PyObject *pWidth = PyTuple_GetItem(pValue, 0);
-        PyObject *pHeight = PyTuple_GetItem(pValue, 1);
-        PyObject *pChannels = PyTuple_GetItem(pValue, 2);
-        PyObject *pData = PyTuple_GetItem(pValue, 3);
-
-        if (pWidth != Py_None && pHeight != Py_None && pChannels != Py_None && pData != Py_None) {
-            imageData.width = PyLong_AsLong(pWidth);
-            imageData.height = PyLong_AsLong(pHeight);
-            imageData.channels = PyLong_AsLong(pChannels);
-
-            Py_buffer view;
-            if (PyObject_GetBuffer(pData, &view, PyBUF_SIMPLE) == 0) {
-                uint8_t *buffer = static_cast<uint8_t*>(view.buf);
-                imageData.data[0].assign(buffer, buffer + view.len);
-                PyBuffer_Release(&view);
-            }
-        }
-        Py_DECREF(pValue);
-    } else {
-        PyErr_Print();
-        return false;
-    }
-
-    return true;
+bool Material::hasTexture(TextureSlot slot) const noexcept {
+    const std::size_t index = static_cast<std::size_t>(slot);
+    return index < textures_.size() && !textures_[index].empty();
 }
 
-bool Material::loadImageFromPNG(ImageData &imageData, const std::string &filename) {
-
-    std::cout << "Loading image from file: " << filename << std::endl;
-
-    FILE *fp;
-    if ((fp = fopen(filename.c_str(), "rb")) == nullptr)
-        throw std::runtime_error("Failed to open file for reading");
-
-    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-    if (!png) throw std::runtime_error("Failed to create PNG read struct");
-
-    png_infop info = png_create_info_struct(png);
-    if (!info) throw std::runtime_error("Failed to create PNG info struct");
-
-    if (setjmp(png_jmpbuf(png))) throw std::runtime_error("Error during PNG reading");
-
-    png_init_io(png, fp);
-    png_read_info(png, info);
-
-    int imgWidth = png_get_image_width(png, info);
-    int imgHeight = png_get_image_height(png, info);
-    png_byte color_type = png_get_color_type(png, info);
-    png_byte bit_depth = png_get_bit_depth(png, info);
-
-    if (bit_depth == 16) {
-        png_set_strip_16(png);
-    }
-
-    if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8) {
-        png_set_expand_gray_1_2_4_to_8(png);
-    }
-
-    if (color_type == PNG_COLOR_TYPE_PALETTE) {
-        png_set_palette_to_rgb(png);
-    }
-
-    if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth >= 8) {
-        png_set_gray_to_rgb(png);
-    }
-
-    if (color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
-        png_set_gray_to_rgb(png);
-    }
-
-    if (color_type == PNG_COLOR_TYPE_RGBA) {
-        png_set_strip_alpha(png);
-    }
-
-    png_read_update_info(png, info);
-
-    std::vector<png_byte> row(imgWidth * 3); // 3 bytes per pixel (RGB)
-    imageData.data[0].resize(imgWidth * imgHeight * 3);
-
-    for (int y = 0; y < imgHeight; y++) {
-        png_read_row(png, row.data(), nullptr);
-        for (int x = 0; x < imgWidth * 3; x++) {
-            imageData.data[0][y * imgWidth * 3 + x] = row[x];
-        }
-    }
-    imageData.width = imgWidth;
-    imageData.height = imgHeight;
-
-    fclose(fp);
-    png_destroy_read_struct(&png, &info, nullptr);
-
-    return true;
+bool Material::isEmissive() const noexcept {
+    const float luminance = glm::dot(glm::max(emissiveFactor, vec3{0.0F}), kLuminanceWeights);
+    return hasTexture(TextureSlot::emissive) || (isFinite(luminance) && luminance > 0.0F);
 }
 
-void Material::loadImageFromFile(int index, const std::string &filename) {
-    std::string fileExtension = filename.substr(filename.find_last_of(".") + 1);
-    if (fileExtension == "png" || fileExtension == "PNG") {
-        loadImageFromPNG(texture[index], filename);
-    } else if (fileExtension == "dds" || fileExtension == "DDS") {
-        loadImageFromDDS(texture[index], filename);
-    } else {
-        std::cerr << "Unsupported file format: " << filename << std::endl;
+vec4 Material::diffuseColor(float u, float v, float footprint) const {
+    const ImageData& image = texture(TextureSlot::diffuse);
+    if (image.empty()) {
+        return vec4{glm::max(diffuseFactor, vec3{0.0F}), 1.0F};
     }
-    texture[index].generateMipmaps();
-}
-
-void Material::loadMaterialProperties(const aiMaterial *aiMat) {
-    aiString matName;
-    if (aiMat->Get(AI_MATKEY_NAME, matName) == AI_SUCCESS) {
-        name = matName.C_Str();
-    }
-
-    ai_real aiOpacity;
-    if (aiMat->Get(AI_MATKEY_OPACITY, aiOpacity) == AI_SUCCESS && aiOpacity < 0.99f) {
-        opacity = 0.0f;
-        ior = 1.25f;
-        std::cout << "Material has Opacity" << std::endl;
-        std::cout << "Opacity " << opacity << " ior: " << ior << std::endl;
-
-        roughness = 5e-3;
-        if (name == "Ice")
-            roughness = 0.5f;
-
-        if (name == "TransparentGlassWine")
-            transmittingColor = vec3(0.2f, 0.08f, 0.07f);
-        if (name == "TransparentGlass" || name == "Water" || name == "Ice")
-            transmittingColor = vec3(1.0f);
-
-        if (name == "Beer")
-            transmittingColor = vec3(0.8f, 0.7f, 0.55f);
-        if (name == "Red_Wine")
-            transmittingColor = vec3(0.24f, 0.09f, 0.07f);
-        if (name == "White_Wine")
-            transmittingColor = vec3(0.85f, 0.78f, 0.6f);
-    }
-
-    if (texture[aiTextureType_DIFFUSE].hasTransparentPart()) {
-        hasFullyTransparentPart = true;
-        std::cout << "Material has transparent part" << std::endl;
-    }
-
-}
-
-void gammaPow(vec4 &v) {
-    static const float gamma = 2.2f;
-    if (v[0] < 0.0f || v[1] < 0.0f || v[2] < 0.0f) {
-        std::cerr << "color: " << v[0] << ", " << v[1] << ", " << v[2] << std::endl;
-        throw std::runtime_error("Invalid color value");
-    }
-    v[0] = pow(v[0], gamma);
-    v[1] = pow(v[1], gamma);
-    v[2] = pow(v[2], gamma);
-}
-
-// 传入 duv = nan 表示不使用mipmap
-vec4 Material::getDiffuseColor(float u, float v, float duv) const {
-    if (texture[aiTextureType_DIFFUSE].empty())
-        return vec4(1.0f);
-    float map_depth = isnan(duv) ? 0.0f : log2(duv * float(texture[aiTextureType_DIFFUSE].width));
-    vec4 color = texture[aiTextureType_DIFFUSE].get<vec4>(u, v, map_depth);
-    gammaPow(color);
+    vec4 color = image.sampleRgba(u, v, mipDepth(footprint, image.width()));
+    convertToLinear(color);
+    color.r *= diffuseFactor.r;
+    color.g *= diffuseFactor.g;
+    color.b *= diffuseFactor.b;
     return color;
 }
 
-vec3 Material::getNormal(float u, float v, float duv) const {
-    if (texture[aiTextureType_NORMALS].empty())
-        return vec3(0.0f);
-    float map_depth = isnan(duv) ? 0.0f : log2(duv * float(texture[aiTextureType_NORMALS].width));
-    return texture[aiTextureType_NORMALS].get<vec3>(u, v, map_depth) * 2.0f - 1.0f;
+vec3 Material::normal(float u, float v, float footprint) const {
+    const ImageData& image = texture(TextureSlot::normal);
+    if (image.empty()) {
+        return vec3{0.0F};
+    }
+    return image.sampleRgb(u, v, mipDepth(footprint, image.width())) * 2.0F - 1.0F;
 }
 
-vec3 Material::getEmissiveColor(float u, float v, float duv) const {
-    if (texture[aiTextureType_EMISSIVE].empty())
-        return vec3(0.0f);
-    float map_depth = isnan(duv) ? 0.0f : log2(duv * float(texture[aiTextureType_EMISSIVE].width));
-    vec4 color = texture[aiTextureType_EMISSIVE].get<vec4>(u, v, map_depth);
-    gammaPow(color);
-    return color;
+vec3 Material::emissiveColor(float u, float v, float footprint) const {
+    const ImageData& image = texture(TextureSlot::emissive);
+    if (image.empty()) {
+        return glm::max(emissiveFactor, vec3{0.0F});
+    }
+    vec4 color = image.sampleRgba(u, v, mipDepth(footprint, image.width()));
+    convertToLinear(color);
+    return vec3{color} * glm::max(emissiveFactor, vec3{0.0F});
 }
 
-void Material::getSurfaceData(float u, float v, float &roughness, float &metallic) const {
-    if (texture[aiTextureType_SPECULAR].empty()) {
-        metallic = 0.0f;
-        roughness = this->roughness;
+void Material::surfaceParameters(
+    float u, float v, float& surfaceRoughness, float& surfaceMetallic) const {
+    const ImageData& image = texture(TextureSlot::specular);
+    if (image.empty()) {
+        surfaceMetallic = metallic;
+        surfaceRoughness = roughness;
         return;
     }
-    vec4 surfaceData = texture[aiTextureType_SPECULAR].get<vec4>(u, v, 0);
-    metallic = std::min(surfaceData[2], 0.99f);
-    roughness = std::max(surfaceData[1], 1e-3f);
+    const vec4 surfaceData = image.sampleRgba(u, v, 0.0F);
+    surfaceMetallic = std::clamp(surfaceData.b, 0.0F, 0.99F);
+    surfaceRoughness = std::clamp(surfaceData.g, 1.0e-3F, 1.0F);
 }
+
+const ImageData& Material::texture(TextureSlot slot) const {
+    return textures_.at(static_cast<std::size_t>(slot));
+}
+
+ImageData& Material::texture(TextureSlot slot) {
+    return textures_.at(static_cast<std::size_t>(slot));
+}
+
+}  // namespace raym0nade
