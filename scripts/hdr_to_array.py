@@ -1,18 +1,18 @@
+"""Decode an HDR environment for the embedded C++ image bridge."""
+
 import imageio.v2 as imageio
 import numpy as np
 
+
 def hdr_to_array(input_hdr_file):
-    try:
-        hdr_image = imageio.imread(input_hdr_file, format='HDR-FI')
+    image = np.asarray(imageio.imread(input_hdr_file, format="HDR-FI"))
+    if image.ndim not in (2, 3):
+        raise ValueError(f"HDR image must have two or three dimensions, got {image.ndim}.")
 
-        width = hdr_image.shape[1]
-        height = hdr_image.shape[0]
-        channels = hdr_image.shape[2] if len(hdr_image.shape) > 2 else 1
+    height, width = image.shape[:2]
+    channels = image.shape[2] if image.ndim == 3 else 1
+    if width <= 0 or height <= 0 or channels < 1 or channels > 4:
+        raise ValueError(f"HDR image has an unsupported shape: {image.shape}.")
 
-        # Convert the image to a float32 array
-        hdr_array = hdr_image.astype(np.float32)
-
-        return width, height, channels, hdr_array
-    except Exception as e:
-        print(f"Conversion failed: {e}")
-        return None, None, None, None
+    contiguous_image = np.ascontiguousarray(image, dtype=np.float32)
+    return width, height, channels, contiguous_image

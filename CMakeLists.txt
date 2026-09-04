@@ -15,6 +15,7 @@ if(MSVC)
 endif()
 
 include(CTest)
+include("${PROJECT_SOURCE_DIR}/cmake/CompilerWarnings.cmake")
 
 option(RAYM0NADE_BUILD_RENDERER "Build the interactive renderer" ON)
 option(RAYM0NADE_BUILD_FXAA "Build the standalone FXAA tool" ON)
@@ -38,44 +39,22 @@ if(MSVC AND NOT Python3_LIBRARY_DEBUG)
     set(RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_HEADER
         "${PROJECT_BINARY_DIR}/generated/raym0nade/python_debug_compatibility.hpp"
     )
-    file(CONFIGURE
-        OUTPUT "${RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_HEADER}"
-        CONTENT [=[
-#pragma once
-
-#if defined(_MSC_VER) && defined(_DEBUG)
-#    pragma push_macro("_DEBUG")
-#    undef _DEBUG
-#    include <Python.h>
-#    pragma pop_macro("_DEBUG")
-#else
-#    include <Python.h>
-#endif
-]=]
-        @ONLY
+    get_filename_component(
+        RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_DIRECTORY
+        "${RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_HEADER}"
+        DIRECTORY
+    )
+    file(MAKE_DIRECTORY "${RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_DIRECTORY}")
+    configure_file(
+        "${PROJECT_SOURCE_DIR}/cmake/PythonDebugCompatibility.hpp.in"
+        "${RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_HEADER}"
+        COPYONLY
     )
     set_property(SOURCE src/python_image_loader.cpp APPEND PROPERTY
         COMPILE_OPTIONS
             "$<$<CONFIG:Debug>:/FI${RAYM0NADE_PYTHON_DEBUG_COMPATIBILITY_HEADER}>"
     )
 endif()
-
-function(raym0nade_enable_warnings target)
-    if(MSVC)
-        target_compile_options(${target} PRIVATE
-            /W4
-            /permissive-
-            /utf-8
-            /Zc:__cplusplus
-        )
-    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-        target_compile_options(${target} PRIVATE
-            -Wall
-            -Wextra
-            -Wpedantic
-        )
-    endif()
-endfunction()
 
 set(RAYM0NADE_GLM_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/lib/glm")
 if(NOT EXISTS "${RAYM0NADE_GLM_INCLUDE_DIR}/glm/glm.hpp")

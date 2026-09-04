@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} Release
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-14
+          - windows-latest
+
+    steps:
+      - name: Check out source and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Miniforge environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          activate-environment: raym0nade
+          environment-file: environment.yml
+          auto-activate-base: false
+          auto-update-conda: false
+          channel-priority: strict
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure, build, and test Release
+        run: conda run --no-capture-output -n raym0nade cmake --workflow --preset release
+
+      - name: Build and test Windows Debug ABI
+        if: runner.os == 'Windows'
+        run: conda run --no-capture-output -n raym0nade cmake --workflow --preset debug
