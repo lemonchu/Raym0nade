@@ -1,354 +1,533 @@
+#include "raym0nade/model.hpp"
+
+#include <assimp/Importer.hpp>
+#include <assimp/config.h>
+#include <assimp/material.h>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+
+#include <algorithm>
+#include <cmath>
 #include <iostream>
-#include "model.h"
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
 
-HitInfo::HitInfo() :
-    position(vec3(NAN)), shapeNormal(NAN), surfaceNormal(NAN),
-    opacity(1.0f), specular(0.04f), roughness(0.8f), metallic(0.0f), eta(1.0f),
-    emission(0.0f), baseColor(0.0f), entering(true), id(0) {}
+namespace raym0nade {
+namespace {
 
-unsigned int vertexCount(const aiScene *scene) {
-    unsigned int cnt = 0;
-    for (int i = 0; i < scene->mNumMeshes; i++)
-        cnt += scene->mMeshes[i]->mNumVertices;
-    return cnt;
+constexpr int kEmissiveSampleGrid = 8;
+constexpr int kMaximumCutoutLayers = 32;
+constexpr float kMinimumEmitterImportance = 1.0e-6F;
+
+std::size_t countSceneVertices(const aiScene& scene) noexcept {
+    std::size_t count = 0;
+    for (unsigned int index = 0; index < scene.mNumMeshes; ++index) {
+        count += scene.mMeshes[index]->mNumVertices;
+    }
+    return count;
 }
 
-unsigned int faceCount(const aiScene *scene) {
-    unsigned int cnt = 0;
-    for (int i = 0; i < scene->mNumMeshes; i++)
-        cnt += scene->mMeshes[i]->mNumFaces;
-    return cnt;
+std::size_t countSceneFaces(const aiScene& scene) noexcept {
+    std::size_t count = 0;
+    for (unsigned int index = 0; index < scene.mNumMeshes; ++index) {
+        count += scene.mMeshes[index]->mNumFaces;
+    }
+    return count;
 }
 
-vec3 getAverageEmissiveColor(const Material &material, const Face &face) {
-    vec3 averageColor(0.0f);
+vec3 toVector(const aiVector3D& value) noexcept {
+    return vec3{value.x, value.y, value.z};
+}
 
-    static const int gridResolution = 8;
-    for (int i = 0; i < gridResolution; ++i) {
-        for (int j = 0; j < gridResolution; ++j) {
-            float a = static_cast<float>(i) / (gridResolution - 1);
-            float b = static_cast<float>(j) / (gridResolution - 1);
-            if (a + b > 1.0f) {
-                a = 1.0f - a;
-                b = 1.0f - b;
+vec3 toColor(const aiColor3D& value, const vec3& fallback) noexcept {
+    const vec3 color{value.r, value.g, value.b};
+    return isFinite(color) ? glm::max(color, vec3{0.0F}) : fallback;
+}
+
+std::filesystem::path texturePath(
+    const std::filesystem::path& modelDirectory, const std::string& encodedTexturePath) {
+    std::string decoded = urlDecode(encodedTexturePath);
+    std::replace(decoded.begin(), decoded.end(), '\\', '/');
+    const std::filesystem::path path{decoded};
+    return (path.is_absolute() ? path : modelDirectory / path).lexically_normal();
+}
+
+vec3 averageEmissiveColor(const Material& material, const Face& face) {
+    vec3 average{0.0F};
+    for (int row = 0; row < kEmissiveSampleGrid; ++row) {
+        for (int column = 0; column < kEmissiveSampleGrid; ++column) {
+            float a = static_cast<float>(row) / static_cast<float>(kEmissiveSampleGrid - 1);
+            float b = static_cast<float>(column) / static_cast<float>(kEmissiveSampleGrid - 1);
+            if (a + b > 1.0F) {
+                a = 1.0F - a;
+                b = 1.0F - b;
             }
-            float c = 1.0f - a - b;
-            vec2 uv = a * face.data[0]->uv + b * face.data[1]->uv + c * face.data[2]->uv;
-            vec3 textureColor = material.getEmissiveColor(uv[0], uv[1], NAN);
-            averageColor += textureColor;
+            const float c = 1.0F - a - b;
+            const vec2 uv = a * face.vertexData[0]->uv + b * face.vertexData[1]->uv +
+                            c * face.vertexData[2]->uv;
+            average += material.emissiveColor(uv.x, uv.y, std::numeric_limits<float>::quiet_NaN());
         }
     }
-    return averageColor / static_cast<float>(gridResolution * gridResolution);
+    return average / static_cast<float>(kEmissiveSampleGrid * kEmissiveSampleGrid);
 }
 
-void Model::checkLightObject(Face *meshFaces, aiMesh *mesh, const Material &material) {
-    lightObjects.emplace_back();
-    auto &lightObject = lightObjects.back();
+bool orientToward(vec3& normal, const vec3& direction) noexcept {
+    if (glm::dot(normal, direction) < 0.0F) {
+        normal = -normal;
+        return false;
+    }
+    return true;
+}
 
-    vec3 color = vec3(0.0f);
+bool isTransparentCutout(const Ray& ray, const HitRecord& hit) {
+    if (hit.face == nullptr || hit.face->material == nullptr ||
+        !hit.face->material->hasCutoutTransparency) {
+        return false;
+    }
 
-    std::vector<float> faceWeights;
-    for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
-        auto &face = meshFaces[j];
+    const Face& face = *hit.face;
+    const vec3 position = ray.origin + ray.direction * hit.tMaximum;
+    const vec3 coordinates =
+        barycentric(face.vertices[0], face.vertices[1], face.vertices[2], position);
+    if (!isFinite(coordinates)) {
+        return false;
+    }
+    const vec2 uv = coordinates[0] * face.vertexData[0]->uv +
+                    coordinates[1] * face.vertexData[1]->uv +
+                    coordinates[2] * face.vertexData[2]->uv;
+    return face.material->diffuseColor(
+               uv.x, uv.y, std::numeric_limits<float>::quiet_NaN()).a < kRayEpsilon;
+}
 
-        vec3 textureColor = getAverageEmissiveColor(material, face);
-        float Clum = dot(textureColor, RGB_Weight),
-              area = length(cross(face.v[1] - face.v[0], face.v[2] - face.v[0])) / 2.0f;
-        if (Clum < eps_zero || area < eps_zero)
+vec2 textureDerivative(const Face& face, const vec3& positionDelta) noexcept {
+    const vec3 coordinates = barycentric(
+        face.vertices[0], face.vertices[1], face.vertices[2], face.vertices[0] + positionDelta);
+    if (!isFinite(coordinates)) {
+        return vec2{std::numeric_limits<float>::quiet_NaN()};
+    }
+    return (coordinates[0] - 1.0F) * face.vertexData[0]->uv +
+           coordinates[1] * face.vertexData[1]->uv + coordinates[2] * face.vertexData[2]->uv;
+}
+
+void applyNormalMap(
+    const Face& face, const vec3& normalMap, const vec3& shapeNormal, vec3& surfaceNormal) noexcept {
+    if (!isFinite(normalMap) || glm::dot(normalMap, normalMap) <= kRayEpsilon * kRayEpsilon) {
+        return;
+    }
+
+    const vec3 edge1 = face.vertices[1] - face.vertices[0];
+    const vec3 edge2 = face.vertices[2] - face.vertices[0];
+    const vec2 deltaUv1 = face.vertexData[1]->uv - face.vertexData[0]->uv;
+    const vec2 deltaUv2 = face.vertexData[2]->uv - face.vertexData[0]->uv;
+    const float determinant = deltaUv1.x * deltaUv2.y - deltaUv2.x * deltaUv1.y;
+    if (!isFinite(determinant) || std::abs(determinant) <= 1.0e-8F) {
+        return;
+    }
+
+    const float inverseDeterminant = 1.0F / determinant;
+    const vec3 tangentCandidate = inverseDeterminant * (deltaUv2.y * edge1 - deltaUv1.y * edge2);
+    const vec3 tangent = safeNormalize(
+        tangentCandidate - shapeNormal * glm::dot(shapeNormal, tangentCandidate));
+    if (glm::dot(tangent, tangent) <= 0.0F) {
+        return;
+    }
+    const vec3 bitangentCandidate = inverseDeterminant *
+                                    (-deltaUv2.x * edge1 + deltaUv1.x * edge2);
+    const float handedness = glm::dot(glm::cross(shapeNormal, tangent), bitangentCandidate) < 0.0F
+                                 ? -1.0F
+                                 : 1.0F;
+    const vec3 bitangent = handedness * safeNormalize(glm::cross(shapeNormal, tangent));
+    const vec3 mapped = tangent * normalMap.x + bitangent * normalMap.y + surfaceNormal * normalMap.z;
+    const vec3 normalized = safeNormalize(mapped, surfaceNormal);
+    if (isFinite(normalized)) {
+        surfaceNormal = normalized;
+    }
+}
+
+}  // namespace
+
+class ModelBuilder {
+public:
+    explicit ModelBuilder(Model& model) noexcept : model_(model) {}
+
+    void build();
+
+private:
+    static void loadMaterialProperties(Material& destination, const aiMaterial& source);
+    void processMaterials(const aiScene& scene);
+    void processMesh(const aiMesh& mesh);
+    void createLightObject(Face* meshFaces, std::size_t meshFaceCount, const Material& material);
+
+    Model& model_;
+};
+
+Model::Model(
+    const std::filesystem::path& modelDirectory,
+    const std::filesystem::path& modelFilename,
+    const std::filesystem::path& skyFilename) {
+    if (modelDirectory.empty() || modelFilename.empty()) {
+        throw std::invalid_argument("Model directory and filename must not be empty.");
+    }
+
+    modelPath_ =
+        (modelFilename.is_absolute() ? modelFilename : modelDirectory / modelFilename)
+            .lexically_normal();
+    if (!skyFilename.empty() && skyFilename != "null") {
+        skyPath_ = (skyFilename.is_absolute() ? skyFilename
+                                              : modelPath_.parent_path() / skyFilename)
+                       .lexically_normal();
+        std::cout << "Loading sky map: " << skyPath_.u8string() << '\n';
+        sky_.load(skyPath_);
+    }
+
+    ModelBuilder{*this}.build();
+}
+
+void ModelBuilder::build() {
+    Assimp::Importer importer;
+    importer.SetPropertyInteger(AI_CONFIG_PP_PTV_KEEP_HIERARCHY, 1);
+    // Assimp 5.4 can nondeterministically omit complete meshes while merging all
+    // FBX geometry layers in the Bistro scene. The first layer contains the
+    // renderable geometry and produces stable topology across repeated imports.
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_ALL_GEOMETRY_LAYERS, false);
+    const unsigned int flags = aiProcess_Triangulate | aiProcess_PreTransformVertices;
+    const std::string modelPathUtf8 = model_.modelPath_.u8string();
+    const aiScene* scene = importer.ReadFile(modelPathUtf8, flags);
+    if (scene == nullptr || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) != 0U || scene->mRootNode == nullptr) {
+        throw std::runtime_error(
+            "Failed to load model " + modelPathUtf8 + ": " + importer.GetErrorString());
+    }
+
+    const unsigned int sceneMeshCount = scene->mNumMeshes;
+    const std::size_t sceneVertexCount = countSceneVertices(*scene);
+    const std::size_t sceneFaceCount = countSceneFaces(*scene);
+    processMaterials(*scene);
+    if (scene->mNumMeshes != sceneMeshCount || countSceneVertices(*scene) != sceneVertexCount ||
+        countSceneFaces(*scene) != sceneFaceCount) {
+        throw std::runtime_error("The imported scene topology changed while loading materials.");
+    }
+    model_.vertexData_.reserve(sceneVertexCount);
+    model_.faces_.reserve(sceneFaceCount);
+    std::cout << "Vertices: " << sceneVertexCount << '\n';
+    std::cout << "Faces: " << sceneFaceCount << '\n';
+    for (unsigned int index = 0; index < scene->mNumMeshes; ++index) {
+        processMesh(*scene->mMeshes[index]);
+    }
+
+    if (model_.faces_.empty()) {
+        throw std::runtime_error("The model contains no renderable triangles: " + modelPathUtf8);
+    }
+    model_.bvh_.build(model_.faces_);
+}
+
+void ModelBuilder::loadMaterialProperties(Material& destination, const aiMaterial& source) {
+    aiString materialName;
+    if (source.Get(AI_MATKEY_NAME, materialName) == AI_SUCCESS) {
+        destination.name = materialName.C_Str();
+    }
+
+    aiColor3D sourceDiffuse{1.0F, 1.0F, 1.0F};
+    if (source.Get(AI_MATKEY_COLOR_DIFFUSE, sourceDiffuse) == AI_SUCCESS) {
+        destination.diffuseFactor = toColor(sourceDiffuse, vec3{1.0F});
+    }
+
+    aiColor3D sourceEmission{0.0F, 0.0F, 0.0F};
+    const vec3 importedEmission = source.Get(AI_MATKEY_COLOR_EMISSIVE, sourceEmission) == AI_SUCCESS
+                                      ? toColor(sourceEmission, vec3{0.0F})
+                                      : vec3{0.0F};
+    destination.emissiveFactor =
+        glm::dot(importedEmission, kLuminanceWeights) > 0.0F
+            ? importedEmission
+            : (destination.hasTexture(TextureSlot::emissive) ? vec3{1.0F} : vec3{0.0F});
+
+    ai_real importedIor = destination.ior;
+    if (source.Get(AI_MATKEY_REFRACTI, importedIor) == AI_SUCCESS &&
+        isFinite(static_cast<float>(importedIor)) && importedIor > 0.0F) {
+        destination.ior = static_cast<float>(importedIor);
+    }
+
+    ai_real importedRoughness = destination.roughness;
+    if (source.Get(AI_MATKEY_ROUGHNESS_FACTOR, importedRoughness) == AI_SUCCESS &&
+        isFinite(static_cast<float>(importedRoughness))) {
+        destination.roughness =
+            std::clamp(static_cast<float>(importedRoughness), 1.0e-3F, 1.0F);
+    }
+
+    ai_real importedMetallic = destination.metallic;
+    if (source.Get(AI_MATKEY_METALLIC_FACTOR, importedMetallic) == AI_SUCCESS &&
+        isFinite(static_cast<float>(importedMetallic))) {
+        destination.metallic =
+            std::clamp(static_cast<float>(importedMetallic), 0.0F, 1.0F);
+    }
+
+    ai_real sourceOpacity = 1.0F;
+    if (source.Get(AI_MATKEY_OPACITY, sourceOpacity) != AI_SUCCESS ||
+        !isFinite(static_cast<float>(sourceOpacity)) || sourceOpacity >= 0.99F) {
+        return;
+    }
+
+    destination.opacity = 0.0F;
+    if (destination.ior <= 1.0F + kRayEpsilon) {
+        destination.ior = 1.25F;
+    }
+    destination.roughness = destination.name == "Ice" ? 0.5F : 5.0e-3F;
+    destination.transmissionColor = destination.diffuseFactor;
+    if (glm::dot(destination.transmissionColor, kLuminanceWeights) <= kRayEpsilon) {
+        destination.transmissionColor = vec3{1.0F};
+    }
+
+    if (destination.name == "TransparentGlassWine") {
+        destination.transmissionColor = vec3{0.2F, 0.08F, 0.07F};
+    } else if (destination.name == "TransparentGlass" || destination.name == "Water" ||
+               destination.name == "Ice") {
+        destination.transmissionColor = vec3{1.0F};
+    } else if (destination.name == "Beer") {
+        destination.transmissionColor = vec3{0.8F, 0.7F, 0.55F};
+    } else if (destination.name == "Red_Wine") {
+        destination.transmissionColor = vec3{0.24F, 0.09F, 0.07F};
+    } else if (destination.name == "White_Wine") {
+        destination.transmissionColor = vec3{0.85F, 0.78F, 0.6F};
+    }
+}
+
+void ModelBuilder::processMaterials(const aiScene& scene) {
+    model_.materials_.resize(scene.mNumMaterials);
+    const std::pair<aiTextureType, TextureSlot> textureTypes[] = {
+        {aiTextureType_DIFFUSE, TextureSlot::diffuse},
+        {aiTextureType_SPECULAR, TextureSlot::specular},
+        {aiTextureType_EMISSIVE, TextureSlot::emissive},
+        {aiTextureType_NORMALS, TextureSlot::normal},
+    };
+
+    for (unsigned int materialIndex = 0; materialIndex < scene.mNumMaterials; ++materialIndex) {
+        Material& destination = model_.materials_[materialIndex];
+        const aiMaterial& source = *scene.mMaterials[materialIndex];
+        destination.id = static_cast<int>(materialIndex);
+
+        for (const auto& [sourceType, destinationSlot] : textureTypes) {
+            if (source.GetTextureCount(sourceType) == 0U) {
+                continue;
+            }
+            aiString sourcePath;
+            if (source.GetTexture(sourceType, 0, &sourcePath) != AI_SUCCESS) {
+                continue;
+            }
+            const std::filesystem::path path =
+                texturePath(model_.modelPath_.parent_path(), sourcePath.C_Str());
+            std::cout << "Loading texture: " << path.u8string() << '\n';
+            try {
+                destination.loadTexture(destinationSlot, path);
+            } catch (const std::exception& error) {
+                std::cerr << "Texture skipped: " << error.what() << '\n';
+            }
+        }
+        loadMaterialProperties(destination, source);
+    }
+    std::cout << "Materials: " << model_.materials_.size() << '\n';
+}
+
+void ModelBuilder::processMesh(const aiMesh& mesh) {
+    if (mesh.mMaterialIndex >= model_.materials_.size()) {
+        throw std::runtime_error("Mesh references an invalid material index.");
+    }
+
+    const std::size_t vertexOffset = model_.vertexData_.size();
+    for (unsigned int index = 0; index < mesh.mNumVertices; ++index) {
+        const vec2 uv = mesh.HasTextureCoords(0) ? vec2{mesh.mTextureCoords[0][index].x,
+                                                       mesh.mTextureCoords[0][index].y}
+                                                 : vec2{0.0F};
+        const vec3 normal = mesh.HasNormals() ? safeNormalize(toVector(mesh.mNormals[index])) : vec3{0.0F};
+        model_.vertexData_.push_back(VertexData{uv, normal});
+    }
+
+    Material& material = model_.materials_[mesh.mMaterialIndex];
+    const std::size_t firstMeshFace = model_.faces_.size();
+    for (unsigned int index = 0; index < mesh.mNumFaces; ++index) {
+        const aiFace& sourceFace = mesh.mFaces[index];
+        if (sourceFace.mNumIndices != 3U) {
             continue;
-
-        color += textureColor * area;
-        float power = area * Clum;
-        lightObject.faces.emplace_back(face);
-        faceWeights.emplace_back(power);
-    }
-    if (lightObject.faces.empty()) {
-        lightObjects.pop_back();
-        return ;
-    }
-    lightObject.color = color / dot(color, RGB_Weight);
-    for (unsigned int j = 0; j < lightObject.faces.size(); j++) {
-        lightObject.power += faceWeights[j];
-        lightObject.center += lightObject.faces[j].center() * faceWeights[j];
-    }
-
-    lightObject.faceDist.Init(faceWeights);
-    lightObject.center /= lightObject.power;
-
-    std::cout << "Light object with power: " << lightObject.power
-              << ", color:" << lightObject.color.x << ", " << lightObject.color.y << ", " << lightObject.color.z
-              << ", position:" << lightObject.center.x << ", " << lightObject.center.y << ", "
-              << lightObject.center.z << std::endl;
-}
-
-vec3 aiToGlm(const aiVector3D &v) {
-    return vec3(v.x, v.y, v.z);
-}
-
-void Model::processMesh(aiMesh *mesh) {
-
-    unsigned int offset = vertexDatas.size();
-    for (unsigned int j = 0; j < mesh->mNumVertices; j++)
-        vertexDatas.emplace_back(
-                vec2(aiToGlm( mesh->mTextureCoords[0][j])),
-                aiToGlm(mesh->mNormals[j])
-        );
-
-    const auto &material = materials[mesh->mMaterialIndex];
-    VertexData *vData = &vertexDatas[offset];
-    offset = faces.size();
-    for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
-        const aiFace &face0 = mesh->mFaces[j];
-
-        vec3 vertex[3] = {
-            aiToGlm(mesh->mVertices[face0.mIndices[0]]),
-            aiToGlm(mesh->mVertices[face0.mIndices[1]]),
-            aiToGlm(mesh->mVertices[face0.mIndices[2]])
-        };
-
-        faces.push_back({
-                {vertex[0],
-                 vertex[1],
-                 vertex[2]},
-                {&vData[face0.mIndices[0]],
-                 &vData[face0.mIndices[1]],
-                 &vData[face0.mIndices[2]]},
-                &material,
+        }
+        const unsigned int i0 = sourceFace.mIndices[0];
+        const unsigned int i1 = sourceFace.mIndices[1];
+        const unsigned int i2 = sourceFace.mIndices[2];
+        if (i0 >= mesh.mNumVertices || i1 >= mesh.mNumVertices || i2 >= mesh.mNumVertices) {
+            throw std::runtime_error("Mesh contains an out-of-range vertex index.");
+        }
+        model_.faces_.push_back(Face{
+            {toVector(mesh.mVertices[i0]), toVector(mesh.mVertices[i1]), toVector(mesh.mVertices[i2])},
+            {&model_.vertexData_[vertexOffset + i0],
+             &model_.vertexData_[vertexOffset + i1],
+             &model_.vertexData_[vertexOffset + i2]},
+            &material,
         });
     }
 
-    Face *meshFaces = &faces[offset];
-    if (!material.texture[aiTextureType_EMISSIVE].empty() && skyMap.empty())
-        checkLightObject(meshFaces, mesh, material);
+    const std::size_t meshFaceCount = model_.faces_.size() - firstMeshFace;
+    if (material.isEmissive() && meshFaceCount > 0) {
+        createLightObject(&model_.faces_[firstMeshFace], meshFaceCount, material);
+    }
 }
 
-void Model::processMaterial(const std::string &model_folder, const aiScene *scene) {
+void ModelBuilder::createLightObject(
+    Face* meshFaces, std::size_t meshFaceCount, const Material& material) {
+    LightObject light;
+    vec3 weightedColor{0.0F};
+    std::vector<float> faceWeights;
+    faceWeights.reserve(meshFaceCount);
 
-    materials.resize(scene->mNumMaterials);
-    for (int i = 0; i < scene->mNumMaterials; i++) {
-        std::cout << "Loading material " << i << std::endl;
-        aiMaterial *material = scene->mMaterials[i];
-
-        aiString matName;
-        if (material->Get(AI_MATKEY_NAME, matName) == AI_SUCCESS) {
-            std::string name = matName.C_Str();
-            std::cout << "Material Name: " << name << std::endl;
+    for (std::size_t index = 0; index < meshFaceCount; ++index) {
+        const Face& face = meshFaces[index];
+        const vec3 textureColor = averageEmissiveColor(material, face);
+        const float luminance = glm::dot(textureColor, kLuminanceWeights);
+        const float area = 0.5F * glm::length(glm::cross(
+                                      face.vertices[1] - face.vertices[0],
+                                      face.vertices[2] - face.vertices[0]));
+        if (!isFinite(luminance) || !isFinite(area) || area <= kRayEpsilon) {
+            continue;
         }
-
-        for (int j = 0; j < AI_TEXTURE_TYPE_MAX; j++) {
-            aiTextureType textureType = (aiTextureType) j;
-            if (j == aiTextureType_EMISSIVE && !skyMap.empty())
-                continue;
-
-            unsigned int numTextures = material->GetTextureCount(textureType);
-            for (int k = 0; k < numTextures; k++) {
-                aiString path;
-                if (material->GetTexture(textureType, k, &path) == AI_SUCCESS) {
-                    std::cout << "- Texture path (" << textureType << "): " << urlDecode(path.C_Str()) << std::endl;
-                }
-                std::string pathStr = model_folder + path.C_Str();
-#ifdef WIN32
-                std::replace(pathStr.begin(), pathStr.end(), '/', '\\');
-#else
-                std::replace(pathStr.begin(), pathStr.end(), '\\', '/');
-#endif
-                pathStr = urlDecode(pathStr);
-                materials[i].loadImageFromFile(j, pathStr);
-            }
+        const float importance = material.hasTexture(TextureSlot::emissive)
+                                     ? std::max(luminance, kMinimumEmitterImportance)
+                                     : luminance;
+        if (importance <= 0.0F) {
+            continue;
         }
-        materials[i].id = i;
-        materials[i].loadMaterialProperties(material);
-    }
-    std::cout << "Materials: " << materials.size() << std::endl;
-
-    // Finalize Python
-    if (Py_IsInitialized()) {
-        Py_Finalize();
-    }
-}
-
-Model::Model() = default;
-
-Model::Model(const std::string &model_folder, const std::string &model_name, const std::string &skyMap_name) {
-
-    // 用 Assimp 加载模型
-    Assimp::Importer importer;
-    importer.SetPropertyInteger(AI_CONFIG_PP_PTV_KEEP_HIERARCHY, 1);
-    model_path = model_folder + model_name;
-    skyMap_path = (skyMap_name == "null") ? "null" : model_folder + skyMap_name;
-    const aiScene* scene = importer.ReadFile(model_path.c_str(),
-                                             aiProcess_Triangulate |
-                                             aiProcess_PreTransformVertices |
-                                             aiProcess_SortByPType |
-                                             aiProcess_FixInfacingNormals);
-
-    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
-        std::cerr << "Error loading model: " << importer.GetErrorString() << std::endl;
-        return ;
+        const float power = area * importance;
+        weightedColor += textureColor * area;
+        light.faces.push_back(face);
+        faceWeights.push_back(power);
     }
 
-    // 加载材质
-    processMaterial(model_folder, scene);
-
-    // 加载 mesh
-    unsigned int
-        vertexCnt = vertexCount(scene),
-        faceCnt = faceCount(scene);
-    vertexDatas.reserve(vertexCnt);
-    faces.reserve(faceCnt);
-    std::cout << "Vertices: " << vertexCnt << std::endl
-              << "faces: " << faceCnt << std::endl;
-
-    for (int i = 0; i < scene->mNumMeshes; i++)
-        processMesh(scene->mMeshes[i]);
-
-    importer.FreeScene();
-
-    // 加载天空盒
-    if (skyMap_path != "null") {
-        std::cout << "Loading sky map: " << skyMap_path << std::endl;
-        skyMap.load(skyMap_path);
-    }
-
-    // 建立 BVH
-    bvh.build(faces);
-}
-
-bool TransparentTest(const Ray &ray, const HitRecord &hit) {
-    const Face& face = *hit.face;
-    const Material& material = *face.material;
-    if (!material.hasFullyTransparentPart)
-        return false;
-    vec3 intersection = ray.origin + ray.direction * hit.t_max;
-    vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], intersection);
-    vec2 texUV =
-            baryCoords[0] * face.data[0]->uv +
-            baryCoords[1] * face.data[1]->uv +
-            baryCoords[2] * face.data[2]->uv;
-    vec4 diffuseColor = material.getDiffuseColor(texUV[0], texUV[1], NAN);
-    return diffuseColor[3] < eps_zero;
-}
-
-bool reverseFix(vec3 &v, const vec3 &Dir) {
-    if (dot(v, Dir) < 0.0f) {
-        v *= -1.0f;
-        return false;
-    }
-    return true;
-}
-
-void getHitNormals(const Face& face, const vec3 &inDir, const vec3 &baryCoords,
-                   vec3 &shapeNormal, vec3 &surfaceNormal_raw, bool &entering) {
-
-    vec3 crossV0 = cross(face.v[1] - face.v[0], face.v[2] - face.v[0]);
-    shapeNormal = normalize(crossV0);
-
-    entering = reverseFix(shapeNormal, -inDir);
-    surfaceNormal_raw = shapeNormal;
-
-    float area = length(crossV0) / 2.0f;
-    static const float areaThreshold = 1e-2f;
-    if (area > areaThreshold)
+    if (light.faces.empty()) {
         return;
-
-    vec3 normalV0 = face.data[0]->normal,
-         normalV1 = face.data[1]->normal,
-         normalV2 = face.data[2]->normal;
-    reverseFix(normalV0, shapeNormal);
-    reverseFix(normalV1, shapeNormal);
-    reverseFix(normalV2, shapeNormal);
-
-    static const float dotThreshold = 0.85f;
-    surfaceNormal_raw = normalize(
-            baryCoords[0] * (dot(normalV0, shapeNormal) > dotThreshold ? normalV0 : shapeNormal)
-            + baryCoords[1] * (dot(normalV1, shapeNormal) > dotThreshold ? normalV1 : shapeNormal)
-            + baryCoords[2] * (dot(normalV2, shapeNormal) > dotThreshold ? normalV2 : shapeNormal)
-    );
-
-    if (!isfinite(surfaceNormal_raw))
-        surfaceNormal_raw = shapeNormal;
+    }
+    const float colorLuminance = glm::dot(weightedColor, kLuminanceWeights);
+    light.color = colorLuminance > 0.0F && isFinite(colorLuminance)
+                      ? weightedColor / colorLuminance
+                      : vec3{1.0F};
+    for (std::size_t index = 0; index < light.faces.size(); ++index) {
+        light.power += faceWeights[index];
+        light.center += light.faces[index].center() * faceWeights[index];
+    }
+    if (light.power <= 0.0F || !isFinite(light.power)) {
+        return;
+    }
+    light.center /= light.power;
+    light.faceDistribution.initialize(faceWeights);
+    model_.lights_.push_back(std::move(light));
 }
 
-vec2 getDuv(const Face &face, const vec3 &hit_dPdx) {
-    vec3 baryCoords = barycentric(face.v[0], face.v[1], face.v[2], face.v[0] + hit_dPdx);
-    return (baryCoords[0] - 1.0f) * face.data[0]->uv +
-           baryCoords[1] * face.data[1]->uv +
-           baryCoords[2] * face.data[2]->uv;
+void getHitNormals(
+    const Face& face,
+    const vec3& incomingDirection,
+    const vec3& barycentricCoordinates,
+    vec3& shapeNormal,
+    vec3& surfaceNormal,
+    bool& entering) noexcept {
+    const vec3 geometricNormal = glm::cross(
+        face.vertices[1] - face.vertices[0], face.vertices[2] - face.vertices[0]);
+    shapeNormal = safeNormalize(geometricNormal, -incomingDirection);
+    entering = orientToward(shapeNormal, -incomingDirection);
+
+    vec3 normals[] = {
+        face.vertexData[0] != nullptr
+            ? safeNormalize(face.vertexData[0]->normal, shapeNormal)
+            : shapeNormal,
+        face.vertexData[1] != nullptr
+            ? safeNormalize(face.vertexData[1]->normal, shapeNormal)
+            : shapeNormal,
+        face.vertexData[2] != nullptr
+            ? safeNormalize(face.vertexData[2]->normal, shapeNormal)
+            : shapeNormal,
+    };
+    for (vec3& normal : normals) {
+        orientToward(normal, shapeNormal);
+    }
+    const vec3 interpolated = barycentricCoordinates[0] * normals[0] +
+                              barycentricCoordinates[1] * normals[1] +
+                              barycentricCoordinates[2] * normals[2];
+    surfaceNormal = safeNormalize(interpolated, shapeNormal);
 }
 
-void calcSurfaceNormal(const Face& face, const vec3 &normalMap, const vec3 &shapeNormal,
-                       vec3 &surfaceNormal) {
-    vec3 edge1 = face.v[1] - face.v[0],
-         edge2 = face.v[2] - face.v[0];
-    vec2 deltaUV1 = face.data[1]->uv - face.data[0]->uv,
-         deltaUV2 = face.data[2]->uv - face.data[0]->uv;
-    float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
-    vec3 tangentBasisU = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2),
-         tangentBasisV = f * (-deltaUV2.x * edge1 + deltaUV1.x * edge2);
-    vec3 tangent = normalize(tangentBasisU - shapeNormal * dot(shapeNormal, tangentBasisU)),
-         bitangent = normalize(tangentBasisV - shapeNormal * dot(shapeNormal, tangentBasisV) - tangent * dot(tangent, tangentBasisV));
-    vec3 sav = surfaceNormal;
-    surfaceNormal = normalize(
-            tangent * normalMap.x +
-            bitangent * normalMap.y +
-            surfaceNormal
-    );
-    if (!isfinite(surfaceNormal))
-        surfaceNormal = sav;
-}
+void getHitMaterial(
+    const Face& face,
+    const vec3& barycentricCoordinates,
+    const vec3& positionDx,
+    const vec3& positionDy,
+    HitInfo& hitInfo) {
+    if (face.material == nullptr) {
+        throw std::runtime_error("Hit face has no material.");
+    }
 
-void getHitMaterial(const Face& face, const vec3 &baryCoords, const vec3 &hit_dPdx, const vec3 &hit_dPdy,
-                    HitInfo &hitInfo) {
-
-    vec2 texUV =
-            baryCoords[0] * face.data[0]->uv +
-            baryCoords[1] * face.data[1]->uv +
-            baryCoords[2] * face.data[2]->uv;
-
+    const vec2 uv = barycentricCoordinates[0] * face.vertexData[0]->uv +
+                    barycentricCoordinates[1] * face.vertexData[1]->uv +
+                    barycentricCoordinates[2] * face.vertexData[2]->uv;
     const Material& material = *face.material;
-
-    hitInfo.id = material.id;
-    material.getSurfaceData(texUV[0], texUV[1], hitInfo.roughness, hitInfo.metallic);
+    hitInfo.materialId = material.id;
+    material.surfaceParameters(uv.x, uv.y, hitInfo.roughness, hitInfo.metallic);
     hitInfo.opacity = material.opacity;
-    hitInfo.eta = material.ior; // 暂存绝对折射率，后续需要转换为相对折射率
-    if (hitInfo.opacity > 1.0f - eps_zero)
+    hitInfo.eta = material.ior;
+    if (hitInfo.opacity > 1.0F - kRayEpsilon) {
         hitInfo.entering = true;
-    vec2 dUVdx = getDuv(face, hit_dPdx),
-         dUVdy = getDuv(face, hit_dPdy);
-    float duv = (isfinite(dUVdx) && isfinite(dUVdx)) ?
-            (length(dUVdx)+length(dUVdy))/2.0f : NAN;
+    }
 
-    if (hitInfo.opacity < eps_zero)
-        hitInfo.baseColor = material.transmittingColor;
-    else
-        hitInfo.baseColor = material.getDiffuseColor(texUV[0], texUV[1], duv);
-    hitInfo.emission = material.getEmissiveColor(texUV[0], texUV[1], duv);
-    vec3 normalMap = material.getNormal(texUV[0], texUV[1], duv);
-    calcSurfaceNormal(face, normalMap, hitInfo.shapeNormal, hitInfo.surfaceNormal);
+    const vec2 uvDx = textureDerivative(face, positionDx);
+    const vec2 uvDy = textureDerivative(face, positionDy);
+    const float footprint = isFinite(uvDx) && isFinite(uvDy)
+                                ? 0.5F * (glm::length(uvDx) + glm::length(uvDy))
+                                : std::numeric_limits<float>::quiet_NaN();
+    hitInfo.baseColor = hitInfo.opacity < kRayEpsilon
+                            ? material.transmissionColor
+                            : vec3{material.diffuseColor(uv.x, uv.y, footprint)};
+    hitInfo.emission = material.emissiveColor(uv.x, uv.y, footprint);
+    applyNormalMap(face, material.normal(uv.x, uv.y, footprint), hitInfo.shapeNormal, hitInfo.surfaceNormal);
 }
 
-const int maxRayDepth_hit = 8;
-
-HitRecord Model::rayHit(Ray ray) const {
-    HitRecord hit(eps_zero, INFINITY);
-    for (int T = 0; T < maxRayDepth_hit; T++) {
-        bvh.rayHit(ray, hit);
-        if (hit.t_max == INFINITY || !TransparentTest(ray, hit))
+HitRecord Model::intersect(const Ray& ray) const noexcept {
+    HitRecord hit{kRayEpsilon, std::numeric_limits<float>::infinity()};
+    for (int layer = 0; layer < kMaximumCutoutLayers; ++layer) {
+        bvh_.intersect(ray, hit);
+        if (hit.face == nullptr || !isTransparentCutout(ray, hit)) {
             return hit;
-        hit = HitRecord(hit.t_max + eps_zero, INFINITY);
+        }
+        hit = HitRecord{hit.tMaximum + kRayEpsilon, std::numeric_limits<float>::infinity()};
     }
-    return hit;
+    return HitRecord{kRayEpsilon, std::numeric_limits<float>::infinity()};
 }
 
-bool Model::rayHit_test(Ray ray, float aimDepth) const {
-    HitRecord hit(eps_zero, aimDepth + eps_zero);
-    for (int T = 0; T < maxRayDepth_hit; T++) {
-        bvh.rayHit(ray, hit);
-        if (hit.t_max >= aimDepth)
-            return false;
-        if (!TransparentTest(ray, hit))
-            return true;
-        hit = HitRecord(hit.t_max + eps_zero, aimDepth + eps_zero);
+bool Model::occluded(const Ray& ray, float maximumDistance) const noexcept {
+    if (maximumDistance <= kRayEpsilon) {
+        return false;
     }
-    return true;
+    HitRecord hit{kRayEpsilon, maximumDistance + kRayEpsilon};
+    for (int layer = 0; layer < kMaximumCutoutLayers; ++layer) {
+        bvh_.intersect(ray, hit);
+        if (hit.face == nullptr || hit.tMaximum >= maximumDistance) {
+            return false;
+        }
+        if (!isTransparentCutout(ray, hit)) {
+            return true;
+        }
+        hit = HitRecord{hit.tMaximum + kRayEpsilon, maximumDistance + kRayEpsilon};
+    }
+    return false;
 }
+
+const std::vector<LightObject>& Model::lights() const noexcept {
+    return lights_;
+}
+
+const SkyBox& Model::sky() const noexcept {
+    return sky_;
+}
+
+const std::filesystem::path& Model::modelPath() const noexcept {
+    return modelPath_;
+}
+
+std::size_t Model::faceCount() const noexcept {
+    return faces_.size();
+}
+
+}  // namespace raym0nade
