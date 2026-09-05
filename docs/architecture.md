@@ -38,16 +38,16 @@ ConsoleApplication ---- creates/owns ----> RenderSettings
     |                                        +-- SkyBox importance distribution
     |                                        `-- Bvh over the Face array
     |
-    `-- renderToFiles(Model, RenderSettings)
-             |
-             +-- atomic row scheduler
-             +-- per-row RenderContext (RNG and medium stack)
-             +-- intersections -> HitInfo -> BSDF/light sampling
-             `-- Film buffers
-                    |
-                    +-- spatial clamp and geometry-aware filtering
-                    +-- shading, bloom, depth of field, and FXAA
-                    `-- PNG outputs
+    `-- renderToFilm(Model, RenderSettings) -> FilmRenderResult
+             |                                  |
+             +-- atomic row scheduler           `-- Film buffers + RenderStats
+             +-- per-row RenderContext                    |
+             |   (RNG and medium stack)                    v
+             `-- intersections -> BSDF/light     exportFilmToFiles
+                                                   |
+                                                   +-- spatial clamp and filtering
+                                                   +-- shading, bloom, DOF, and FXAA
+                                                   `-- PNG outputs
 
 fxaa_cli ---- loads PNG directly into Film ---- FXAA ---- saves PNG
 
@@ -251,12 +251,14 @@ one-worker and multi-worker images are component-exact for the current primary A
 
 `Model::packScene` derives a backend-neutral value representation without changing the immutable
 CPU model. `PackedSceneData` owns 32-byte aligned vertex records, tightly packed 32-bit triangle
-indices, one material ID per triangle, and fixed-size material records. Compile-time ABI checks and
-runtime finite-value, count, flag, reserved-field, and index validation protect the host/shader
-boundary. Packed format version 2 records explicit cutout, diffuse-texture, specular-texture,
-emissive-texture, and normal-texture presence bits. All four texture IDs remain invalid sentinels
-until device texture storage exists; the presence bits prevent a backend from silently treating a
-textured source material as an untextured constant.
+indices, one material ID per triangle, fixed-size material records, deduplicated texture
+descriptors, complete mip descriptors, and encoded RGBA8 texel words. Compile-time ABI checks and
+runtime finite-value, count, flag, reserved-field, range, and index validation protect the
+host/shader boundary. Packed format version 3 records explicit cutout and texture-presence flags
+and gives each present diffuse, specular, emissive, or normal texture a validated ID. Normalized
+source paths are compared without case folding. The device runtime has not yet uploaded these
+texture arrays, so GPU render capability checks must continue to reject unsupported texture use
+until the corresponding bindings and sampler are active.
 
 The private `VulkanRuntime` is shared implementation infrastructure for G2, G3a, and G3b. Each
 owning backend object selects a compatible AMD compute device, uploads immutable vertex, index,
@@ -325,7 +327,7 @@ preset uses `0.001025` at `2048 x 1152`, so the equivalent `512 x 288` preview u
 Replacing this coupling with an explicit vertical or horizontal field-of-view camera parameter is
 a future public-API improvement.
 
-`renderToFiles` is the current high-level CPU renderer. It traces one camera ray per pixel, stores
+`renderToFilm` is the complete no-file CPU renderer. It traces one camera ray per pixel, stores
 the first visible surface in the G-buffer, and treats each configured sample as a Bernoulli mixture
 of first-hit direct lighting and a recursive indirect path. For a probability strictly between zero
 and one, each selected branch is divided by its selection probability; this avoids the low-sample
@@ -335,11 +337,12 @@ first hits run sixteen indirect replicates and average them within the selected 
 The integrator supports reflection, transmission, absorption, and a nested-medium stack. Recursive
 paths are capped at 16 bounces and use roughness-based continuation/direct-light decisions.
 
-The function also owns output orchestration. It produces diagnostic passes, applies a spatial
-high-variance clamp to the radiance buffers, produces the variants named `Raw`, filters the four
-radiance components, and produces filtered variants. Consequently, `Raw` means unfiltered after
-the spatial clamp, not untouched estimator output. This render-and-export coupling is convenient
-for the current console but is a planned separation point.
+The returned `FilmRenderResult` contains the untouched integration buffers and render-only
+statistics. `exportFilmToFiles` consumes a film value, applies the spatial high-variance clamp,
+produces the variants named `Raw`, filters the four radiance components, and exports the existing
+display, bloom, depth-of-field, and FXAA variants. Consequently, `Raw` still means unfiltered after
+the spatial clamp, not untouched estimator output. `renderToFiles` is the compatibility wrapper
+that retains progress messages, total timing, fixed pass naming, and PNG output.
 
 ### Film and post-processing (`image.hpp`, `image.cpp`)
 
@@ -386,7 +389,8 @@ depends on the following invariants:
 | `HitInfo` | A value snapshot of evaluated surface data | Nothing | Safe to store in the film independently of a face pointer. |
 | `Film` | Every image/G-buffer/radiance allocation | Public references obtained by callers | Do not resize buffers while rendering or filtering. |
 | `LinearImage` | Row-major linear RGB pixels and their extent | Nothing | Validate extent and pixel count before publication. |
-| `PackedSceneData` | Indexed vertices, triangles, material IDs, and material records | Nothing | Validate before publication; treat as immutable while any backend upload is derived from it. |
+| `PackedSceneData` | Indexed vertices, triangles, material IDs, materials, texture descriptors, mip descriptors, and encoded texels | Nothing | Validate before publication; treat as immutable while any backend upload is derived from it. |
+| `FilmRenderResult` | One complete no-file CPU `Film` and its render-only statistics | Nothing | Export by moving or copying the result film; export processing intentionally mutates its private value. |
 | Private `VulkanRuntime` | Vulkan instance/device, queue synchronization, persistent device-local scene buffers, BLAS, and TLAS | Packed scene data only during synchronous construction | Serialize command-buffer use; submitted work must quiesce before owned resources are destroyed. |
 | `VulkanRayQueryIntersector` | One `VulkanRuntime`, batched-ray buffers, pipeline, and descriptor state | Nothing after construction | Do not call one intersector concurrently. |
 | `VulkanPrimaryRenderer` | One `VulkanRuntime`, reusable output/readback buffers, timestamp query pool, pipeline, and descriptor state | Nothing after construction | Do not call one renderer concurrently; the packed scene's supported-feature restrictions are checked per requested AOV. |
@@ -481,14 +485,14 @@ document:
    and a limited primary-AOV renderer that produces `LinearImage`, including deterministic
    request-local directional Lambert lighting and hard opaque shadows. It still has no general
    lighting or path integration, texture sampling, accumulation, or post-processing kernel.
-2. `renderToFiles` combines integration, timing, progress output, post-processing policy, and file
-   naming. The new no-file primary-AOV function is deliberately narrow; the complete CPU path
-   tracer still cannot render into a caller-provided film without writing the fixed pass set.
+2. The complete CPU integrator now returns a no-file `FilmRenderResult`, but its `RenderSettings`
+   contract still includes an output prefix and the API does not yet expose cancellation,
+   selectable AOV export policy, or a polymorphic backend interface.
 3. CPU traversal still consumes pointer-rich array-of-structures data: faces duplicate positions,
    light objects copy faces, and the BVH points into host memory. `Model::packScene` now derives a
    compact indexed upload representation, but the CPU renderer does not consume it directly and
-   textures, lights, and environments are not packed yet. Format version 2 records texture-presence
-   flags, but its texture IDs remain invalid because no device texture store exists.
+   lights and environments are not packed yet. Format version 3 contains deduplicated texture,
+   mip, and encoded RGBA8 texel arrays; the Vulkan runtime does not upload or sample them yet.
 4. BVH construction uses a median split rather than SAH and has no instancing, refit, parallel
    build, wide-node layout, or stackless/device traversal form. Assimp pre-transforms vertices, so
    source hierarchy and instances are flattened during import. The Bistro FBX topology has also
@@ -590,9 +594,10 @@ CPU thread counts; benchmark inputs and measurements are reproducible.
 - Keep all file I/O and interactive parsing above the backend boundary.
 
 Status: partially implemented. The backend-neutral extent, pinhole-camera, directional-light,
-primary-AOV request, and linear-image contracts now support deterministic no-file CPU and Vulkan
-primary rendering. The complete path-tracing request/backend interface and the separation of film
-export remain open.
+primary-AOV request, and linear-image contracts support deterministic no-file CPU and Vulkan
+primary rendering. Complete CPU integration now returns `FilmRenderResult`, and film export is a
+separate consuming operation. A complete backend-neutral path-tracing request/interface remains
+open.
 
 Gate: the existing CLI and golden CPU images use the new interface without visual changes.
 
@@ -606,9 +611,10 @@ Gate: the existing CLI and golden CPU images use the new interface without visua
 - Replace Python DDS/HDR decoding with native asset decoding and define a consistent linear-color,
   alpha, mipmap, and environment convention.
 
-Status: partially implemented. Packed format version 2 supplies validated indexed geometry,
-triangle material IDs, fixed material records, and explicit texture-presence flags. Texture IDs,
-texture storage, lights, environments, and a packed-scene CPU shading path remain open.
+Status: partially implemented. Packed format version 3 supplies validated indexed geometry,
+triangle material IDs, fixed material records, deduplicated texture IDs, complete mip descriptors,
+and encoded RGBA8 texel storage. Device texture upload and sampling, lights, environments, and a
+packed-scene CPU shading path remain open.
 
 Gate: packed-scene CPU traversal and shading match the Stage 0 reference before any GPU kernels are
 accepted.
@@ -626,6 +632,11 @@ accepted.
 
 Gate: recursive-reference and iterative CPU results agree statistically, and random streams remain
 deterministic when execution order changes.
+
+Status: a shared Philox4x32-10 CPU/GLSL contract now maps seed, pixel, sample, bounce, and dimension
+to endpoint-safe values independently of execution order. CPU known-answer and scheduling tests
+pass, and the GLSL contract compiles and validates as SPIR-V. An actual GPU dispatch known-answer
+test, CPU-integrator migration, and iterative transport remain open.
 
 ### Stage 4: Add the optional Vulkan Ray Query backend
 

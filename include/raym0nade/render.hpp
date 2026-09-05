@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 
+#include "raym0nade/image.hpp"
 #include "raym0nade/model.hpp"
 #include "raym0nade/render_contract.hpp"
 
@@ -35,6 +36,11 @@ struct RenderStats {
     std::uint64_t directLightSamples{0};
 };
 
+struct FilmRenderResult {
+    Film film;
+    RenderStats stats;
+};
+
 struct CpuPrimaryRenderOptions {
     // Zero selects hardware concurrency; positive values request an explicit worker count.
     int threadCount{1};
@@ -44,6 +50,9 @@ struct CpuPrimaryRenderOptions {
 };
 
 [[nodiscard]] RenderStats renderToFiles(const Model& model, const RenderSettings& settings);
+[[nodiscard]] FilmRenderResult renderToFilm(
+    const Model& model, const RenderSettings& settings);
+void exportFilmToFiles(Film film, const RenderSettings& settings);
 [[nodiscard]] LinearImage renderPrimaryAovCpu(
     const Model& model, const PrimaryRenderRequest& request);
 [[nodiscard]] LinearImage renderPrimaryAovCpu(

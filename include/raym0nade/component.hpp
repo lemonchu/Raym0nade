@@ -76,6 +76,9 @@ public:
     void load(const std::filesystem::path& filename);
 
     [[nodiscard]] bool empty() const noexcept;
+    [[nodiscard]] int width() const noexcept;
+    [[nodiscard]] int height() const noexcept;
+    [[nodiscard]] const std::vector<vec3>& radiancePixels() const noexcept;
     [[nodiscard]] vec3 radiance(const vec3& direction) const noexcept;
     [[nodiscard]] bool sample(
         Generator& generator, int& pixelIndex, vec3& direction, vec3& weightedRadiance) const noexcept;

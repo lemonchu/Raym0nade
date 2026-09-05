@@ -8,8 +8,9 @@
 
 namespace raym0nade {
 
-inline constexpr std::uint32_t kPackedSceneFormatVersion = 2U;
+inline constexpr std::uint32_t kPackedSceneFormatVersion = 3U;
 inline constexpr std::uint32_t kInvalidSceneId = 0xffffffffU;
+inline constexpr std::uint32_t kPackedTextureMaxMipLevels = 32U;
 inline constexpr std::uint32_t kPackedMaterialCutout = 1U << 0U;
 inline constexpr std::uint32_t kPackedMaterialHasDiffuseTexture = 1U << 1U;
 inline constexpr std::uint32_t kPackedMaterialHasSpecularTexture = 1U << 2U;
@@ -39,6 +40,20 @@ struct alignas(16) PackedMaterial {
     std::array<std::uint32_t, 4> flagsAndReserved{};
 };
 
+struct alignas(16) PackedTexture {
+    std::uint32_t firstMipLevel{0U};
+    std::uint32_t mipLevelCount{0U};
+    std::uint32_t width{0U};
+    std::uint32_t height{0U};
+};
+
+struct alignas(16) PackedTextureMip {
+    std::uint32_t texelOffset{0U};
+    std::uint32_t texelCount{0U};
+    std::uint32_t width{0U};
+    std::uint32_t height{0U};
+};
+
 class PackedSceneData {
 public:
     std::uint32_t formatVersion{kPackedSceneFormatVersion};
@@ -46,6 +61,11 @@ public:
     std::vector<std::uint32_t> triangleIndices;
     std::vector<std::uint32_t> triangleMaterialIds;
     std::vector<PackedMaterial> materials;
+    std::vector<PackedTexture> textures;
+    std::vector<PackedTextureMip> textureMipLevels;
+    // Encoded UNORM color/data values in a linear address layout. Each word stores
+    // R, G, B, and A in bits 0-7, 8-15, 16-23, and 24-31 respectively.
+    std::vector<std::uint32_t> textureTexelsRgba8;
 
     [[nodiscard]] std::size_t triangleCount() const noexcept;
     void validate() const;
@@ -67,5 +87,21 @@ static_assert(offsetof(PackedMaterial, textureIds) == 64U);
 static_assert(offsetof(PackedMaterial, flagsAndReserved) == 80U);
 static_assert(std::is_standard_layout_v<PackedMaterial>);
 static_assert(std::is_trivially_copyable_v<PackedMaterial>);
+static_assert(sizeof(PackedTexture) == 16U, "PackedTexture must match the GPU ABI.");
+static_assert(alignof(PackedTexture) == 16U, "PackedTexture must remain 16-byte aligned.");
+static_assert(offsetof(PackedTexture, firstMipLevel) == 0U);
+static_assert(offsetof(PackedTexture, mipLevelCount) == 4U);
+static_assert(offsetof(PackedTexture, width) == 8U);
+static_assert(offsetof(PackedTexture, height) == 12U);
+static_assert(std::is_standard_layout_v<PackedTexture>);
+static_assert(std::is_trivially_copyable_v<PackedTexture>);
+static_assert(sizeof(PackedTextureMip) == 16U, "PackedTextureMip must match the GPU ABI.");
+static_assert(alignof(PackedTextureMip) == 16U, "PackedTextureMip must remain 16-byte aligned.");
+static_assert(offsetof(PackedTextureMip, texelOffset) == 0U);
+static_assert(offsetof(PackedTextureMip, texelCount) == 4U);
+static_assert(offsetof(PackedTextureMip, width) == 8U);
+static_assert(offsetof(PackedTextureMip, height) == 12U);
+static_assert(std::is_standard_layout_v<PackedTextureMip>);
+static_assert(std::is_trivially_copyable_v<PackedTextureMip>);
 
 }  // namespace raym0nade

@@ -436,9 +436,14 @@ void testDirectionalDirectDiffuse(
     }
 
     PackedSceneData texturedScene = scene;
+    texturedScene.textures.push_back(PackedTexture{0U, 1U, 1U, 1U});
+    texturedScene.textureMipLevels.push_back(
+        PackedTextureMip{0U, 1U, 1U, 1U});
+    texturedScene.textureTexelsRgba8.push_back(0xffffffffU);
     for (std::uint32_t materialId : texturedScene.triangleMaterialIds) {
         texturedScene.materials[materialId].flagsAndReserved[0] |=
             kPackedMaterialHasDiffuseTexture;
+        texturedScene.materials[materialId].textureIds[0] = 0U;
     }
     {
         VulkanPrimaryRenderer texturedRenderer{texturedScene, shaderPath, options};

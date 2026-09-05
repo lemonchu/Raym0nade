@@ -169,6 +169,18 @@ bool SkyBox::empty() const noexcept {
     return width_ <= 0 || height_ <= 0 || radiance_.empty();
 }
 
+int SkyBox::width() const noexcept {
+    return width_;
+}
+
+int SkyBox::height() const noexcept {
+    return height_;
+}
+
+const std::vector<vec3>& SkyBox::radiancePixels() const noexcept {
+    return radiance_;
+}
+
 vec3 SkyBox::radiance(const vec3& direction) const noexcept {
     if (empty() || !isFinite(direction)) {
         return vec3{0.0F};

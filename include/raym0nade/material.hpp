@@ -35,6 +35,9 @@ public:
     [[nodiscard]] int height() const noexcept;
     [[nodiscard]] int channels() const noexcept;
     [[nodiscard]] std::size_t mipLevelCount() const noexcept;
+    [[nodiscard]] int mipWidth(std::size_t level) const;
+    [[nodiscard]] int mipHeight(std::size_t level) const;
+    [[nodiscard]] const std::vector<std::uint8_t>& mipPixels(std::size_t level) const;
 
 private:
     int width_{0};
@@ -60,6 +63,8 @@ public:
     void loadTexture(TextureSlot slot, const std::filesystem::path& filename);
 
     [[nodiscard]] bool hasTexture(TextureSlot slot) const noexcept;
+    [[nodiscard]] const ImageData& textureData(TextureSlot slot) const;
+    [[nodiscard]] const std::filesystem::path& textureSourcePath(TextureSlot slot) const;
     [[nodiscard]] bool isEmissive() const noexcept;
     [[nodiscard]] vec4 diffuseColor(float u, float v, float footprint) const;
     [[nodiscard]] vec3 normal(float u, float v, float footprint) const;
@@ -74,6 +79,8 @@ private:
     [[nodiscard]] ImageData& texture(TextureSlot slot);
 
     std::array<ImageData, static_cast<std::size_t>(TextureSlot::count)> textures_;
+    std::array<std::filesystem::path, static_cast<std::size_t>(TextureSlot::count)>
+        textureSourcePaths_;
 };
 
 [[nodiscard]] std::string urlDecode(const std::string& source);

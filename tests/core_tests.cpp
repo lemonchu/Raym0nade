@@ -332,11 +332,11 @@ void testPackedSceneValidation() {
         [&] { scene.validate(); }, "A non-finite packed vertex attribute must be rejected.");
     scene.vertices[0].normalYZAndUv[2] = 0.25F;
 
-    scene.materials[0].flagsAndReserved[0] = kPackedMaterialKnownFlags;
+    scene.materials[0].flagsAndReserved[0] = kPackedMaterialCutout;
     try {
         scene.validate();
     } catch (...) {
-        expect(false, "Every defined packed material flag must be accepted.");
+        expect(false, "A textureless cutout material must remain valid.");
     }
     scene.materials[0].flagsAndReserved[0] = 1U << 31U;
     expectInvalidArgument(
@@ -346,7 +346,7 @@ void testPackedSceneValidation() {
     scene.materials[0].textureIds[0] = 0U;
     expectInvalidArgument(
         [&] { scene.validate(); },
-        "A texture ID must remain invalid until packed textures are supported.");
+        "A texture ID without its matching presence flag must be rejected.");
     scene.materials[0].textureIds[0] = kInvalidSceneId;
 
     scene.materials[0].flagsAndReserved[1] = 1U;

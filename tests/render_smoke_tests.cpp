@@ -116,6 +116,24 @@ int main() {
         settings.pixelScale = 0.125F;
         settings.seed = 0xC0FFEEU;
         settings.threadCount = 1;
+
+        const std::filesystem::path filmOnlyDirectory = outputDirectory / "film-only";
+        std::filesystem::remove_all(filmOnlyDirectory);
+        settings.outputPrefix = filmOnlyDirectory / "must-not-be-written";
+        FilmRenderResult filmOnlyResult = renderToFilm(model, settings);
+        if (std::filesystem::exists(filmOnlyDirectory)) {
+            throw std::runtime_error(
+                "Rendering to a Film must not create output directories or files.");
+        }
+        if (filmOnlyResult.film.width() != settings.width ||
+            filmOnlyResult.film.height() != settings.height ||
+            filmOnlyResult.stats.renderSeconds < 0.0 ||
+            filmOnlyResult.stats.totalSeconds != filmOnlyResult.stats.renderSeconds ||
+            filmOnlyResult.stats.directLightSamples == 0) {
+            throw std::runtime_error(
+                "The in-memory Film render did not return complete pixels and statistics.");
+        }
+
         const std::filesystem::path singleThreadPrefix = outputDirectory / "single";
         settings.outputPrefix = singleThreadPrefix;
         const RenderStats singleThreadStats = renderToFiles(model, settings);
@@ -128,6 +146,7 @@ int main() {
             throw std::runtime_error("Render timing must never be negative.");
         }
         if (singleThreadStats.directLightSamples == 0 ||
+            singleThreadStats.directLightSamples != filmOnlyResult.stats.directLightSamples ||
             singleThreadStats.directLightSamples != multiThreadStats.directLightSamples) {
             throw std::runtime_error(
                 "The smoke test must exercise deterministic random direct-light sampling.");

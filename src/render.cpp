@@ -645,6 +645,51 @@ void renderRows(
     }
 }
 
+FilmRenderResult renderToFilmValidated(
+    const Model& model, const RenderSettings& settings, int workerCount) {
+    Film film{settings.width, settings.height};
+    film.exposure = settings.exposure;
+
+    std::atomic<int> nextRow{0};
+    std::atomic<std::uint64_t> directLightSamples{0};
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<std::size_t>(workerCount));
+    std::vector<std::exception_ptr> workerErrors(static_cast<std::size_t>(workerCount));
+    const auto renderStart = std::chrono::steady_clock::now();
+    try {
+        for (int index = 0; index < workerCount; ++index) {
+            workers.emplace_back([&, index] {
+                try {
+                    renderRows(model, settings, film, nextRow, directLightSamples);
+                } catch (...) {
+                    workerErrors[static_cast<std::size_t>(index)] = std::current_exception();
+                }
+            });
+        }
+    } catch (...) {
+        nextRow.store(settings.height, std::memory_order_relaxed);
+        for (std::thread& worker : workers) {
+            worker.join();
+        }
+        throw;
+    }
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+    for (const std::exception_ptr& error : workerErrors) {
+        if (error != nullptr) {
+            std::rethrow_exception(error);
+        }
+    }
+    const auto renderEnd = std::chrono::steady_clock::now();
+
+    RenderStats stats;
+    stats.renderSeconds = std::chrono::duration<double>(renderEnd - renderStart).count();
+    stats.totalSeconds = stats.renderSeconds;
+    stats.directLightSamples = directLightSamples.load(std::memory_order_relaxed);
+    return FilmRenderResult{std::move(film), stats};
+}
+
 void renderPrimaryAovRow(
     const Model& model,
     const PrimaryRenderRequest& request,
@@ -849,51 +894,21 @@ int RenderSettings::resolvedThreadCount() const noexcept {
     return std::max(1, std::min(requested, height));
 }
 
-RenderStats renderToFiles(const Model& model, const RenderSettings& settings) {
+FilmRenderResult renderToFilm(const Model& model, const RenderSettings& settings) {
     settings.validate();
-    const auto totalStart = std::chrono::steady_clock::now();
-    const int workerCount = settings.resolvedThreadCount();
-    std::cout << "Rendering started with " << workerCount << " threads.\n";
+    return renderToFilmValidated(model, settings, settings.resolvedThreadCount());
+}
 
+void exportFilmToFiles(Film film, const RenderSettings& settings) {
+    settings.validate();
+    if (film.width() != settings.width || film.height() != settings.height) {
+        throw std::invalid_argument(
+            "Film dimensions must match the render settings before export.");
+    }
     const std::filesystem::path parent = settings.outputPrefix.parent_path();
     if (!parent.empty()) {
         std::filesystem::create_directories(parent);
     }
-    Film film{settings.width, settings.height};
-    film.exposure = settings.exposure;
-
-    std::atomic<int> nextRow{0};
-    std::atomic<std::uint64_t> directLightSamples{0};
-    std::vector<std::thread> workers;
-    workers.reserve(static_cast<std::size_t>(workerCount));
-    std::vector<std::exception_ptr> workerErrors(static_cast<std::size_t>(workerCount));
-    const auto renderStart = std::chrono::steady_clock::now();
-    try {
-        for (int index = 0; index < workerCount; ++index) {
-            workers.emplace_back([&, index] {
-                try {
-                    renderRows(model, settings, film, nextRow, directLightSamples);
-                } catch (...) {
-                    workerErrors[static_cast<std::size_t>(index)] = std::current_exception();
-                }
-            });
-        }
-    } catch (...) {
-        nextRow.store(settings.height, std::memory_order_relaxed);
-        for (std::thread& worker : workers) {
-            worker.join();
-        }
-        throw;
-    }
-    for (std::thread& worker : workers) {
-        worker.join();
-    }
-    for (const std::exception_ptr& error : workerErrors) {
-        if (error != nullptr) {
-            std::rethrow_exception(error);
-        }
-    }
-    const auto renderEnd = std::chrono::steady_clock::now();
 
     const auto saveCurrentImage = [&](const std::string& tag) {
         std::filesystem::path filename = settings.outputPrefix;
@@ -958,12 +973,24 @@ RenderStats renderToFiles(const Model& model, const RenderSettings& settings) {
         exportImage("BaseColor_DepthOfField", Film::baseColor | Film::depthOfFieldEnabled);
         exportBeautyVariants("Filter_DepthOfField", Film::full, true);
     }
+}
+
+RenderStats renderToFiles(const Model& model, const RenderSettings& settings) {
+    settings.validate();
+    const auto totalStart = std::chrono::steady_clock::now();
+    const int workerCount = settings.resolvedThreadCount();
+    std::cout << "Rendering started with " << workerCount << " threads.\n";
+
+    const std::filesystem::path parent = settings.outputPrefix.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+    FilmRenderResult result = renderToFilmValidated(model, settings, workerCount);
+    exportFilmToFiles(std::move(result.film), settings);
 
     const auto totalEnd = std::chrono::steady_clock::now();
-    RenderStats stats;
-    stats.renderSeconds = std::chrono::duration<double>(renderEnd - renderStart).count();
+    RenderStats stats = result.stats;
     stats.totalSeconds = std::chrono::duration<double>(totalEnd - totalStart).count();
-    stats.directLightSamples = directLightSamples.load(std::memory_order_relaxed);
     std::cout << "Rendering completed in " << stats.renderSeconds << " seconds.\n";
     std::cout << "Direct light samples: " << stats.directLightSamples << '\n';
     std::cout << "Post-processing finished. Total: " << stats.totalSeconds << " seconds.\n";

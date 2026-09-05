@@ -581,6 +581,41 @@ G3b is complete, but full G3 remains open. A bounded G3c should add constant env
 emission, or begin true iterative path state and continuation. GPU texture storage and sampling
 should follow after that transport boundary is stable.
 
+### Device-ready render foundations
+
+The first feature-parity foundation slice landed in the working tree on 2026-09-05:
+
+- `renderToFilm` now executes the complete CPU integrator without creating directories or files
+  and returns the populated `Film` together with render-only statistics. `exportFilmToFiles`
+  consumes a film value and owns the existing clamp, filter, display, FXAA, naming, and PNG export
+  policy. `renderToFiles` remains the compatibility wrapper and preserves console timing and output.
+- Packed scene format version 3 adds deduplicated texture descriptors, a validated complete mip
+  table, and encoded RGBA8 texel words. Source paths are normalized without case folding, so
+  case-sensitive volumes remain correct. One-, two-, three-, and four-channel source images expand
+  into an explicit RGBA representation, and the encoded mip bytes are preserved for CPU-compatible
+  alpha and color sampling. This is a backend-neutral storage contract; the Vulkan runtime does not
+  upload or sample these arrays yet.
+- A shared Philox4x32-10 counter generator now maps
+  `(seed, pixel, sample, bounce, dimension)` to scheduling-independent random blocks. Its scalar
+  conversion produces representable floats strictly inside `(0, 1)`. CPU tests cover official
+  Random123 core vectors, renderer-address vectors, endpoint bit patterns, and reordered execution;
+  the matching GLSL include compiles and passes `spirv-val`. A device-dispatch comparison remains
+  open and must pass before the shader implementation is used by transport.
+
+Validation completed after the three changes were combined:
+
+- CPU Debug and CPU Release configured, built, and passed all six CTest entries in each build.
+- Vulkan Debug and Vulkan Release configured, built, and passed all nine CTest entries in each
+  build, including compilation and SPIR-V validation of the counter-RNG contract shader.
+- The no-file render regression confirmed that no output path is created and that its direct-light
+  sample count agrees with both one-thread and multi-thread compatibility renders.
+- No new compiler warnings were reported. `git diff --check` passed; its only output was the
+  existing Windows LF-to-CRLF checkout warning.
+
+This slice does not claim GPU beauty rendering. Device texture upload and sampling, alpha-tested
+Ray Query traversal, HDR and area-light packing, iterative transport, SPP accumulation, and Film
+readback remain required.
+
 ## Fixes completed before the modernization
 
 - Changed the GLM submodule URL from SSH to HTTPS.
@@ -740,8 +775,11 @@ fixtures and a controlled benchmark harness remain open.
 - [x] Complete Vulkan G0/G1 and the initial imported packed-geometry G2 slice on Windows AMD.
 - [x] Complete G3a deterministic CPU/GPU `BaseColor` and `ShapeNormal` primary AOVs.
 - [x] Complete G3b deterministic CPU/GPU directional `DirectDiffuse` and hard-shadow diagnostics.
+- [x] Separate complete CPU integration from Film export, define packed texture format version 3,
+  and add a shared counter-based RNG contract.
 - [ ] Complete G3 with GPU lighting and path integration under a CPU correctness comparison.
-- [ ] Add GPU texture storage and sampling before enabling textured `BaseColor` or alpha cutouts.
+- [ ] Upload and sample packed textures on the GPU before enabling textured `BaseColor` or alpha
+  cutouts.
 - [ ] Resolve or replace nondeterministic Bistro FBX import before treating its topology as a
   deterministic regression gate.
 - [ ] Add controlled before/after benchmarks, analytic estimator tests, and golden-image tolerances.

@@ -96,13 +96,14 @@ All IDs use `uint32_t`; `0xffffffff` is the invalid sentinel. Import validates f
 ranges, allocation overflow, and count limits before publishing a scene. GPU-visible ABI records
 require compile-time checks for size, alignment, standard layout, and trivial copyability.
 
-The implemented packed format version 2 contains the vertex, triangle-index, triangle-material, and
-fixed material arrays. Material flags explicitly preserve whether the source uses alpha cutout or
-a diffuse, specular, emissive, or normal texture. All texture IDs deliberately remain invalid
-because GPU texture storage and sampling are not implemented yet. Separating presence from IDs
-lets capability checks reject unsupported shading instead of silently substituting constants.
-Referenced alpha cutouts are rejected at the Vulkan geometry boundary rather than being treated as
-opaque.
+The implemented packed format version 3 contains the vertex, triangle-index, triangle-material,
+fixed material, texture, mip, and encoded RGBA8 texel arrays. Textures are deduplicated by
+normalized source path without folding case. Every present material texture has a checked ID, and
+each texture owns one contiguous, complete mip range whose levels own exact contiguous texel
+ranges. The encoded-byte representation intentionally preserves the CPU sampler's alpha and
+gamma-decode behavior. Device upload and shader sampling of these arrays remain open, so current
+GPU capability checks still reject referenced textures and alpha cutouts rather than silently
+substituting constants or opaque geometry.
 
 The private `VulkanRuntime` is common infrastructure for the G2 intersector and G3a/G3b renderer.
 It owns the selected device, queue synchronization, persistent device-local vertex, index,
@@ -124,14 +125,15 @@ memory silently.
 Mechanical function-by-function GPU annotation is not viable. The hot path is converted in this
 order:
 
-1. Separate integration into `renderToFilm` and keep output naming, post-processing, and PNG I/O on
-   the host.
+1. **Foundation complete:** separate complete CPU integration into `renderToFilm` and keep output
+   naming, post-processing, and PNG I/O in the consuming `exportFilmToFiles` host operation.
 2. Introduce indexed `SceneData` and make the CPU renderer consume it without changing images.
 3. Replace dynamic path state with fixed-capacity records. The maximum medium depth follows the
    path-depth limit, and temporary light contributions use a checked fixed capacity.
 4. Replace recursive transport with an iterative state machine on the CPU and revalidate it.
 5. Replace sequential `std::mt19937` consumption with a counter-based stream keyed by seed, pixel,
-   sample, bounce, and dimension.
+   sample, bounce, and dimension. A shared Philox4x32-10 CPU/GLSL contract and CPU known-answer
+   tests are complete; GPU dispatch validation and integrator migration remain open.
 6. Port ray generation, intersection, minimal shading, and accumulation into one Vulkan compute
    kernel.
 7. Add environment and area next-event estimation, textures and normal maps, reflection,
@@ -299,8 +301,9 @@ lighting-and-shadow slice, not the complete G3 renderer.
 G3a closes the camera, primary traversal, constant base-color, geometric-normal, and linear-image
 boundary. G3b closes a deterministic directional Lambert and hard-shadow sub-gate. Full G3 remains
 open until broader lighting and path integration execute on the GPU under a corresponding CPU
-correctness comparison. A bounded G3c should take one of the transport steps above; GPU texture
-storage and sampling follow after that boundary is stable.
+correctness comparison. The next implementation slices build directly on packed textures, the
+no-file Film boundary, and the counter-RNG contract; none of those foundations alone constitutes
+GPU beauty rendering.
 
 ### G4: Feature parity
 

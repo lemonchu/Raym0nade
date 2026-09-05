@@ -1,0 +1,18 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "include/counter_rng.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) writeonly buffer ResultBuffer {
+    uvec2 values[];
+} resultBuffer;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    uint word = raym0nadeCounterRandomUint32(0U, index, 0U, 0U, 0U);
+    resultBuffer.values[index] = uvec2(
+        word,
+        floatBitsToUint(raym0nadeCounterRandomWordToOpen01(word)));
+}

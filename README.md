@@ -24,6 +24,8 @@ The build creates these targets:
 - `raym0nade_renderer`: the interactive renderer, output as `raym0nade`
 - `raym0nade_fxaa`: the standalone FXAA utility
 - `raym0nade_tests`: the CTest regression executable when testing is enabled
+- `raym0nade_scene_data_tests`: packed-scene ABI, validation, texture deduplication, and mip tests
+- `raym0nade_counter_rng_tests`: CPU counter-RNG known-answer and scheduling-order tests
 - `raym0nade_render_tests`: the tiny lit imported-scene render regression executable when testing
   is enabled
 - `raym0nade_primary_render_tests`: the deterministic, no-file CPU primary-AOV regression

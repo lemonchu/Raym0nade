@@ -346,6 +346,27 @@ std::size_t ImageData::mipLevelCount() const noexcept {
     return mipLevelCount_;
 }
 
+int ImageData::mipWidth(std::size_t level) const {
+    if (level >= mipLevelCount_) {
+        throw std::out_of_range("Image mip level is out of range.");
+    }
+    return mipExtent(width_, level);
+}
+
+int ImageData::mipHeight(std::size_t level) const {
+    if (level >= mipLevelCount_) {
+        throw std::out_of_range("Image mip level is out of range.");
+    }
+    return mipExtent(height_, level);
+}
+
+const std::vector<std::uint8_t>& ImageData::mipPixels(std::size_t level) const {
+    if (level >= mipLevelCount_) {
+        throw std::out_of_range("Image mip level is out of range.");
+    }
+    return levels_[level];
+}
+
 std::string urlDecode(const std::string& source) {
     std::string decoded;
     decoded.reserve(source.size());
@@ -412,13 +433,17 @@ void Material::loadTexture(TextureSlot slot, const std::filesystem::path& filena
         return static_cast<char>(std::tolower(value));
     });
 
+    ImageData loaded;
     if (extension == ".png") {
-        texture(slot) = loadPng(filename);
+        loaded = loadPng(filename);
     } else if (extension == ".dds") {
-        texture(slot) = loadDds(filename);
+        loaded = loadDds(filename);
     } else {
         throw std::runtime_error("Unsupported texture format: " + filename.string());
     }
+    const std::size_t index = static_cast<std::size_t>(slot);
+    textureSourcePaths_[index] = filename.lexically_normal();
+    textures_[index] = std::move(loaded);
     if (slot == TextureSlot::diffuse) {
         hasCutoutTransparency = texture(slot).hasTransparency();
     }
@@ -427,6 +452,14 @@ void Material::loadTexture(TextureSlot slot, const std::filesystem::path& filena
 bool Material::hasTexture(TextureSlot slot) const noexcept {
     const std::size_t index = static_cast<std::size_t>(slot);
     return index < textures_.size() && !textures_[index].empty();
+}
+
+const ImageData& Material::textureData(TextureSlot slot) const {
+    return texture(slot);
+}
+
+const std::filesystem::path& Material::textureSourcePath(TextureSlot slot) const {
+    return textureSourcePaths_.at(static_cast<std::size_t>(slot));
 }
 
 bool Material::isEmissive() const noexcept {

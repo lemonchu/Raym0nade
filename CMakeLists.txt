@@ -108,6 +108,7 @@ add_library(Raym0nade::core ALIAS raym0nade_core)
 target_sources(raym0nade_core PRIVATE
     src/bvh.cpp
     src/component.cpp
+    src/counter_rng.cpp
     src/geometry.cpp
     src/image.cpp
     src/material.cpp
@@ -186,11 +187,13 @@ if(RAYM0NADE_ENABLE_VULKAN)
     function(raym0nade_compile_vulkan_shader output_variable source_filename description)
         set(source_path "${PROJECT_SOURCE_DIR}/shaders/${source_filename}")
         set(output_path "${RAYM0NADE_SHADER_OUTPUT_DIRECTORY}/${source_filename}.spv")
+        set(additional_dependencies ${ARGN})
         add_custom_command(
             OUTPUT "${output_path}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${RAYM0NADE_SHADER_OUTPUT_DIRECTORY}"
             COMMAND Vulkan::glslc
                 --target-env=vulkan1.2
+                -I "${PROJECT_SOURCE_DIR}/shaders"
                 "${source_path}"
                 -o "${output_path}"
             COMMAND "${RAYM0NADE_SPIRV_VAL_EXECUTABLE}"
@@ -198,6 +201,7 @@ if(RAYM0NADE_ENABLE_VULKAN)
                 "${output_path}"
             DEPENDS
                 "${source_path}"
+                ${additional_dependencies}
                 Vulkan::glslc
             COMMENT "${description}"
             VERBATIM
@@ -220,11 +224,18 @@ if(RAYM0NADE_ENABLE_VULKAN)
         primary_aov.comp
         "Compiling the Vulkan primary-AOV shader"
     )
+    raym0nade_compile_vulkan_shader(
+        RAYM0NADE_COUNTER_RNG_SHADER_BINARY
+        counter_rng_compile_test.comp
+        "Compiling the Vulkan counter-RNG contract shader"
+        "${PROJECT_SOURCE_DIR}/shaders/include/counter_rng.glsl"
+    )
     add_custom_target(raym0nade_gpu_shaders
         DEPENDS
             "${RAYM0NADE_RAY_QUERY_SHADER_BINARY}"
             "${RAYM0NADE_RAY_QUERY_SCENE_SHADER_BINARY}"
             "${RAYM0NADE_PRIMARY_AOV_SHADER_BINARY}"
+            "${RAYM0NADE_COUNTER_RNG_SHADER_BINARY}"
     )
 
     add_library(raym0nade_vulkan STATIC
@@ -295,6 +306,16 @@ if(BUILD_TESTING)
     raym0nade_enable_warnings(raym0nade_tests)
     raym0nade_set_runtime_directory(raym0nade_tests)
 
+    add_executable(raym0nade_scene_data_tests tests/scene_data_tests.cpp)
+    target_link_libraries(raym0nade_scene_data_tests PRIVATE Raym0nade::core)
+    raym0nade_enable_warnings(raym0nade_scene_data_tests)
+    raym0nade_set_runtime_directory(raym0nade_scene_data_tests)
+
+    add_executable(raym0nade_counter_rng_tests tests/counter_rng_tests.cpp)
+    target_link_libraries(raym0nade_counter_rng_tests PRIVATE Raym0nade::core)
+    raym0nade_enable_warnings(raym0nade_counter_rng_tests)
+    raym0nade_set_runtime_directory(raym0nade_counter_rng_tests)
+
     add_executable(raym0nade_render_tests tests/render_smoke_tests.cpp)
     target_link_libraries(raym0nade_render_tests PRIVATE Raym0nade::core)
     target_compile_definitions(raym0nade_render_tests PRIVATE
@@ -356,6 +377,8 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME core COMMAND raym0nade_tests)
+    add_test(NAME scene-data COMMAND raym0nade_scene_data_tests)
+    add_test(NAME counter-rng COMMAND raym0nade_counter_rng_tests)
     add_test(NAME render-smoke COMMAND raym0nade_render_tests)
     add_test(NAME primary-render COMMAND raym0nade_primary_render_tests)
     add_test(NAME console COMMAND raym0nade_console_tests)
@@ -374,7 +397,14 @@ if(BUILD_TESTING)
             "${Python3_EXECUTABLE}"
             DIRECTORY
         )
-        set(RAYM0NADE_WINDOWS_RUNTIME_TESTS core render-smoke primary-render console)
+        set(RAYM0NADE_WINDOWS_RUNTIME_TESTS
+            core
+            scene-data
+            counter-rng
+            render-smoke
+            primary-render
+            console
+        )
         if(RAYM0NADE_ENABLE_VULKAN)
             list(APPEND RAYM0NADE_WINDOWS_RUNTIME_TESTS
                 gpu-ray-query
