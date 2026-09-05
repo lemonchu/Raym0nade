@@ -89,4 +89,9 @@ void accumulateInwardRadiance(
     RadianceData& diffuseRadiance,
     RadianceData& specularRadiance);
 
+// Applies exposure to an accumulated radiance mean and converts its stored
+// second moment to variance. CPU and GPU integrators share this finalization
+// so Film post-processing receives the same bounded representation.
+void finalizeRadianceData(RadianceData& radiance, float exposure) noexcept;
+
 }  // namespace raym0nade

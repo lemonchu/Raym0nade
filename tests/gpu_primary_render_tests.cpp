@@ -29,6 +29,7 @@ using namespace raym0nade;
 using namespace raym0nade::gpu;
 
 constexpr float kPixelTolerance = 1.0e-6F;
+constexpr float kTexturePixelTolerance = 2.0e-5F;
 constexpr float kDirectDiffuseAbsoluteTolerance = 1.0e-5F;
 constexpr float kDirectDiffuseRelativeTolerance = 5.0e-5F;
 constexpr std::string_view kNoCompatibleDevice =
@@ -44,16 +45,6 @@ void expect(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
-}
-
-template <typename Function>
-void expectInvalidArgument(Function&& function, const std::string& message) {
-    try {
-        function();
-    } catch (const std::invalid_argument&) {
-        return;
-    }
-    throw std::runtime_error(message);
 }
 
 bool exactlyEqual(const vec3& left, const vec3& right) noexcept {
@@ -238,6 +229,323 @@ vec3 expectedDirectDiffuse(
     return diffuse * incidentRadiance * (normalDotLight / kPi);
 }
 
+constexpr std::uint32_t packRgba8(
+    std::uint32_t red,
+    std::uint32_t green,
+    std::uint32_t blue,
+    std::uint32_t alpha) noexcept {
+    return red | (green << 8U) | (blue << 16U) | (alpha << 24U);
+}
+
+PackedVertex makePackedVertex(const vec3& position, const vec2& uv) noexcept {
+    return PackedVertex{
+        {position.x, position.y, position.z, 0.0F},
+        {0.0F, -1.0F, uv.x, uv.y},
+    };
+}
+
+PackedMaterial makePackedMaterial(const vec3& diffuse) noexcept {
+    PackedMaterial material;
+    material.diffuseAndOpacity = {diffuse.x, diffuse.y, diffuse.z, 1.0F};
+    material.emissionAndIor = {0.0F, 0.0F, 0.0F, 1.5F};
+    material.transmissionAndRoughness = {1.0F, 1.0F, 1.0F, 0.5F};
+    material.metallicSpecularAndReserved = {0.0F, 0.04F, 0.0F, 0.0F};
+    return material;
+}
+
+void appendTriangle(
+    PackedSceneData& scene,
+    const std::array<vec3, 3>& positions,
+    const std::array<vec2, 3>& uvs,
+    std::uint32_t materialId) {
+    const std::uint32_t firstVertex =
+        static_cast<std::uint32_t>(scene.vertices.size());
+    for (std::size_t corner = 0U; corner < positions.size(); ++corner) {
+        scene.vertices.push_back(makePackedVertex(positions[corner], uvs[corner]));
+    }
+    scene.triangleIndices.insert(
+        scene.triangleIndices.end(),
+        {firstVertex, firstVertex + 1U, firstVertex + 2U});
+    scene.triangleMaterialIds.push_back(materialId);
+}
+
+void bindDiffuseTexture(
+    PackedSceneData& scene,
+    std::uint32_t materialId,
+    std::uint32_t textureId,
+    bool cutout) {
+    PackedMaterial& material = scene.materials.at(materialId);
+    material.flagsAndReserved[0] |= kPackedMaterialHasDiffuseTexture;
+    if (cutout) {
+        material.flagsAndReserved[0] |= kPackedMaterialCutout;
+    }
+    material.textureIds[0] = textureId;
+}
+
+void addEncodedFilterTexture(PackedSceneData& scene, std::uint32_t materialId) {
+    const std::uint32_t textureId =
+        static_cast<std::uint32_t>(scene.textures.size());
+    const std::uint32_t firstMip =
+        static_cast<std::uint32_t>(scene.textureMipLevels.size());
+    const std::uint32_t firstTexel =
+        static_cast<std::uint32_t>(scene.textureTexelsRgba8.size());
+    scene.textures.push_back(PackedTexture{firstMip, 3U, 1U, 4U});
+    scene.textureMipLevels.insert(
+        scene.textureMipLevels.end(),
+        {
+            PackedTextureMip{firstTexel, 4U, 1U, 4U},
+            PackedTextureMip{firstTexel + 4U, 2U, 1U, 2U},
+            PackedTextureMip{firstTexel + 6U, 1U, 1U, 1U},
+        });
+    scene.textureTexelsRgba8.insert(
+        scene.textureTexelsRgba8.end(),
+        {
+            packRgba8(0U, 0U, 0U, 255U),
+            packRgba8(64U, 64U, 64U, 255U),
+            packRgba8(192U, 192U, 192U, 255U),
+            packRgba8(255U, 255U, 255U, 255U),
+            packRgba8(32U, 32U, 32U, 255U),
+            packRgba8(223U, 223U, 223U, 255U),
+            packRgba8(127U, 127U, 127U, 255U),
+        });
+    bindDiffuseTexture(scene, materialId, textureId, false);
+}
+
+void addCutoutThresholdTexture(PackedSceneData& scene, std::uint32_t materialId) {
+    const std::uint32_t textureId =
+        static_cast<std::uint32_t>(scene.textures.size());
+    const std::uint32_t firstMip =
+        static_cast<std::uint32_t>(scene.textureMipLevels.size());
+    const std::uint32_t firstTexel =
+        static_cast<std::uint32_t>(scene.textureTexelsRgba8.size());
+    scene.textures.push_back(PackedTexture{firstMip, 2U, 2U, 1U});
+    scene.textureMipLevels.insert(
+        scene.textureMipLevels.end(),
+        {
+            PackedTextureMip{firstTexel, 2U, 2U, 1U},
+            PackedTextureMip{firstTexel + 2U, 1U, 1U, 1U},
+        });
+    scene.textureTexelsRgba8.insert(
+        scene.textureTexelsRgba8.end(),
+        {
+            packRgba8(255U, 0U, 0U, 0U),
+            packRgba8(255U, 0U, 0U, 1U),
+            packRgba8(255U, 0U, 0U, 0U),
+        });
+    bindDiffuseTexture(scene, materialId, textureId, true);
+}
+
+vec3 encodedOrientedShapeNormal(
+    const std::array<vec3, 3>& positions,
+    const vec3& incomingDirection) noexcept {
+    vec3 normal = safeNormalize(
+        glm::cross(positions[1] - positions[0], positions[2] - positions[0]),
+        -incomingDirection);
+    if (glm::dot(normal, -incomingDirection) < 0.0F) {
+        normal = -normal;
+    }
+    return (normal + vec3{1.0F}) * 0.5F;
+}
+
+void testTexturedBaseColor(
+    const std::filesystem::path& shaderPath,
+    const VulkanRayQueryOptions& options) {
+    PackedSceneData scene;
+    const vec3 diffuseFactor{0.8F, 0.4F, 0.2F};
+    scene.materials.push_back(makePackedMaterial(diffuseFactor));
+    appendTriangle(
+        scene,
+        {
+            vec3{-2.0F, -2.0F, 2.0F},
+            vec3{2.0F, -2.0F, 2.0F},
+            vec3{0.0F, 2.0F, 2.0F},
+        },
+        {
+            vec2{0.0F, 1.5F},
+            vec2{0.0F, 2.0F},
+            vec2{0.0F, 1.875F},
+        },
+        0U);
+    addEncodedFilterTexture(scene, 0U);
+    scene.validate();
+
+    VulkanPrimaryRenderer renderer{scene, shaderPath, options};
+    PrimaryRenderRequest request;
+    request.extent = ImageExtent{2U, 2U};
+    request.camera.pixelScale = 0.10F;
+    request.aov = PrimaryAov::BaseColor;
+
+    const VulkanPrimaryRenderResult first = renderer.render(request);
+    const VulkanPrimaryRenderResult second = renderer.render(request);
+    constexpr float encodedBilinearValue = 48.0F / 255.0F;
+    const vec3 cpuExpected =
+        vec3{std::pow(encodedBilinearValue, 2.2F)} * diffuseFactor;
+    expectNear(
+        pixelAt(first.image, 1U, 1U),
+        cpuExpected,
+        kTexturePixelTolerance,
+        "Textured BaseColor must wrap and flip V, filter encoded texels, then apply gamma and the diffuse factor.");
+    compareRepeatedGpuRender(first.image, second.image, "Textured BaseColor");
+    validateTimings(first.timings, "Textured BaseColor first render");
+    validateTimings(second.timings, "Textured BaseColor repeated render");
+    expectCleanValidation(renderer.validationReport(), "Textured BaseColor renderer");
+}
+
+void testPrimaryCutout(
+    const std::filesystem::path& shaderPath,
+    const VulkanRayQueryOptions& options) {
+    PackedSceneData scene;
+    const vec3 backDiffuse{0.1F, 0.7F, 0.3F};
+    scene.materials.push_back(makePackedMaterial(vec3{1.0F}));
+    scene.materials.push_back(makePackedMaterial(backDiffuse));
+
+    const std::array<vec3, 3> frontPositions{
+        vec3{-2.0F, -2.0F, 2.0F},
+        vec3{2.0F, -2.0F, 2.0F},
+        vec3{0.0F, 2.0F, 2.0F},
+    };
+    appendTriangle(
+        scene,
+        frontPositions,
+        {
+            vec2{-0.75F, 0.0F},
+            vec2{1.25F, 0.0F},
+            vec2{0.25F, 0.0F},
+        },
+        0U);
+    const std::array<vec3, 3> backPositions{
+        vec3{-3.0F, -2.0F, 3.0F},
+        vec3{3.0F, -2.0F, 3.0F},
+        vec3{0.0F, 2.0F, 4.0F},
+    };
+    appendTriangle(
+        scene,
+        backPositions,
+        {vec2{0.0F}, vec2{0.0F}, vec2{0.0F}},
+        1U);
+    addCutoutThresholdTexture(scene, 0U);
+    scene.validate();
+
+    VulkanPrimaryRenderer renderer{scene, shaderPath, options};
+    PrimaryRenderRequest request;
+    request.extent = ImageExtent{4U, 2U};
+    request.camera.pixelScale = 0.25F;
+    request.aov = PrimaryAov::BaseColor;
+
+    const VulkanPrimaryRenderResult baseColorFirst = renderer.render(request);
+    const VulkanPrimaryRenderResult baseColorSecond = renderer.render(request);
+    expectNear(
+        pixelAt(baseColorFirst.image, 1U, 1U),
+        backDiffuse,
+        kTexturePixelTolerance,
+        "A zero-alpha primary candidate must be ignored in favor of the rear triangle.");
+    expectNear(
+        pixelAt(baseColorFirst.image, 3U, 1U),
+        vec3{1.0F, 0.0F, 0.0F},
+        kTexturePixelTolerance,
+        "A diffuse alpha of 1/255 must exceed the cutout threshold and commit the front triangle.");
+    compareRepeatedGpuRender(
+        baseColorFirst.image, baseColorSecond.image, "Cutout BaseColor");
+
+    request.aov = PrimaryAov::ShapeNormal;
+    const VulkanPrimaryRenderResult shapeNormalFirst = renderer.render(request);
+    const VulkanPrimaryRenderResult shapeNormalSecond = renderer.render(request);
+    const vec3 expectedBackNormal = encodedOrientedShapeNormal(
+        backPositions, makePrimaryRay(request.camera, request.extent, 1U, 1U).direction);
+    const vec3 expectedFrontNormal = encodedOrientedShapeNormal(
+        frontPositions, makePrimaryRay(request.camera, request.extent, 3U, 1U).direction);
+    expectNear(
+        pixelAt(shapeNormalFirst.image, 1U, 1U),
+        expectedBackNormal,
+        kTexturePixelTolerance,
+        "ShapeNormal must describe the rear triangle after rejecting a zero-alpha candidate.");
+    expectNear(
+        pixelAt(shapeNormalFirst.image, 3U, 1U),
+        expectedFrontNormal,
+        kTexturePixelTolerance,
+        "ShapeNormal must describe the front triangle when diffuse alpha is 1/255.");
+    compareRepeatedGpuRender(
+        shapeNormalFirst.image, shapeNormalSecond.image, "Cutout ShapeNormal");
+
+    validateTimings(baseColorFirst.timings, "Cutout BaseColor first render");
+    validateTimings(baseColorSecond.timings, "Cutout BaseColor repeated render");
+    validateTimings(shapeNormalFirst.timings, "Cutout ShapeNormal first render");
+    validateTimings(shapeNormalSecond.timings, "Cutout ShapeNormal repeated render");
+    expectCleanValidation(renderer.validationReport(), "Primary-cutout renderer");
+}
+
+void testDirectDiffuseCutoutShadow(
+    const std::filesystem::path& shaderPath,
+    const VulkanRayQueryOptions& options) {
+    PackedSceneData scene;
+    const vec3 receiverDiffuse{0.25F, 0.5F, 0.75F};
+    scene.materials.push_back(makePackedMaterial(receiverDiffuse));
+    scene.materials.push_back(makePackedMaterial(vec3{1.0F}));
+    appendTriangle(
+        scene,
+        {
+            vec3{-4.0F, -3.0F, 3.0F},
+            vec3{4.0F, -3.0F, 3.0F},
+            vec3{0.0F, 3.0F, 3.0F},
+        },
+        {vec2{0.0F}, vec2{0.0F}, vec2{0.0F}},
+        0U);
+    appendTriangle(
+        scene,
+        {
+            vec3{0.10F, -0.25F, 2.0F},
+            vec3{0.40F, -0.25F, 2.0F},
+            vec3{0.25F, 0.25F, 2.0F},
+        },
+        {vec2{0.0F}, vec2{0.0F}, vec2{0.0F}},
+        1U);
+    appendTriangle(
+        scene,
+        {
+            vec3{1.60F, -0.25F, 2.0F},
+            vec3{1.90F, -0.25F, 2.0F},
+            vec3{1.75F, 0.25F, 2.0F},
+        },
+        {vec2{0.5F, 0.0F}, vec2{0.5F, 0.0F}, vec2{0.5F, 0.0F}},
+        1U);
+    addCutoutThresholdTexture(scene, 1U);
+    scene.validate();
+
+    VulkanPrimaryRenderer renderer{scene, shaderPath, options};
+    PrimaryRenderRequest request;
+    request.extent = ImageExtent{4U, 2U};
+    request.camera.pixelScale = 0.25F;
+    request.directionalLight.directionToLight = vec3{1.0F, 0.0F, -1.0F};
+    const float radianceScale = kPi * std::sqrt(2.0F);
+    request.directionalLight.incidentRadiance =
+        vec3{radianceScale, 0.5F * radianceScale, 2.0F * radianceScale};
+    request.aov = PrimaryAov::DirectDiffuse;
+
+    const VulkanPrimaryRenderResult first = renderer.render(request);
+    const VulkanPrimaryRenderResult second = renderer.render(request);
+    const vec3 directionToLight =
+        safeNormalize(request.directionalLight.directionToLight);
+    const vec3 expectedLit = expectedDirectDiffuse(
+        receiverDiffuse,
+        request.directionalLight.incidentRadiance,
+        glm::dot(vec3{0.0F, 0.0F, -1.0F}, directionToLight));
+    expectNearAbsoluteRelative(
+        pixelAt(first.image, 1U, 1U),
+        expectedLit,
+        kDirectDiffuseAbsoluteTolerance,
+        kDirectDiffuseRelativeTolerance,
+        "A zero-alpha blocker must not shadow the DirectDiffuse receiver.");
+    expectExactlyZeroPixel(
+        first.image,
+        3U,
+        1U,
+        "A blocker with diffuse alpha 1/255 must cast an exact-zero DirectDiffuse shadow.");
+    compareRepeatedGpuRender(first.image, second.image, "Cutout-shadow DirectDiffuse");
+    validateTimings(first.timings, "Cutout-shadow DirectDiffuse first render");
+    validateTimings(second.timings, "Cutout-shadow DirectDiffuse repeated render");
+    expectCleanValidation(renderer.validationReport(), "Cutout-shadow renderer");
+}
+
 void testDirectionalDirectDiffuse(
     const std::filesystem::path& sourceDirectory,
     const std::filesystem::path& shaderPath,
@@ -420,19 +728,88 @@ void testDirectionalDirectDiffuse(
     const VulkanValidationReport validation = renderer.validationReport();
     expectCleanValidation(validation, "Directional-light renderer");
 
-    PackedSceneData transparentScene = scene;
-    for (std::uint32_t materialId : transparentScene.triangleMaterialIds) {
-        transparentScene.materials[materialId].diffuseAndOpacity[3] = 0.5F;
+    PackedSceneData halfOpacityScene = scene;
+    for (std::uint32_t materialId : halfOpacityScene.triangleMaterialIds) {
+        halfOpacityScene.materials[materialId].diffuseAndOpacity[3] = 0.5F;
     }
     {
-        VulkanPrimaryRenderer transparentRenderer{transparentScene, shaderPath, options};
-        expectInvalidArgument(
-            [&] { (void)transparentRenderer.render(directRequest); },
-            "Vulkan DirectDiffuse must reject referenced transparent materials.");
-        const VulkanValidationReport transparentValidation =
-            transparentRenderer.validationReport();
+        VulkanPrimaryRenderer halfOpacityRenderer{
+            halfOpacityScene, shaderPath, options};
+        const VulkanPrimaryRenderResult halfOpacityBaseColor =
+            halfOpacityRenderer.render(baseColorRequest);
+        const VulkanPrimaryRenderResult halfOpacityDirect =
+            halfOpacityRenderer.render(directRequest);
+        compareWithCpu(
+            cpuBaseColor,
+            halfOpacityBaseColor.image,
+            "Half-opacity BaseColor");
+        compareDirectDiffuseWithCpu(
+            cpuDirect,
+            halfOpacityDirect.image,
+            "Half-opacity DirectDiffuse");
+        validateTimings(
+            halfOpacityBaseColor.timings, "Half-opacity BaseColor render");
+        validateTimings(
+            halfOpacityDirect.timings, "Half-opacity DirectDiffuse render");
         expectCleanValidation(
-            transparentValidation, "Transparent-material capability test");
+            halfOpacityRenderer.validationReport(), "Half-opacity renderer");
+    }
+
+    PackedSceneData zeroOpacityScene = scene;
+    const vec3 transmissionColor{0.35F, -0.25F, 0.55F};
+    for (std::uint32_t materialId : zeroOpacityScene.triangleMaterialIds) {
+        PackedMaterial& material = zeroOpacityScene.materials[materialId];
+        material.diffuseAndOpacity[3] = 0.0F;
+        material.transmissionAndRoughness[0] = transmissionColor.x;
+        material.transmissionAndRoughness[1] = transmissionColor.y;
+        material.transmissionAndRoughness[2] = transmissionColor.z;
+    }
+    {
+        VulkanPrimaryRenderer zeroOpacityRenderer{
+            zeroOpacityScene, shaderPath, options};
+        const VulkanPrimaryRenderResult zeroOpacityBaseColor =
+            zeroOpacityRenderer.render(baseColorRequest);
+        for (std::size_t index = 0U; index < cpuBaseColor.pixels.size(); ++index) {
+            const vec3 expected = exactlyEqual(cpuBaseColor.pixels[index], vec3{0.0F})
+                                      ? vec3{0.0F}
+                                      : transmissionColor;
+            expectNear(
+                zeroOpacityBaseColor.image.pixels[index],
+                expected,
+                kPixelTolerance,
+                "Zero-opacity BaseColor must use the scalar transmission color.");
+        }
+
+        const VulkanPrimaryRenderResult zeroOpacityDirect =
+            zeroOpacityRenderer.render(directRequest);
+        const vec3 clampedTransmission{transmissionColor.x, 0.0F, transmissionColor.z};
+        const vec3 expectedTransmissionDirect = expectedDirectDiffuse(
+            clampedTransmission,
+            directRequest.directionalLight.incidentRadiance,
+            0.8F);
+        expectNearAbsoluteRelative(
+            pixelAt(zeroOpacityDirect.image, 4U, 4U),
+            expectedTransmissionDirect,
+            kDirectDiffuseAbsoluteTolerance,
+            kDirectDiffuseRelativeTolerance,
+            "Zero-opacity DirectDiffuse must clamp transmission before Lambert shading.");
+        expectNearAbsoluteRelative(
+            pixelAt(zeroOpacityDirect.image, 9U, 4U),
+            expectedTransmissionDirect,
+            kDirectDiffuseAbsoluteTolerance,
+            kDirectDiffuseRelativeTolerance,
+            "A visible zero-opacity blocker must use clamped transmission for DirectDiffuse.");
+        expectExactlyZeroPixel(
+            zeroOpacityDirect.image,
+            6U,
+            4U,
+            "Scalar zero opacity must not disable hard-shadow occlusion.");
+        validateTimings(
+            zeroOpacityBaseColor.timings, "Zero-opacity BaseColor render");
+        validateTimings(
+            zeroOpacityDirect.timings, "Zero-opacity DirectDiffuse render");
+        expectCleanValidation(
+            zeroOpacityRenderer.validationReport(), "Zero-opacity renderer");
     }
 
     PackedSceneData texturedScene = scene;
@@ -447,9 +824,26 @@ void testDirectionalDirectDiffuse(
     }
     {
         VulkanPrimaryRenderer texturedRenderer{texturedScene, shaderPath, options};
-        expectInvalidArgument(
-            [&] { (void)texturedRenderer.render(directRequest); },
-            "Vulkan DirectDiffuse must reject referenced diffuse textures.");
+        const VulkanPrimaryRenderResult texturedFirst =
+            texturedRenderer.render(directRequest);
+        const VulkanPrimaryRenderResult texturedSecond =
+            texturedRenderer.render(directRequest);
+        compareDirectDiffuseWithCpu(
+            cpuDirect,
+            texturedFirst.image,
+            "White-textured DirectDiffuse");
+        compareDirectDiffuseWithCpu(
+            cpuDirect,
+            texturedSecond.image,
+            "Repeated white-textured DirectDiffuse");
+        compareRepeatedGpuRender(
+            texturedFirst.image,
+            texturedSecond.image,
+            "White-textured DirectDiffuse");
+        validateTimings(
+            texturedFirst.timings, "White-textured DirectDiffuse first render");
+        validateTimings(
+            texturedSecond.timings, "White-textured DirectDiffuse repeated render");
         const VulkanValidationReport texturedValidation =
             texturedRenderer.validationReport();
         expectCleanValidation(
@@ -545,6 +939,9 @@ int runTest() {
     const VulkanValidationReport validation = renderer.validationReport();
     expectCleanValidation(validation, "Primary-AOV renderer");
 
+    testTexturedBaseColor(shaderPath, options);
+    testPrimaryCutout(shaderPath, options);
+    testDirectDiffuseCutoutShadow(shaderPath, options);
     testDirectionalDirectDiffuse(sourceDirectory, shaderPath, options);
 
     const VulkanRayQuerySetupTimings& setup = renderer.setupTimings();

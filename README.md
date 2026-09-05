@@ -35,6 +35,8 @@ The build creates these targets:
 - `raym0nade_gpu_probe`: the optional AMD Ray Query capability and hardware self-test executable
 - `raym0nade_gpu_scene_tests`: the optional packed-scene CPU/GPU intersection comparison
 - `raym0nade_gpu_primary_render_tests`: the optional CPU/GPU primary-AOV comparison
+- `raym0nade_gpu_counter_rng_tests`: the optional CPU/GLSL Philox known-answer comparison on a
+  Vulkan device
 - `raym0nade_gpu_primary_benchmark`: the optional Bistro ShapeNormal comparison and GPU-only
   diagnostic utility
 
@@ -197,28 +199,34 @@ G3b `DirectDiffuse` diagnostic. The experimental `VulkanPrimaryRenderer` generat
 ray on the device in one two-dimensional compute dispatch using 8 x 8 workgroups and returns a
 row-major linear image after one readback.
 
-G3b adds a request-local directional light and hard opaque shadows. A miss is black; a visible hit
-uses its camera-facing shape normal and evaluates
-`max(baseColor, 0) * incidentRadiance * max(dot(N, L), 0) / pi`, with the light direction normalized
-on the host. The same GPU invocation performs the primary query and, when needed, a terminate-on-
-first-hit shadow query before writing the pixel. The render still uses one dispatch, one submit,
-and one readback. `BaseColor` and `DirectDiffuse` accept only referenced opaque materials without
-diffuse textures; `ShapeNormal` supports every scene accepted by the current Vulkan geometry
-boundary, while alpha-cutout scenes are rejected.
+The current primary-AOV implementation extends that slice with packed diffuse-texture sampling and
+Ray Query candidate alpha testing for primary and shadow rays. Sampling matches the CPU convention:
+V is flipped, coordinates repeat, encoded RGBA8 mip levels are bilinearly or trilinearly filtered,
+and RGB is decoded with `pow(value, 2.2)` after filtering. Cutout acceptance samples base-mip alpha
+and uses the `1e-4` threshold. The candidate loop intentionally has no 32-layer counter because
+Vulkan does not guarantee candidate order; it rejects every transparent candidate before
+confirming a hit. The compact arbitrary-ray `VulkanRayQueryIntersector` still rejects cutout scenes
+because its API has no material-sampling contract.
 
-G3b is a deterministic lighting diagnostic, not a complete GPU path tracer. It has no environment
-or area lighting, emission, specular or metallic/roughness response, smooth normals, normal maps,
-distance attenuation, random sampling, path continuation, texture sampling, accumulation, or
-post-processing. The validated 4 x 4 and 13 x 9 timings are bring-up diagnostics and do not
-establish a speedup; the full G3 milestone remains open.
+Packed scene format version 4 contains deduplicated encoded RGBA8 textures and complete mip chains,
+indexed emissive-area-light records, and HDR linear radiance with a hierarchical importance CDF.
+`VulkanRuntime` uploads the texture, light, and environment arrays into persistent device-local
+buffers through a reusable staging buffer capped at 16 MiB per transfer. The lighting buffers are
+device-ready but are not yet consumed by a GPU path integrator.
+
+G3b remains a deterministic directional-light diagnostic, not a complete GPU path tracer. General
+environment and area-light transport, emission, full material response, random path continuation,
+SPP accumulation, Film readback, and post-processing integration remain open. The validated small
+timings are bring-up diagnostics and do not establish a speedup; the full G3 milestone remains
+open.
 
 `raym0nade_gpu_primary_benchmark` provides an explicitly limited Bistro geometry-throughput check.
 It reports single-thread CPU, parallel CPU, complete GPU-call, and dispatch/readback wall-clock
 timings plus a separate GPU device-timestamp duration. CPU/GPU ShapeNormal images are written
-outside the timed region. Because GPU texture and candidate alpha testing are not implemented, its
-benchmark-local packed-scene copy treats cutout triangles as opaque and its report records that
-semantic difference. It is not a textured beauty benchmark or a substitute for the complete-
-topology performance gate.
+outside the timed region. The benchmark no longer clears packed cutout flags: CPU and GPU both
+apply diffuse-alpha cutout semantics. It remains a primary-AOV geometry benchmark rather than a
+textured beauty benchmark or a substitute for the complete-topology performance gate. The older
+opaque-fallback error result is retained only as superseded history in `docs/development-log.md`.
 
 Pass `--gpu-only` for a manual GPU diagnostic that performs scene import, packing, Vulkan setup,
 GPU warm-up, and measured GPU renders without executing any CPU render. This mode writes only the
@@ -231,8 +239,8 @@ directory so files left by an earlier CPU/GPU comparison cannot be mistaken for 
     --output-dir output/benchmarks/gpu-only-3840x2160
 ```
 
-Windows users should invoke the corresponding `.exe`. This remains a geometry diagnostic with
-benchmark-local opaque cutout fallback, not a textured or path-traced Bistro beauty render.
+Windows users should invoke the corresponding `.exe`. This remains a geometry diagnostic, not a
+path-traced Bistro beauty render.
 
 After activating the Conda environment, configure, build, and test the optional backend with:
 

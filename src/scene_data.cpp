@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -21,20 +20,73 @@ std::size_t borrowedIndex(
     if (pointer == nullptr || values.empty()) {
         throw std::logic_error(std::string{"Packed scene contains a missing "} + description + '.');
     }
-    const Value* begin = values.data();
-    const Value* end = begin + values.size();
-    const std::less<const Value*> less;
-    if (less(pointer, begin) || !less(pointer, end)) {
+    if (values.size() >
+        std::numeric_limits<std::uintptr_t>::max() / sizeof(Value)) {
+        throw std::logic_error(
+            std::string{"Packed scene contains an oversized "} + description + '.');
+    }
+    const std::uintptr_t beginAddress =
+        reinterpret_cast<std::uintptr_t>(values.data());
+    const std::uintptr_t pointerAddress =
+        reinterpret_cast<std::uintptr_t>(pointer);
+    const std::uintptr_t storageBytes =
+        static_cast<std::uintptr_t>(values.size()) * sizeof(Value);
+    if (pointerAddress < beginAddress) {
         throw std::logic_error(
             std::string{"Packed scene contains an out-of-range "} + description + '.');
     }
-    return static_cast<std::size_t>(pointer - begin);
+    const std::uintptr_t byteOffset = pointerAddress - beginAddress;
+    if (byteOffset >= storageBytes || byteOffset % sizeof(Value) != 0U) {
+        throw std::logic_error(
+            std::string{"Packed scene contains an out-of-range "} + description + '.');
+    }
+    const std::size_t index =
+        static_cast<std::size_t>(byteOffset / sizeof(Value));
+    if (values.data() + index != pointer) {
+        throw std::logic_error(
+            std::string{"Packed scene contains an invalid "} + description + '.');
+    }
+    return index;
 }
 
 bool allFinite(const std::array<float, 4>& values) noexcept {
     return std::all_of(values.begin(), values.end(), [](float value) {
         return std::isfinite(value);
     });
+}
+
+float faceArea(const Face& face) noexcept {
+    return 0.5F * glm::length(glm::cross(
+                      face.vertices[1] - face.vertices[0],
+                      face.vertices[2] - face.vertices[0]));
+}
+
+float environmentWeight(const vec3& radiance, float solidAngle) noexcept {
+    const float luminance = glm::dot(radiance, kLuminanceWeights);
+    if (!std::isfinite(luminance) || !(luminance > 0.0F)) {
+        return 0.0F;
+    }
+    const float weight = luminance * solidAngle;
+    return std::isfinite(weight) && weight > 0.0F ? weight : 0.0F;
+}
+
+bool nearlyEqual(float left, float right, float scale = 1.0F) noexcept {
+    if (!std::isfinite(left) || !std::isfinite(right) || !std::isfinite(scale) ||
+        !(scale > 0.0F)) {
+        return false;
+    }
+    constexpr float kToleranceInUlps = 16.0F;
+    const float magnitude = std::max({std::abs(left), std::abs(right), scale});
+    return std::abs(left - right) <=
+           kToleranceInUlps * std::numeric_limits<float>::epsilon() * magnitude;
+}
+
+vec3 packedPosition(const PackedVertex& vertex) noexcept {
+    return vec3{
+        vertex.positionAndNormalX[0],
+        vertex.positionAndNormalX[1],
+        vertex.positionAndNormalX[2],
+    };
 }
 
 constexpr std::array<TextureSlot, 4> kTextureSlots{
@@ -224,6 +276,206 @@ PackedMaterial packMaterial(const Material& material) {
     return result;
 }
 
+void appendAreaLights(
+    PackedSceneData& scene,
+    const std::vector<LightObject>& lights,
+    const std::vector<VertexData>& sourceVertices,
+    const std::vector<Material>& sourceMaterials,
+    const std::vector<std::uint32_t>& sourceToPacked) {
+    if (lights.size() >= kInvalidSceneId) {
+        throw std::overflow_error("Packed scene has too many area lights.");
+    }
+    scene.areaLights.reserve(lights.size());
+
+    for (const LightObject& light : lights) {
+        if (!isFinite(light.center) || !std::isfinite(light.power) ||
+            !(light.power > 0.0F) || light.faces.empty() ||
+            light.faceDistribution.size() != light.faces.size()) {
+            throw std::logic_error("A model area light is structurally invalid.");
+        }
+        if (light.faces.size() >= kInvalidSceneId ||
+            scene.areaLightTriangles.size() >
+                static_cast<std::size_t>(kInvalidSceneId) - light.faces.size()) {
+            throw std::overflow_error(
+                "Packed scene area-light triangles exceed the 32-bit range.");
+        }
+
+        const std::uint32_t firstTriangle =
+            static_cast<std::uint32_t>(scene.areaLightTriangles.size());
+        double cumulativeProbability = 0.0;
+        for (std::size_t faceIndex = 0U; faceIndex < light.faces.size(); ++faceIndex) {
+            const Face& face = light.faces[faceIndex];
+            const float area = faceArea(face);
+            const float probability = light.faceDistribution.pdf(faceIndex);
+            if (!std::isfinite(area) || !(area > 0.0F) ||
+                !std::isfinite(probability) || !(probability > 0.0F)) {
+                throw std::logic_error(
+                    "A model area-light triangle has an invalid area or probability.");
+            }
+
+            PackedAreaLightTriangle packedTriangle;
+            for (std::size_t corner = 0U; corner < 3U; ++corner) {
+                const std::size_t sourceIndex = borrowedIndex(
+                    face.vertexData[corner], sourceVertices, "area-light vertex pointer");
+                const std::uint32_t packedIndex = sourceToPacked[sourceIndex];
+                if (packedIndex == kInvalidSceneId || packedIndex >= scene.vertices.size() ||
+                    !samePosition(scene.vertices[packedIndex], face.vertices[corner])) {
+                    throw std::logic_error(
+                        "An area-light vertex does not map to packed geometry.");
+                }
+                packedTriangle.vertexIdsAndMaterialId[corner] = packedIndex;
+            }
+            packedTriangle.vertexIdsAndMaterialId[3] = static_cast<std::uint32_t>(
+                borrowedIndex(face.material, sourceMaterials, "area-light material pointer"));
+
+            cumulativeProbability += static_cast<double>(probability);
+            const float cdf =
+                faceIndex + 1U == light.faces.size()
+                    ? 1.0F
+                    : std::clamp(
+                          static_cast<float>(cumulativeProbability), 0.0F, 1.0F);
+            packedTriangle.areaProbabilityCdfAndReserved = {
+                area,
+                probability,
+                cdf,
+                0.0F,
+            };
+            scene.areaLightTriangles.push_back(packedTriangle);
+        }
+
+        PackedAreaLight packedLight;
+        packedLight.centerAndPower = {
+            light.center.x,
+            light.center.y,
+            light.center.z,
+            light.power,
+        };
+        packedLight.triangleRangeAndReserved = {
+            firstTriangle,
+            static_cast<std::uint32_t>(light.faces.size()),
+            0U,
+            0U,
+        };
+        scene.areaLights.push_back(packedLight);
+    }
+}
+
+void appendEnvironment(PackedSceneData& scene, const SkyBox& sky) {
+    if (sky.empty()) {
+        return;
+    }
+    if (sky.width() <= 0 || sky.height() <= 0) {
+        throw std::logic_error("A non-empty environment has an invalid extent.");
+    }
+
+    const std::size_t width = static_cast<std::size_t>(sky.width());
+    const std::size_t height = static_cast<std::size_t>(sky.height());
+    if (width > std::numeric_limits<std::size_t>::max() / height) {
+        throw std::overflow_error("Packed environment dimensions overflow.");
+    }
+    const std::size_t texelCount = width * height;
+    const std::vector<vec3>& radiance = sky.radiancePixels();
+    if (texelCount >= kInvalidSceneId || radiance.size() != texelCount) {
+        throw std::logic_error(
+            "Packed environment radiance does not match its 32-bit extent.");
+    }
+
+    std::vector<float> solidAngles(height, 0.0F);
+    std::vector<double> rowWeights(height, 0.0);
+    double totalWeight = 0.0;
+    const double azimuthWidth =
+        2.0 * static_cast<double>(kPi) / static_cast<double>(width);
+    for (std::size_t row = 0U; row < height; ++row) {
+        const double polarMinimum =
+            static_cast<double>(kPi) * static_cast<double>(row) /
+            static_cast<double>(height);
+        const double polarMaximum =
+            static_cast<double>(kPi) * static_cast<double>(row + 1U) /
+            static_cast<double>(height);
+        const float solidAngle = static_cast<float>(
+            azimuthWidth * (std::cos(polarMinimum) - std::cos(polarMaximum)));
+        if (!std::isfinite(solidAngle) || !(solidAngle > 0.0F)) {
+            throw std::logic_error("Packed environment row has an invalid solid angle.");
+        }
+        solidAngles[row] = solidAngle;
+
+        for (std::size_t column = 0U; column < width; ++column) {
+            const vec3& value = radiance[row * width + column];
+            if (!isFinite(value) || glm::any(glm::lessThan(value, vec3{0.0F}))) {
+                throw std::logic_error(
+                    "Packed environment radiance must be finite and non-negative.");
+            }
+            const double weight =
+                static_cast<double>(environmentWeight(value, solidAngle));
+            rowWeights[row] += weight;
+            totalWeight += weight;
+        }
+    }
+
+    const bool hasImportance =
+        std::isfinite(totalWeight) && totalWeight > 0.0;
+    scene.environment = PackedEnvironment{
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height),
+        hasImportance ? kPackedEnvironmentHasImportance : 0U,
+        0U,
+    };
+    scene.environmentRows.reserve(height);
+    scene.environmentTexels.reserve(texelCount);
+
+    double cumulativeRowWeight = 0.0;
+    for (std::size_t row = 0U; row < height; ++row) {
+        const bool rowHasImportance =
+            hasImportance && std::isfinite(rowWeights[row]) && rowWeights[row] > 0.0;
+        const float rowProbability = rowHasImportance
+                                         ? static_cast<float>(rowWeights[row] / totalWeight)
+                                         : 0.0F;
+        cumulativeRowWeight += rowHasImportance ? rowWeights[row] : 0.0;
+        const float rowCdf =
+            !hasImportance
+                ? 0.0F
+                : (row + 1U == height
+                       ? 1.0F
+                       : std::clamp(
+                             static_cast<float>(cumulativeRowWeight / totalWeight),
+                             0.0F,
+                             1.0F));
+        scene.environmentRows.push_back(PackedEnvironmentRow{
+            rowProbability,
+            rowCdf,
+            solidAngles[row],
+            0.0F,
+        });
+
+        double cumulativeColumnWeight = 0.0;
+        for (std::size_t column = 0U; column < width; ++column) {
+            const vec3& value = radiance[row * width + column];
+            cumulativeColumnWeight +=
+                rowHasImportance
+                    ? static_cast<double>(environmentWeight(value, solidAngles[row]))
+                    : 0.0;
+            const float conditionalCdf =
+                column + 1U == width
+                    ? 1.0F
+                    : (rowHasImportance
+                           ? std::clamp(
+                                 static_cast<float>(
+                                     cumulativeColumnWeight / rowWeights[row]),
+                                 0.0F,
+                                 1.0F)
+                           : static_cast<float>(
+                                 static_cast<double>(column + 1U) /
+                                 static_cast<double>(width)));
+            scene.environmentTexels.push_back(PackedEnvironmentTexel{{
+                value.x,
+                value.y,
+                value.z,
+                conditionalCdf,
+            }});
+        }
+    }
+}
+
 }  // namespace
 
 std::size_t PackedSceneData::triangleCount() const noexcept {
@@ -244,7 +496,11 @@ void PackedSceneData::validate() const {
     if (vertices.size() > kInvalidSceneId || materials.size() > kInvalidSceneId ||
         triangleCount() > kInvalidSceneId || textures.size() > kInvalidSceneId ||
         textureMipLevels.size() > kInvalidSceneId ||
-        textureTexelsRgba8.size() > kInvalidSceneId) {
+        textureTexelsRgba8.size() > kInvalidSceneId ||
+        areaLights.size() > kInvalidSceneId ||
+        areaLightTriangles.size() > kInvalidSceneId ||
+        environmentRows.size() > kInvalidSceneId ||
+        environmentTexels.size() > kInvalidSceneId) {
         throw std::invalid_argument("Packed scene counts exceed the 32-bit index range.");
     }
     if (textureTexelsRgba8.size() >
@@ -362,6 +618,273 @@ void PackedSceneData::validate() const {
             }
         }
     }
+
+    std::size_t expectedAreaTriangle = 0U;
+    for (const PackedAreaLight& light : areaLights) {
+        if (!allFinite(light.centerAndPower) || !(light.centerAndPower[3] > 0.0F) ||
+            light.triangleRangeAndReserved[1] == 0U ||
+            light.triangleRangeAndReserved[2] != 0U ||
+            light.triangleRangeAndReserved[3] != 0U) {
+            throw std::invalid_argument("Packed area-light metadata is invalid.");
+        }
+        if (static_cast<std::size_t>(light.triangleRangeAndReserved[0]) !=
+                expectedAreaTriangle ||
+            expectedAreaTriangle > areaLightTriangles.size() ||
+            static_cast<std::size_t>(light.triangleRangeAndReserved[1]) >
+                areaLightTriangles.size() - expectedAreaTriangle) {
+            throw std::invalid_argument(
+                "Packed area-light triangle ranges must be contiguous and in range.");
+        }
+
+        float previousCdf = 0.0F;
+        const std::size_t triangleCount =
+            static_cast<std::size_t>(light.triangleRangeAndReserved[1]);
+        for (std::size_t localIndex = 0U; localIndex < triangleCount; ++localIndex) {
+            const PackedAreaLightTriangle& triangle =
+                areaLightTriangles[expectedAreaTriangle + localIndex];
+            for (std::size_t corner = 0U; corner < 3U; ++corner) {
+                if (triangle.vertexIdsAndMaterialId[corner] >= vertices.size()) {
+                    throw std::invalid_argument(
+                        "Packed area light contains an out-of-range vertex ID.");
+                }
+            }
+            const std::uint32_t materialId = triangle.vertexIdsAndMaterialId[3];
+            if (materialId >= materials.size()) {
+                throw std::invalid_argument(
+                    "Packed area light contains an out-of-range material ID.");
+            }
+            const PackedMaterial& material = materials[materialId];
+            const bool hasEmission =
+                material.emissionAndIor[0] > 0.0F ||
+                material.emissionAndIor[1] > 0.0F ||
+                material.emissionAndIor[2] > 0.0F ||
+                (material.flagsAndReserved[0] &
+                 kPackedMaterialHasEmissiveTexture) != 0U;
+            if (!hasEmission) {
+                throw std::invalid_argument(
+                    "Packed area-light triangles must reference emissive materials.");
+            }
+
+            const std::array<float, 4>& values =
+                triangle.areaProbabilityCdfAndReserved;
+            if (!allFinite(values) || !(values[0] > 0.0F) ||
+                !(values[1] > 0.0F) || values[1] > 1.0F ||
+                values[2] < previousCdf || values[2] > 1.0F ||
+                values[3] != 0.0F) {
+                throw std::invalid_argument(
+                    "Packed area-light triangle sampling data is invalid.");
+            }
+            const vec3 position0 =
+                packedPosition(vertices[triangle.vertexIdsAndMaterialId[0]]);
+            const vec3 position1 =
+                packedPosition(vertices[triangle.vertexIdsAndMaterialId[1]]);
+            const vec3 position2 =
+                packedPosition(vertices[triangle.vertexIdsAndMaterialId[2]]);
+            const float geometricArea = 0.5F * glm::length(
+                glm::cross(position1 - position0, position2 - position0));
+            if (!(geometricArea > 0.0F) || !std::isfinite(geometricArea) ||
+                !nearlyEqual(
+                    values[0],
+                    geometricArea,
+                    std::numeric_limits<float>::min())) {
+                throw std::invalid_argument(
+                    "Packed area-light area does not match its triangle.");
+            }
+            const float cdfProbability = values[2] - previousCdf;
+            if (!nearlyEqual(cdfProbability, values[1])) {
+                throw std::invalid_argument(
+                    "Packed area-light face probability and CDF are inconsistent.");
+            }
+            previousCdf = values[2];
+        }
+        if (previousCdf != 1.0F) {
+            throw std::invalid_argument(
+                "Packed area-light face CDF must end at one.");
+        }
+        expectedAreaTriangle += triangleCount;
+    }
+    if (expectedAreaTriangle != areaLightTriangles.size()) {
+        throw std::invalid_argument(
+            "Packed area-light storage contains unreferenced triangles.");
+    }
+
+    if ((environment.flags & ~kPackedEnvironmentKnownFlags) != 0U ||
+        environment.reserved != 0U) {
+        throw std::invalid_argument("Packed environment metadata is invalid.");
+    }
+    const bool hasEnvironmentExtent =
+        environment.width != 0U || environment.height != 0U;
+    if (!hasEnvironmentExtent) {
+        if (environment.width != 0U || environment.height != 0U ||
+            environment.flags != 0U || !environmentRows.empty() ||
+            !environmentTexels.empty()) {
+            throw std::invalid_argument(
+                "An empty packed environment must not own sampling data.");
+        }
+        return;
+    }
+    if (environment.width == 0U || environment.height == 0U) {
+        throw std::invalid_argument(
+            "Packed environment width and height must both be nonzero.");
+    }
+    const std::size_t environmentWidth =
+        static_cast<std::size_t>(environment.width);
+    const std::size_t environmentHeight =
+        static_cast<std::size_t>(environment.height);
+    if (environmentWidth >
+        std::numeric_limits<std::size_t>::max() / environmentHeight) {
+        throw std::invalid_argument("Packed environment dimensions overflow.");
+    }
+    const std::size_t environmentTexelCount =
+        environmentWidth * environmentHeight;
+    if (environmentRows.size() != environmentHeight ||
+        environmentTexels.size() != environmentTexelCount) {
+        throw std::invalid_argument(
+            "Packed environment arrays do not match its extent.");
+    }
+
+    std::vector<float> expectedSolidAngles(environmentHeight, 0.0F);
+    std::vector<double> expectedRowWeights(environmentHeight, 0.0);
+    double expectedTotalWeight = 0.0;
+    const double azimuthWidth =
+        2.0 * static_cast<double>(kPi) /
+        static_cast<double>(environmentWidth);
+    for (std::size_t rowIndex = 0U; rowIndex < environmentHeight; ++rowIndex) {
+        const double polarMinimum =
+            static_cast<double>(kPi) * static_cast<double>(rowIndex) /
+            static_cast<double>(environmentHeight);
+        const double polarMaximum =
+            static_cast<double>(kPi) * static_cast<double>(rowIndex + 1U) /
+            static_cast<double>(environmentHeight);
+        const float expectedSolidAngle = static_cast<float>(
+            azimuthWidth *
+            (std::cos(polarMinimum) - std::cos(polarMaximum)));
+        if (!std::isfinite(expectedSolidAngle) ||
+            !(expectedSolidAngle > 0.0F)) {
+            throw std::invalid_argument(
+                "Packed environment dimensions produce an invalid solid angle.");
+        }
+        expectedSolidAngles[rowIndex] = expectedSolidAngle;
+        for (std::size_t column = 0U; column < environmentWidth; ++column) {
+            const PackedEnvironmentTexel& texel =
+                environmentTexels[rowIndex * environmentWidth + column];
+            if (!allFinite(texel.radianceAndConditionalCdf) ||
+                texel.radianceAndConditionalCdf[0] < 0.0F ||
+                texel.radianceAndConditionalCdf[1] < 0.0F ||
+                texel.radianceAndConditionalCdf[2] < 0.0F) {
+                throw std::invalid_argument(
+                    "Packed environment radiance must be finite and non-negative.");
+            }
+            const vec3 radiance{
+                texel.radianceAndConditionalCdf[0],
+                texel.radianceAndConditionalCdf[1],
+                texel.radianceAndConditionalCdf[2],
+            };
+            const double weight =
+                static_cast<double>(
+                    environmentWeight(radiance, expectedSolidAngle));
+            expectedRowWeights[rowIndex] += weight;
+            expectedTotalWeight += weight;
+        }
+    }
+
+    const bool hasImportance =
+        (environment.flags & kPackedEnvironmentHasImportance) != 0U;
+    const bool expectsImportance =
+        std::isfinite(expectedTotalWeight) && expectedTotalWeight > 0.0;
+    if (hasImportance != expectsImportance) {
+        throw std::invalid_argument(
+            "Packed environment importance metadata does not match its radiance.");
+    }
+
+    double cumulativeRowWeight = 0.0;
+    for (std::size_t rowIndex = 0U; rowIndex < environmentHeight; ++rowIndex) {
+        const PackedEnvironmentRow& row = environmentRows[rowIndex];
+        if (!std::isfinite(row.probability) ||
+            !std::isfinite(row.cumulativeProbability) ||
+            !std::isfinite(row.solidAngle) || row.probability < 0.0F ||
+            row.probability > 1.0F || row.cumulativeProbability < 0.0F ||
+            row.cumulativeProbability > 1.0F ||
+            !(row.solidAngle > 0.0F) ||
+            row.reserved != 0.0F) {
+            throw std::invalid_argument(
+                "Packed environment row metadata is invalid.");
+        }
+        if (!nearlyEqual(
+                row.solidAngle,
+                expectedSolidAngles[rowIndex],
+                std::numeric_limits<float>::min())) {
+            throw std::invalid_argument(
+                "Packed environment row solid angle does not match its extent.");
+        }
+
+        const bool rowHasImportance =
+            hasImportance && std::isfinite(expectedRowWeights[rowIndex]) &&
+            expectedRowWeights[rowIndex] > 0.0;
+        const float expectedRowProbability =
+            rowHasImportance
+                ? static_cast<float>(
+                      expectedRowWeights[rowIndex] / expectedTotalWeight)
+                : 0.0F;
+        cumulativeRowWeight +=
+            rowHasImportance ? expectedRowWeights[rowIndex] : 0.0;
+        const float expectedRowCdf =
+            !hasImportance
+                ? 0.0F
+                : (rowIndex + 1U == environmentHeight
+                       ? 1.0F
+                       : std::clamp(
+                             static_cast<float>(
+                                 cumulativeRowWeight / expectedTotalWeight),
+                             0.0F,
+                             1.0F));
+        if (!nearlyEqual(row.probability, expectedRowProbability) ||
+            !nearlyEqual(row.cumulativeProbability, expectedRowCdf)) {
+            throw std::invalid_argument(
+                "Packed environment row distribution does not match its radiance.");
+        }
+
+        double cumulativeColumnWeight = 0.0;
+        for (std::size_t column = 0U; column < environmentWidth; ++column) {
+            const PackedEnvironmentTexel& texel =
+                environmentTexels[rowIndex * environmentWidth + column];
+            if (texel.radianceAndConditionalCdf[3] < 0.0F ||
+                texel.radianceAndConditionalCdf[3] > 1.0F) {
+                throw std::invalid_argument(
+                    "Packed environment conditional CDF is outside the unit interval.");
+            }
+            const vec3 radiance{
+                texel.radianceAndConditionalCdf[0],
+                texel.radianceAndConditionalCdf[1],
+                texel.radianceAndConditionalCdf[2],
+            };
+            cumulativeColumnWeight +=
+                rowHasImportance
+                    ? static_cast<double>(
+                          environmentWeight(
+                              radiance, expectedSolidAngles[rowIndex]))
+                    : 0.0;
+            const float expectedConditionalCdf =
+                column + 1U == environmentWidth
+                    ? 1.0F
+                    : (rowHasImportance
+                           ? std::clamp(
+                                 static_cast<float>(
+                                     cumulativeColumnWeight /
+                                     expectedRowWeights[rowIndex]),
+                                 0.0F,
+                                 1.0F)
+                           : static_cast<float>(
+                                 static_cast<double>(column + 1U) /
+                                 static_cast<double>(environmentWidth)));
+            if (!nearlyEqual(
+                    texel.radianceAndConditionalCdf[3],
+                    expectedConditionalCdf)) {
+                throw std::invalid_argument(
+                    "Packed environment conditional CDF does not match its radiance.");
+            }
+        }
+    }
 }
 
 PackedSceneData Model::packScene() const {
@@ -421,6 +944,8 @@ PackedSceneData Model::packScene() const {
         }
     }
 
+    appendAreaLights(result, lights_, vertexData_, materials_, sourceToPacked);
+    appendEnvironment(result, sky_);
     result.validate();
     return result;
 }

@@ -64,9 +64,9 @@ successfully in `gpu-debug`, then reported:
 The host is a Ryzen 9 9950X with 16 CPU cores and only two integrated GPU graphics cores. It is a
 valid functionality node but not a credible target for promising a large speedup over the current
 CPU renderer. Performance acceptance therefore separates this integrated-GPU compatibility gate
-from future RX 6000/7000/9000 discrete-GPU targets. A limited primary-AOV renderer with one
-deterministic directional-light diagnostic now exists, but no complete GPU path renderer or
-speedup is claimed.
+from future RX 6000/7000/9000 discrete-GPU targets. A limited primary-AOV renderer now supports one
+deterministic directional-light diagnostic, diffuse textures, and candidate alpha cutouts. Packed
+lighting data is resident, but no complete GPU path renderer or speedup is claimed.
 
 The G1 hardware-intersection self-test compiles a checked-in compute shader to generated SPIR-V,
 builds a one-triangle BLAS and identity TLAS, and executes deterministic hit and miss Ray Queries.
@@ -155,7 +155,7 @@ GPU in the Ryzen 9 9950X; meaningful performance claims remain deferred to a sup
 discrete GPU and a complete resident rendering workload. The earlier Debug
 `0x80000003` process failure did not recur in either clean configuration.
 
-The current open G2 risks are:
+At the G2 checkpoint, the open risks were:
 
 - the imported comparison fixture has only two faces, so a greater-than-ten-face fixture is still
   needed to exercise CPU BVH face reordering;
@@ -164,9 +164,10 @@ The current open G2 risks are:
   covered; G3b separately aligns its fixed primary/shadow lower bound with the CPU rule;
 - validation messages emitted during teardown are not included in the pre-destruction report;
 - a fence timeout may still wait indefinitely while quiescing the queue for safe destruction; and
-- GPU texture sampling and complete material shading are not implemented. G3b supports restricted
-  constant `BaseColor`, `ShapeNormal`, and directional `DirectDiffuse` diagnostics, and alpha
-  cutouts referenced by the packed scene are rejected rather than silently treated as opaque.
+- GPU texture sampling and complete material shading were not implemented. G3b subsequently added
+  restricted constant `BaseColor`, `ShapeNormal`, and directional `DirectDiffuse` diagnostics.
+  The device-ready foundation section below records the later diffuse-texture and alpha-cutout
+  implementation; complete material shading remains open.
 
 ### Review hardening pass
 
@@ -368,7 +369,7 @@ direction + pixelScale * ((x - width * 0.5) * right + (y - height * 0.5) * up)
 Pixel coordinates are integers, there is no half-pixel offset, and the supplied camera basis is not
 implicitly orthonormalized. Output is a row-major linear RGB image.
 
-Packed scene format version 2 now records explicit alpha-cutout, diffuse-texture,
+At the G3a checkpoint, packed scene format version 2 recorded explicit alpha-cutout, diffuse-texture,
 specular-texture, emissive-texture, and normal-texture presence bits. Texture IDs remain invalid
 sentinels until device texture storage is implemented. This preserves enough source-material
 capability information for a GPU backend to reject unsupported shading instead of silently using a
@@ -383,9 +384,10 @@ generates the full primary-ray grid on the device in one two-dimensional compute
 optional GPU dispatch timestamp and handles counter wrap according to the queue family's valid
 timestamp bits.
 
-GPU `BaseColor` currently accepts only referenced opaque materials without diffuse textures.
-`ShapeNormal` has the wider capability and accepts every scene that passes the current Vulkan
-geometry boundary. Referenced alpha cutouts remain rejected for both AOVs.
+At that checkpoint, GPU `BaseColor` accepted only referenced opaque materials without diffuse
+textures. `ShapeNormal` had the wider geometry capability, while referenced alpha cutouts remained
+rejected for both AOVs. The device-ready foundation section below supersedes these temporary
+texture and cutout restrictions.
 
 Validation completed on Windows 11 x64:
 
@@ -435,12 +437,12 @@ the primary and shadow lower bound with CPU intersection semantics: the host com
 maps Vulkan's closed `tMin` boundary to the CPU's strict `t > kRayEpsilon` rule. The push-constant
 size, packed-scene ABI, and descriptor bindings are unchanged.
 
-`DirectDiffuse` has the same material-capability boundary as GPU `BaseColor`: every referenced
-material must be fully opaque and must not reference a diffuse texture. Alpha-cutout scenes are
-rejected at the Vulkan runtime boundary. `ShapeNormal` keeps its wider capability. G3b does not
-implement environment or area lighting, emission, specular response, metallic or roughness
-response, smooth normals, normal maps, distance attenuation, random sampling, path continuation,
-textures, accumulation, or post-processing.
+At the G3b checkpoint, `DirectDiffuse` had the same material-capability boundary as GPU
+`BaseColor`: every referenced material had to be fully opaque and could not reference a diffuse
+texture. Alpha-cutout scenes were rejected at the Vulkan runtime boundary, while `ShapeNormal` kept
+its wider capability. The later foundation slice supersedes the diffuse-texture and cutout
+restrictions; environment and area-light transport, emission, full material response, random path
+continuation, accumulation, and post-processing remain open.
 
 The new directional-light fixture and regression cases cover:
 
@@ -451,8 +453,8 @@ The new directional-light fixture and regression cases cover:
 - a 13 x 9 image that is not a multiple of the 8 x 8 workgroup;
 - render-target growth from 4 x 4 to 13 x 9 and shrinkage back to 4 x 4;
 - repeated-render identity after push-constant changes; and
-- rejection of non-opaque and diffuse-textured capability cases. The existing Vulkan runtime
-  rejection of alpha-cutout scenes remains enforced outside this fixture.
+- rejection of the non-opaque and diffuse-textured capability cases used by this historical
+  checkpoint. Later texture/cutout fixtures replace those temporary gates.
 
 Validation completed on Windows 11 x64 after the G3b changes:
 
@@ -500,15 +502,14 @@ component-exact atomic row scheduling for the CPU primary oracle, an AOV-specifi
 path that skips unrelated post-hit material evaluation, and lightweight `LinearImage` PNG export.
 The old two-argument CPU oracle remains single-threaded.
 
-The generated `output/` tree was cleaned before the final comparison. The Release run used the
+The generated `output/` tree was cleaned before this historical comparison. The Release run used the
 checked-in Bistro exterior camera, 1920 x 1080 `ShapeNormal`, two warm-ups, five measurements, and
 `AMD Radeon(TM) Graphics`; Vulkan validation was disabled for timing. Assimp imported 8,479,782
 vertices and 2,826,594 faces, 5,526 faces below the complete 2,832,120-face topology. The utility
-therefore labels this an informal result rather than a baseline. The current Vulkan runtime also
-correctly rejects the Bistro's alpha-cutout materials. To exercise the requested large geometry
-without weakening that core gate, only the benchmark-local packed-scene copy cleared cutout flags
-for 13 material slots. The CPU continued to honor those cutouts, so this comparison measures the
-implemented geometry AOV and is not a textured beauty render.
+therefore labelled this an informal result rather than a baseline. At that time, the Vulkan runtime
+rejected the Bistro's alpha-cutout materials. To exercise the requested large geometry, only the
+benchmark-local packed-scene copy cleared cutout flags for 13 material slots. The CPU continued to
+honor those cutouts, so the two backends did not render equivalent visibility.
 
 | Warm wall-clock path | Median | p95 | Minimum | Maximum |
 | --- | ---: | ---: | ---: | ---: |
@@ -519,19 +520,29 @@ implemented geometry AOV and is not a textured beauty render.
 | GPU timestamp dispatch | 34.74383 ms | 35.18220 ms | 34.09117 ms | 35.18220 ms |
 
 The observed steady-state median CPU/GPU render-call ratios were 135.52x for the single-thread CPU
-oracle and 7.69x for the 32-thread CPU call. These are informal ratios from non-equivalent cutout
-semantics, not an accepted renderer-speedup result. One-time setup took 15,351.77 ms for import
-plus CPU BVH construction, 280.23 ms for scene packing, and 1,725.84 ms for Vulkan construction;
+oracle and 7.69x for the 32-thread CPU call. These are superseded informal ratios produced with
+non-equivalent cutout semantics, not an accepted renderer-speedup result. One-time setup took
+15,351.77 ms for import plus CPU BVH construction, 280.23 ms for scene packing, and 1,725.84 ms for
+Vulkan construction;
 the last value includes a 95.47 ms upload bucket and 1,362.96 ms BLAS/TLAS build. CPU one-thread
 and 32-thread images were component-exact. CPU/GPU comparison found no non-finite pixels, maximum
 absolute error 1.0, mean absolute error 0.007328, RMSE 0.057768, and 85,025 pixels (4.100%) outside
 the G3b absolute-plus-relative tolerance. Visual inspection localized the amplified differences
 primarily to foliage, planters, windows, and other cutout geometry.
 
-Ignored outputs are under `output/benchmarks/g3b-bistro-shape-normal/1920x1080/`: separate CPU and
-GPU images, a side-by-side image, an amplified absolute-error image, raw timing CSV, and text
-summary. Debug and Release GPU configurations both built without new warnings and passed all seven
-CTest entries. The first Release suite immediately after the large benchmark recorded a process
+The large absolute error is explained by that visibility mismatch, not by normal-vector arithmetic:
+the CPU saw through transparent cards while the GPU committed those triangles as opaque and shaded
+different surfaces. The diagnostic error PNG also multiplied linear absolute error by 10,000, so a
+difference of only `1e-4` appeared near full brightness. The current benchmark no longer clears
+cutout flags and the primary shader applies candidate alpha testing, so these error numbers are
+retained only as superseded history and must not be quoted as current accuracy.
+
+The run wrote ignored outputs under
+`output/benchmarks/g3b-bistro-shape-normal/1920x1080/`: separate CPU and GPU images, a side-by-side
+image, an amplified absolute-error image, raw timing CSV, and text summary. These files are
+regenerable working data, not repository state. Debug and Release GPU configurations both built
+without new warnings and passed all seven CTest entries. The first Release suite immediately after
+the large benchmark recorded a process
 segfault in `gpu-primary-render`; an immediate verbose isolated rerun passed with validation and
 synchronization validation at 0 errors and 0 warnings, and the complete Release 7/7 rerun also
 passed. The failure did not reproduce, but it remains recorded as a transient driver/process risk.
@@ -545,11 +556,11 @@ configured, rebuilt, and passed all seven CTest entries again on 2026-09-05.
 
 The owner subsequently requested a high-quality GPU launch recipe based on the original project
 settings. Historical inspection found positive-sample presets as high as 4096 x 2304 at 320 samples
-per pixel and 2048 x 1152 at 640 samples per pixel. Those quality controls cannot be translated to
-the current G3b GPU backend: it has one deterministic primary sample per pixel and no HDR lighting,
-textures, depth of field, path continuation, accumulation, or post-processing. A high-resolution
-`ShapeNormal` result must therefore remain explicitly labeled as a geometry diagnostic rather than
-a beauty render.
+per pixel and 2048 x 1152 at 640 samples per pixel. At that time, those quality controls could not
+be translated to the G3b GPU backend: it had one deterministic primary sample per pixel and no HDR
+lighting, textures, depth of field, path continuation, accumulation, or post-processing. The
+subsequent texture/cutout foundation does not change the one-primary-sample limitation, so a high-
+resolution `ShapeNormal` result remains a geometry diagnostic rather than a beauty render.
 
 The benchmark now accepts `--gpu-only`. It retains model import, scene packing, Vulkan setup,
 warm-up, measurement, PNG export, and reporting, but skips every CPU cold, warm-up, and measured
@@ -577,44 +588,81 @@ conversion. GPU Debug and Release were rebuilt and again passed all seven CTest 
 checks confirmed that negative warm-up and measurement values both exit with status 1 before scene
 loading instead of entering an effectively unbounded loop.
 
-G3b is complete, but full G3 remains open. A bounded G3c should add constant environment or
-emission, or begin true iterative path state and continuation. GPU texture storage and sampling
-should follow after that transport boundary is stable.
+G3b is complete, and the foundation below subsequently adds GPU diffuse textures and alpha-tested
+traversal. Full G3 remains open until lighting and iterative path state execute under a CPU/GPU
+comparison.
 
-### Device-ready render foundations
+### Device-ready render foundations and packed format version 4
 
-The first feature-parity foundation slice landed in the working tree on 2026-09-05:
+The first feature-parity foundation checkpoint is commit `7a13883`. The combined foundation work
+completed on 2026-09-05:
 
 - `renderToFilm` now executes the complete CPU integrator without creating directories or files
   and returns the populated `Film` together with render-only statistics. `exportFilmToFiles`
   consumes a film value and owns the existing clamp, filter, display, FXAA, naming, and PNG export
-  policy. `renderToFiles` remains the compatibility wrapper and preserves console timing and output.
-- Packed scene format version 3 adds deduplicated texture descriptors, a validated complete mip
-  table, and encoded RGBA8 texel words. Source paths are normalized without case folding, so
-  case-sensitive volumes remain correct. One-, two-, three-, and four-channel source images expand
-  into an explicit RGBA representation, and the encoded mip bytes are preserved for CPU-compatible
-  alpha and color sampling. This is a backend-neutral storage contract; the Vulkan runtime does not
-  upload or sample these arrays yet.
-- A shared Philox4x32-10 counter generator now maps
+  policy. `renderToFiles` remains the compatibility wrapper and preserves console timing and
+  output. `finalizeRadianceData` now provides one shared host operation for exposure, variance,
+  overflow saturation, and non-finite handling for CPU- or GPU-produced Film accumulators.
+- Packed scene format version 4 contains deduplicated texture descriptors, validated complete mip
+  tables, encoded RGBA8 texel words, indexed area lights and emissive triangles, and HDR linear
+  radiance with row and conditional CDFs. Source texture paths are normalized without case folding,
+  and one- through four-channel images expand into explicit RGBA. Area-light validation recomputes
+  geometric area and verifies emissive material and normalized face distributions. Environment
+  construction and validation both use the CPU luminance function multiplied by exact per-row
+  texel solid angle.
+- `VulkanRuntime` owns persistent device-local buffers for texture descriptors, mip descriptors,
+  encoded texels, area lights, light triangles, environment rows, and environment texels in
+  addition to geometry and materials. One reusable staging allocation transfers large arrays in
+  chunks no larger than 16 MiB, and individual storage buffers are checked against the device
+  `maxStorageBufferRange`.
+- `shaders/include/packed_scene.glsl` centralizes the GPU ABI, texture sampler, and candidate
+  traversal. `BaseColor` and `DirectDiffuse` now sample packed diffuse textures using the CPU
+  convention: flip V, repeat wrap, bilinear or trilinear filtering in encoded space, then RGB
+  `pow(value, 2.2)`. Primary-ray differentials select the diffuse mip footprint.
+- Primary and shadow Ray Queries now inspect triangle candidates, interpolate UVs, sample base-mip
+  alpha, reject values below `1e-4`, and confirm acceptable candidates. Candidate order is not
+  guaranteed, so the GPU has no traversal-order 32-layer cap. It intentionally differs only for
+  more than 32 distance-ordered transparent layers: the CPU returns a defensive miss, while the GPU
+  continues. The compact `VulkanRayQueryIntersector` still rejects cutout scenes because its
+  low-level API has no material-sampling contract.
+- The Bistro benchmark no longer clears packed cutout flags; current comparisons use the same
+  diffuse-alpha visibility semantics on CPU and GPU. The old Full HD error record above is
+  superseded.
+- A shared Philox4x32-10 counter generator maps
   `(seed, pixel, sample, bounce, dimension)` to scheduling-independent random blocks. Its scalar
   conversion produces representable floats strictly inside `(0, 1)`. CPU tests cover official
   Random123 core vectors, renderer-address vectors, endpoint bit patterns, and reordered execution;
-  the matching GLSL include compiles and passes `spirv-val`. A device-dispatch comparison remains
-  open and must pass before the shader implementation is used by transport.
+  the matching GLSL include compiles and passes `spirv-val`. The Vulkan known-answer test compares
+  all 12 complete renderer addresses as raw integer and open-(0,1) float bits with the CPU, and a
+  repeated dispatch is identical.
 
-Validation completed after the three changes were combined:
+Combined validation completed after these changes:
 
 - CPU Debug and CPU Release configured, built, and passed all six CTest entries in each build.
-- Vulkan Debug and Vulkan Release configured, built, and passed all nine CTest entries in each
-  build, including compilation and SPIR-V validation of the counter-RNG contract shader.
+- Vulkan Debug and Vulkan Release configured, built, and passed all ten CTest entries in each
+  build.
+- The real `AMD Radeon(TM) Graphics` runs enabled the Khronos validation layer and synchronization
+  validation and reported zero errors and zero warnings.
 - The no-file render regression confirmed that no output path is created and that its direct-light
   sample count agrees with both one-thread and multi-thread compatibility renders.
-- No new compiler warnings were reported. `git diff --check` passed; its only output was the
-  existing Windows LF-to-CRLF checkout warning.
+- No new compiler warnings were reported. `git diff --check` passed, and a scan of authored files
+  found no non-ASCII repository text; the only diagnostic was the existing Windows LF-to-CRLF
+  checkout warning.
 
-This slice does not claim GPU beauty rendering. Device texture upload and sampling, alpha-tested
-Ray Query traversal, HDR and area-light packing, iterative transport, SPP accumulation, and Film
-readback remain required.
+The device probe reports a 31.82 GiB local/shared heap, while a separate local device-limit query
+reports a `maxStorageBufferRange` of 4,294,967,295 bytes. A read-only header calculation over 622
+local Bistro DDS files found that complete expanded RGBA8 mip chains alone require 7,539,069,640
+bytes (7.021 GiB), already excluding 11 TGA files. The current single texture-texel SSBO therefore
+cannot hold the full-quality Bistro asset. Texel paging, buffer device address segmentation, or
+native compressed `VkImage` storage is required. This is a capacity calculation, not a successful
+full Bistro packing, upload, or render.
+
+Two further risks remain explicit: when any material has cutout geometry, the current implementation
+makes the complete BLAS candidate geometry, which can reduce traversal performance; and float CDFs
+can contain plateaus when probabilities are extremely small. This slice still does not claim GPU
+beauty rendering. The version-4 lighting buffers are uploaded but not consumed. Iterative
+multi-bounce transport, SPP accumulation, complete material shading, Film readback, general render
+CLI integration, and high-quality Bistro validation remain required.
 
 ## Fixes completed before the modernization
 
@@ -775,11 +823,12 @@ fixtures and a controlled benchmark harness remain open.
 - [x] Complete Vulkan G0/G1 and the initial imported packed-geometry G2 slice on Windows AMD.
 - [x] Complete G3a deterministic CPU/GPU `BaseColor` and `ShapeNormal` primary AOVs.
 - [x] Complete G3b deterministic CPU/GPU directional `DirectDiffuse` and hard-shadow diagnostics.
-- [x] Separate complete CPU integration from Film export, define packed texture format version 3,
-  and add a shared counter-based RNG contract.
+- [x] Separate complete CPU integration from Film export, define packed scene format version 4,
+  and verify the shared counter-based RNG contract on CPU and Vulkan.
+- [x] Upload and sample packed diffuse textures and implement candidate alpha testing for GPU
+  primary and shadow rays.
+- [x] Pack and persistently upload indexed area lights and HDR environment importance data.
 - [ ] Complete G3 with GPU lighting and path integration under a CPU correctness comparison.
-- [ ] Upload and sample packed textures on the GPU before enabling textured `BaseColor` or alpha
-  cutouts.
 - [ ] Resolve or replace nondeterministic Bistro FBX import before treating its topology as a
   deterministic regression gate.
 - [ ] Add controlled before/after benchmarks, analytic estimator tests, and golden-image tolerances.

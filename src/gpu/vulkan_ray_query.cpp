@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "raym0nade/scene_data.hpp"
 #include "vulkan_runtime.hpp"
 
 namespace raym0nade::gpu {
@@ -45,6 +46,18 @@ void validateRays(const std::vector<VulkanRayQueryRay>& rays) {
     }
 }
 
+const PackedSceneData& rejectCutoutIntersectorScene(const PackedSceneData& scene) {
+    for (std::uint32_t materialId : scene.triangleMaterialIds) {
+        if (materialId < scene.materials.size() &&
+            (scene.materials[materialId].flagsAndReserved[0] &
+             kPackedMaterialCutout) != 0U) {
+            throw std::invalid_argument(
+                "VulkanRayQueryIntersector does not support alpha-cutout materials.");
+        }
+    }
+    return scene;
+}
+
 }  // namespace
 
 class VulkanRayQueryIntersector::Implementation {
@@ -53,7 +66,7 @@ public:
         const PackedSceneData& scene,
         const std::filesystem::path& spirvPath,
         VulkanRayQueryOptions options)
-        : runtime_(scene, options) {
+        : runtime_(rejectCutoutIntersectorScene(scene), options) {
         createPipeline(detail::readSpirvFile(spirvPath));
     }
 

@@ -398,6 +398,29 @@ void testRenderSettingsValidation() {
     expectInvalidArgument([&] { settings.validate(); }, "An empty output prefix must be rejected.");
 }
 
+void testRadianceFinalization() {
+    RadianceData radiance{vec3{1.0F, 2.0F, 3.0F}, 20.0F};
+    finalizeRadianceData(radiance, 2.0F);
+    expectNear(radiance.radiance.x, 2.0F, 0.0F, "Exposure must scale radiance X exactly.");
+    expectNear(radiance.radiance.y, 4.0F, 0.0F, "Exposure must scale radiance Y exactly.");
+    expectNear(radiance.radiance.z, 6.0F, 0.0F, "Exposure must scale radiance Z exactly.");
+    expectNear(
+        radiance.varianceAccumulator,
+        24.0F,
+        0.0F,
+        "Radiance finalization must convert the exposed second moment to variance.");
+
+    RadianceData invalid{
+        vec3{std::numeric_limits<float>::quiet_NaN(), 1.0F, 2.0F},
+        -1.0F};
+    finalizeRadianceData(invalid, 1.0F);
+    expect(
+        invalid.radiance.x == 0.0F && invalid.radiance.y == 1.0F &&
+            invalid.radiance.z == 2.0F &&
+            invalid.varianceAccumulator == 0.0F,
+        "Radiance finalization must sanitize NaN channels and invalid second moments.");
+}
+
 void testDielectricBsdf() {
     HitInfo surface;
     surface.shapeNormal = vec3{0.0F, 0.0F, 1.0F};
@@ -525,6 +548,7 @@ int main() {
     testMaterialConstants();
     testPackedSceneValidation();
     testRenderSettingsValidation();
+    testRadianceFinalization();
     testDielectricBsdf();
     testBvh();
 

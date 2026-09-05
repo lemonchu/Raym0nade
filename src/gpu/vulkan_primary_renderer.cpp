@@ -2,7 +2,6 @@
 
 #include <vulkan/vulkan.h>
 
-#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -60,26 +59,6 @@ static_assert(std::is_trivially_copyable_v<PrimaryOutputPixel>);
 static_assert(static_cast<std::uint32_t>(PrimaryAov::BaseColor) == 0U);
 static_assert(static_cast<std::uint32_t>(PrimaryAov::ShapeNormal) == 1U);
 static_assert(static_cast<std::uint32_t>(PrimaryAov::DirectDiffuse) == 2U);
-
-[[nodiscard]] bool referencedMaterialsHaveFlag(
-    const PackedSceneData& scene, std::uint32_t flag) noexcept {
-    return std::any_of(
-        scene.triangleMaterialIds.begin(),
-        scene.triangleMaterialIds.end(),
-        [&scene, flag](std::uint32_t materialId) {
-            return (scene.materials[materialId].flagsAndReserved[0] & flag) != 0U;
-        });
-}
-
-[[nodiscard]] bool referencedMaterialsAreNotOpaque(const PackedSceneData& scene) noexcept {
-    return std::any_of(
-        scene.triangleMaterialIds.begin(),
-        scene.triangleMaterialIds.end(),
-        [&scene](std::uint32_t materialId) {
-            return scene.materials[materialId].diffuseAndOpacity[3] <=
-                   1.0F - kRayEpsilon;
-        });
-}
 
 [[nodiscard]] std::uint32_t checkedGroupCount(
     std::uint32_t invocationCount,
@@ -168,10 +147,7 @@ public:
         const PackedSceneData& scene,
         const std::filesystem::path& spirvPath,
         VulkanRayQueryOptions options)
-        : runtime_(scene, options),
-          hasReferencedDiffuseTexture_(
-              referencedMaterialsHaveFlag(scene, kPackedMaterialHasDiffuseTexture)),
-          hasReferencedTransparentMaterial_(referencedMaterialsAreNotOpaque(scene)) {
+        : runtime_(scene, options) {
         validateDeviceLimits();
         createPipeline(detail::readSpirvFile(spirvPath));
         createTimestampQueries();
@@ -191,7 +167,6 @@ public:
 
     [[nodiscard]] VulkanPrimaryRenderResult render(const PrimaryRenderRequest& request) {
         request.validate();
-        validateAovFeatures(request.aov);
 
         const std::size_t pixelCount = request.extent.pixelCount();
         const VkDeviceSize outputBytes = detail::checkedVulkanByteSize(
@@ -329,7 +304,7 @@ private:
             throw std::runtime_error(
                 "The Vulkan device does not provide enough push-constant storage.");
         }
-        constexpr std::uint32_t kStorageBufferBindingCount = 5U;
+        constexpr std::uint32_t kStorageBufferBindingCount = 8U;
         if (limits.maxPerStageDescriptorStorageBuffers < kStorageBufferBindingCount ||
             limits.maxDescriptorSetStorageBuffers < kStorageBufferBindingCount) {
             throw std::runtime_error(
@@ -338,33 +313,19 @@ private:
         if (runtime_.vertexBuffer().size() > limits.maxStorageBufferRange ||
             runtime_.indexBuffer().size() > limits.maxStorageBufferRange ||
             runtime_.triangleMaterialIdBuffer().size() > limits.maxStorageBufferRange ||
-            runtime_.materialBuffer().size() > limits.maxStorageBufferRange) {
+            runtime_.materialBuffer().size() > limits.maxStorageBufferRange ||
+            runtime_.textureDescriptorBuffer().size() >
+                limits.maxStorageBufferRange ||
+            runtime_.textureMipBuffer().size() > limits.maxStorageBufferRange ||
+            runtime_.textureTexelBuffer().size() > limits.maxStorageBufferRange) {
             throw std::runtime_error(
                 "A packed-scene buffer exceeds the Vulkan storage-buffer range limit.");
         }
     }
 
-    void validateAovFeatures(PrimaryAov aov) const {
-        if (aov != PrimaryAov::BaseColor && aov != PrimaryAov::DirectDiffuse) {
-            return;
-        }
-        const char* aovName =
-            aov == PrimaryAov::BaseColor ? "BaseColor" : "DirectDiffuse";
-        if (hasReferencedDiffuseTexture_) {
-            throw std::invalid_argument(
-                std::string{"Vulkan "} + aovName +
-                " rendering does not yet support diffuse textures.");
-        }
-        if (hasReferencedTransparentMaterial_) {
-            throw std::invalid_argument(
-                std::string{"Vulkan "} + aovName +
-                " rendering currently requires fully opaque materials.");
-        }
-    }
-
     void createPipeline(const std::vector<std::uint32_t>& shaderCode) {
         const VkDevice device = runtime_.device();
-        std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+        std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
         bindings[0] = VkDescriptorSetLayoutBinding{
             0U,
             VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
@@ -470,7 +431,7 @@ private:
 
         const std::array<VkDescriptorPoolSize, 2> poolSizes{{
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5U},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8U},
         }};
         const VkDescriptorPoolCreateInfo descriptorPoolInfo{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -566,7 +527,7 @@ private:
             1U,
             &topLevel,
         };
-        const std::array<VkDescriptorBufferInfo, 5> bufferInfos{{
+        const std::array<VkDescriptorBufferInfo, 8> bufferInfos{{
             {runtime_.vertexBuffer().get(), 0U, runtime_.vertexBuffer().size()},
             {runtime_.indexBuffer().get(), 0U, runtime_.indexBuffer().size()},
             {runtime_.triangleMaterialIdBuffer().get(),
@@ -574,9 +535,18 @@ private:
              runtime_.triangleMaterialIdBuffer().size()},
             {runtime_.materialBuffer().get(), 0U, runtime_.materialBuffer().size()},
             {outputBuffer.get(), 0U, outputBuffer.size()},
+            {runtime_.textureDescriptorBuffer().get(),
+             0U,
+             runtime_.textureDescriptorBuffer().size()},
+            {runtime_.textureMipBuffer().get(),
+             0U,
+             runtime_.textureMipBuffer().size()},
+            {runtime_.textureTexelBuffer().get(),
+             0U,
+             runtime_.textureTexelBuffer().size()},
         }};
 
-        std::array<VkWriteDescriptorSet, 6> writes{};
+        std::array<VkWriteDescriptorSet, 9> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].pNext = &accelerationWrite;
         writes[0].dstSet = descriptorSet_;
@@ -627,8 +597,6 @@ private:
     // Runtime is declared first so every renderer-owned Vulkan object is destroyed before the
     // device and acceleration structures it depends on.
     detail::VulkanRuntime runtime_;
-    bool hasReferencedDiffuseTexture_{false};
-    bool hasReferencedTransparentMaterial_{false};
     bool timestampQueriesAvailable_{false};
     std::size_t outputCapacity_{0U};
     std::vector<PrimaryOutputPixel> hostPixels_;

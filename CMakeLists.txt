@@ -223,6 +223,7 @@ if(RAYM0NADE_ENABLE_VULKAN)
         RAYM0NADE_PRIMARY_AOV_SHADER_BINARY
         primary_aov.comp
         "Compiling the Vulkan primary-AOV shader"
+        "${PROJECT_SOURCE_DIR}/shaders/include/packed_scene.glsl"
     )
     raym0nade_compile_vulkan_shader(
         RAYM0NADE_COUNTER_RNG_SHADER_BINARY
@@ -240,6 +241,7 @@ if(RAYM0NADE_ENABLE_VULKAN)
 
     add_library(raym0nade_vulkan STATIC
         src/gpu/vulkan_capabilities.cpp
+        src/gpu/vulkan_counter_rng_test.cpp
         src/gpu/vulkan_primary_renderer.cpp
         src/gpu/vulkan_ray_query.cpp
         src/gpu/vulkan_runtime.cpp
@@ -342,6 +344,25 @@ if(BUILD_TESTING)
     raym0nade_set_runtime_directory(raym0nade_console_tests)
 
     if(RAYM0NADE_ENABLE_VULKAN)
+        add_executable(
+            raym0nade_gpu_counter_rng_tests
+            tests/gpu_counter_rng_tests.cpp
+        )
+        target_link_libraries(raym0nade_gpu_counter_rng_tests PRIVATE
+            Raym0nade::core
+            Raym0nade::vulkan
+        )
+        add_dependencies(raym0nade_gpu_counter_rng_tests raym0nade_gpu_shaders)
+        file(TO_CMAKE_PATH
+            "${RAYM0NADE_COUNTER_RNG_SHADER_BINARY}"
+            RAYM0NADE_COUNTER_RNG_SHADER_BINARY_CMAKE_PATH
+        )
+        target_compile_definitions(raym0nade_gpu_counter_rng_tests PRIVATE
+            "RAYM0NADE_COUNTER_RNG_SHADER=\"${RAYM0NADE_COUNTER_RNG_SHADER_BINARY_CMAKE_PATH}\""
+        )
+        raym0nade_enable_warnings(raym0nade_gpu_counter_rng_tests)
+        raym0nade_set_runtime_directory(raym0nade_gpu_counter_rng_tests)
+
         add_executable(raym0nade_gpu_scene_tests tests/gpu_scene_tests.cpp)
         target_link_libraries(raym0nade_gpu_scene_tests PRIVATE
             Raym0nade::core
@@ -384,9 +405,15 @@ if(BUILD_TESTING)
     add_test(NAME console COMMAND raym0nade_console_tests)
     if(RAYM0NADE_ENABLE_VULKAN)
         add_test(NAME gpu-ray-query COMMAND raym0nade_gpu_probe --self-test)
+        add_test(NAME gpu-counter-rng COMMAND raym0nade_gpu_counter_rng_tests)
         add_test(NAME gpu-packed-scene COMMAND raym0nade_gpu_scene_tests)
         add_test(NAME gpu-primary-render COMMAND raym0nade_gpu_primary_render_tests)
-        set_tests_properties(gpu-ray-query gpu-packed-scene gpu-primary-render PROPERTIES
+        set_tests_properties(
+            gpu-ray-query
+            gpu-counter-rng
+            gpu-packed-scene
+            gpu-primary-render
+            PROPERTIES
             SKIP_RETURN_CODE 77
         )
     endif()
@@ -408,6 +435,7 @@ if(BUILD_TESTING)
         if(RAYM0NADE_ENABLE_VULKAN)
             list(APPEND RAYM0NADE_WINDOWS_RUNTIME_TESTS
                 gpu-ray-query
+                gpu-counter-rng
                 gpu-packed-scene
                 gpu-primary-render
             )
@@ -417,7 +445,13 @@ if(BUILD_TESTING)
                 "PATH=path_list_prepend:${RAYM0NADE_PYTHON_RUNTIME_DIR};PATH=path_list_prepend:${RAYM0NADE_PYTHON_RUNTIME_DIR}/Library/bin"
         )
         if(RAYM0NADE_ENABLE_VULKAN)
-            set_property(TEST gpu-ray-query gpu-packed-scene gpu-primary-render APPEND PROPERTY
+            set_property(
+                TEST
+                    gpu-ray-query
+                    gpu-counter-rng
+                    gpu-packed-scene
+                    gpu-primary-render
+                APPEND PROPERTY
                 ENVIRONMENT_MODIFICATION
                     "VK_LAYER_PATH=set:${RAYM0NADE_PYTHON_RUNTIME_DIR}/Library/bin"
             )

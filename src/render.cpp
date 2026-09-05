@@ -29,8 +29,6 @@ constexpr int kTransparentSampleMultiplier = 16;
 constexpr float kRegularizationFactor = 1.0F;
 constexpr float kBaseReflectionProbability = 0.24F;
 constexpr float kMaximumExposure = 1.0e6F;
-constexpr float kMaximumVariance = 1.0e30F;
-constexpr float kMaximumRadiance = 1.0e15F;
 
 struct MediumEntry {
     int materialId{-1};
@@ -498,34 +496,6 @@ RayDifferential initialRayDifferential(
     return differential;
 }
 
-void finishVariance(RadianceData& radiance, float exposure) noexcept {
-    if (!isFinite(radiance.varianceAccumulator) || radiance.varianceAccumulator < 0.0F) {
-        radiance.varianceAccumulator = 0.0F;
-    }
-
-    const double scale = static_cast<double>(exposure);
-    for (int channel = 0; channel < 3; ++channel) {
-        const double value = static_cast<double>(radiance.radiance[channel]) * scale;
-        radiance.radiance[channel] = std::isnan(value)
-                                         ? 0.0F
-                                         : static_cast<float>(std::clamp(
-                                               value,
-                                               0.0,
-                                               static_cast<double>(kMaximumRadiance)));
-    }
-    const double secondMoment =
-        static_cast<double>(radiance.varianceAccumulator) * scale * scale;
-    const double meanSquared =
-        static_cast<double>(radiance.radiance.x) * radiance.radiance.x +
-        static_cast<double>(radiance.radiance.y) * radiance.radiance.y +
-        static_cast<double>(radiance.radiance.z) * radiance.radiance.z;
-    const double variance = std::max(0.0, secondMoment - meanSquared);
-    radiance.varianceAccumulator = std::isfinite(variance)
-                                       ? static_cast<float>(std::min(
-                                             variance, static_cast<double>(kMaximumVariance)))
-                                       : kMaximumVariance;
-}
-
 void renderPixel(
     const Model& model,
     const RenderSettings& settings,
@@ -609,10 +579,10 @@ void renderPixel(
         }
     }
 
-    finishVariance(directDiffuse, settings.exposure);
-    finishVariance(directSpecular, settings.exposure);
-    finishVariance(indirectDiffuse, settings.exposure);
-    finishVariance(indirectSpecular, settings.exposure);
+    finalizeRadianceData(directDiffuse, settings.exposure);
+    finalizeRadianceData(directSpecular, settings.exposure);
+    finalizeRadianceData(indirectDiffuse, settings.exposure);
+    finalizeRadianceData(indirectSpecular, settings.exposure);
 }
 
 void renderRows(

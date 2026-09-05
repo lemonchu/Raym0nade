@@ -131,6 +131,13 @@ public:
     [[nodiscard]] const VulkanBuffer& indexBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& triangleMaterialIdBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& materialBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& textureDescriptorBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& textureMipBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& textureTexelBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& areaLightBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& areaLightTriangleBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& environmentRowBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& environmentTexelBuffer() const noexcept;
 
     [[nodiscard]] std::mutex& operationMutex() noexcept;
     [[nodiscard]] VkCommandBuffer beginCommands();

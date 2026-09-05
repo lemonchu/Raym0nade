@@ -66,7 +66,8 @@ struct VulkanRayQueryOptions {
 
 // Persistent, headless AMD Vulkan Ray Query intersector for one immutable packed scene.
 // Construction uploads geometry and builds one BLAS plus one TLAS. Each intersect() call
-// submits the complete batch once; it never synchronizes per ray.
+// submits the complete batch once; it never synchronizes per ray. This low-level intersector
+// rejects alpha-cutout scenes because its compact result ABI has no material sampling contract.
 class VulkanRayQueryIntersector {
 public:
     VulkanRayQueryIntersector(

@@ -167,12 +167,60 @@ void validateBatch(
     }
 }
 
+void validateGenericIntersectorRejectsCutout(
+    const PackedSceneData& sourceScene,
+    const std::filesystem::path& shaderPath) {
+    PackedSceneData cutoutScene = sourceScene;
+    const std::uint32_t materialId = cutoutScene.triangleMaterialIds.front();
+    cutoutScene.textures.push_back(PackedTexture{0U, 1U, 1U, 1U});
+    cutoutScene.textureMipLevels.push_back(
+        PackedTextureMip{0U, 1U, 1U, 1U});
+    cutoutScene.textureTexelsRgba8.push_back(0x00ffffffU);
+    PackedMaterial& material = cutoutScene.materials[materialId];
+    material.textureIds[0] = 0U;
+    material.flagsAndReserved[0] |=
+        kPackedMaterialHasDiffuseTexture | kPackedMaterialCutout;
+    cutoutScene.validate();
+
+    bool rejected = false;
+    try {
+        VulkanRayQueryIntersector unsupported{
+            cutoutScene, shaderPath, VulkanRayQueryOptions{}};
+        (void)unsupported;
+    } catch (const std::invalid_argument& error) {
+        rejected =
+            std::string_view{error.what()}.find("alpha-cutout") !=
+            std::string_view::npos;
+    }
+    if (!rejected) {
+        throw std::runtime_error(
+            "The generic Vulkan intersector must reject alpha-cutout scenes.");
+    }
+}
+
 int runTest() {
     const std::filesystem::path sourceDirectory{RAYM0NADE_TEST_SOURCE_DIR};
     Model model{sourceDirectory / "tests" / "data", "triangle.obj", "null"};
     const auto packBegin = std::chrono::steady_clock::now();
-    const PackedSceneData scene = model.packScene();
+    PackedSceneData scene = model.packScene();
     const auto packEnd = std::chrono::steady_clock::now();
+    if (scene.areaLights.empty() || scene.areaLightTriangles.empty()) {
+        throw std::runtime_error(
+            "The GPU scene fixture must exercise non-empty area-light uploads.");
+    }
+    scene.environment = PackedEnvironment{
+        2U,
+        1U,
+        kPackedEnvironmentHasImportance,
+        0U,
+    };
+    scene.environmentRows = {
+        PackedEnvironmentRow{1.0F, 1.0F, 6.28318548F, 0.0F},
+    };
+    scene.environmentTexels = {
+        PackedEnvironmentTexel{{1.0F, 1.0F, 1.0F, 0.5F}},
+        PackedEnvironmentTexel{{1.0F, 1.0F, 1.0F, 1.0F}},
+    };
     scene.validate();
 
     const std::array<Ray, 5> rays{
@@ -197,9 +245,12 @@ int runTest() {
 
     VulkanRayQueryOptions options;
     options.requestValidation = true;
+    const std::filesystem::path shaderPath{
+        RAYM0NADE_RAY_QUERY_SCENE_SHADER};
+    validateGenericIntersectorRejectsCutout(scene, shaderPath);
     const auto setupBegin = std::chrono::steady_clock::now();
     VulkanRayQueryIntersector intersector{
-        scene, std::filesystem::path{RAYM0NADE_RAY_QUERY_SCENE_SHADER}, options};
+        scene, shaderPath, options};
     const auto setupEnd = std::chrono::steady_clock::now();
 
     const VulkanRayQueryBatch firstBatch = intersector.intersect(gpuRays);

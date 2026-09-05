@@ -21,6 +21,7 @@ namespace {
 
 constexpr std::uint32_t kAmdVendorId = 0x1002U;
 constexpr std::uint32_t kInstanceMask = 0xffU;
+constexpr VkDeviceSize kPackedUploadChunkBytes = 16U * 1024U * 1024U;
 
 bool versionAtLeast(
     std::uint32_t version, std::uint32_t major, std::uint32_t minor) noexcept {
@@ -601,6 +602,13 @@ public:
     [[nodiscard]] const VulkanBuffer& indexBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& triangleMaterialIdBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& materialBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& textureDescriptorBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& textureMipBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& textureTexelBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& areaLightBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& areaLightTriangleBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& environmentRowBuffer() const noexcept;
+    [[nodiscard]] const VulkanBuffer& environmentTexelBuffer() const noexcept;
     [[nodiscard]] std::mutex& operationMutex() noexcept;
     [[nodiscard]] VkCommandBuffer beginCommands();
     void submitAndWait(const char* description);
@@ -917,6 +925,24 @@ VkDeviceAddress alignAddress(VkDeviceAddress address, VkDeviceSize alignment) {
     return address + adjustment;
 }
 
+bool hasReferencedCutout(const PackedSceneData& scene) noexcept {
+    return std::any_of(
+        scene.triangleMaterialIds.begin(),
+        scene.triangleMaterialIds.end(),
+        [&scene](std::uint32_t materialId) {
+            return (scene.materials[materialId].flagsAndReserved[0] &
+                    kPackedMaterialCutout) != 0U;
+        });
+}
+
+template <typename Element>
+VkDeviceSize packedArrayBufferByteSize(
+    const std::vector<Element>& elements, const char* description) {
+    return elements.empty()
+               ? static_cast<VkDeviceSize>(sizeof(Element))
+               : checkedVulkanByteSize(elements.size(), sizeof(Element), description);
+}
+
 void validatePackedSceneForGpu(
     const PackedSceneData& scene, const PhysicalDeviceSelection& physical) {
     const std::size_t triangleCount = scene.triangleCount();
@@ -927,24 +953,66 @@ void validatePackedSceneForGpu(
             "The packed scene exceeds this device's acceleration-structure limits.");
     }
     for (std::uint32_t materialId : scene.triangleMaterialIds) {
-        if ((scene.materials[materialId].flagsAndReserved[0] &
-             kPackedMaterialCutout) != 0U) {
+        const PackedMaterial& material = scene.materials[materialId];
+        if ((material.flagsAndReserved[0] & kPackedMaterialCutout) != 0U &&
+            ((material.flagsAndReserved[0] &
+              kPackedMaterialHasDiffuseTexture) == 0U ||
+             material.textureIds[0] == kInvalidSceneId)) {
             throw std::invalid_argument(
-                "Vulkan Ray Query does not yet support alpha-cutout materials.");
+                "Vulkan alpha-cutout materials require a packed diffuse texture.");
         }
     }
-    (void)checkedVulkanByteSize(
+    const VkDeviceSize vertexBytes = checkedVulkanByteSize(
         scene.vertices.size(), sizeof(PackedVertex), "Packed vertex buffer");
-    (void)checkedVulkanByteSize(
+    const VkDeviceSize indexBytes = checkedVulkanByteSize(
         scene.triangleIndices.size(),
         sizeof(std::uint32_t),
         "Packed index buffer");
-    (void)checkedVulkanByteSize(
+    const VkDeviceSize triangleMaterialIdBytes = checkedVulkanByteSize(
         scene.triangleMaterialIds.size(),
         sizeof(std::uint32_t),
         "Packed triangle material ID buffer");
-    (void)checkedVulkanByteSize(
+    const VkDeviceSize materialBytes = checkedVulkanByteSize(
         scene.materials.size(), sizeof(PackedMaterial), "Packed material buffer");
+
+    const VkDeviceSize textureDescriptorBytes = packedArrayBufferByteSize(
+        scene.textures, "Packed texture descriptor buffer");
+    const VkDeviceSize textureMipBytes = packedArrayBufferByteSize(
+        scene.textureMipLevels, "Packed texture mip buffer");
+    const VkDeviceSize textureTexelBytes = packedArrayBufferByteSize(
+        scene.textureTexelsRgba8, "Packed texture texel buffer");
+    const VkDeviceSize areaLightBytes = packedArrayBufferByteSize(
+        scene.areaLights, "Packed area light buffer");
+    const VkDeviceSize areaLightTriangleBytes = packedArrayBufferByteSize(
+        scene.areaLightTriangles, "Packed area light triangle buffer");
+    const VkDeviceSize environmentRowBytes = packedArrayBufferByteSize(
+        scene.environmentRows, "Packed environment row buffer");
+    const VkDeviceSize environmentTexelBytes = packedArrayBufferByteSize(
+        scene.environmentTexels, "Packed environment texel buffer");
+    const VkDeviceSize maximumStorageRange =
+        physical.properties.limits.maxStorageBufferRange;
+    const auto requireStorageBufferRange =
+        [maximumStorageRange](VkDeviceSize bytes, const char* description) {
+            if (bytes > maximumStorageRange) {
+                throw std::invalid_argument(
+                    std::string{description} + " exceeds maxStorageBufferRange.");
+            }
+        };
+    requireStorageBufferRange(vertexBytes, "Packed vertex buffer");
+    requireStorageBufferRange(indexBytes, "Packed index buffer");
+    requireStorageBufferRange(
+        triangleMaterialIdBytes, "Packed triangle material ID buffer");
+    requireStorageBufferRange(materialBytes, "Packed material buffer");
+    requireStorageBufferRange(
+        textureDescriptorBytes, "Packed texture descriptor buffer");
+    requireStorageBufferRange(textureMipBytes, "Packed texture mip buffer");
+    requireStorageBufferRange(textureTexelBytes, "Packed texture texel buffer");
+    requireStorageBufferRange(areaLightBytes, "Packed area light buffer");
+    requireStorageBufferRange(
+        areaLightTriangleBytes, "Packed area light triangle buffer");
+    requireStorageBufferRange(environmentRowBytes, "Packed environment row buffer");
+    requireStorageBufferRange(
+        environmentTexelBytes, "Packed environment texel buffer");
 }
 
 }  // namespace
@@ -956,7 +1024,8 @@ struct VulkanRuntime::Implementation::State {
           physical(selectAmdDevice(instance.get())),
           logical(createLogicalDevice(physical)),
           options(runtimeOptions),
-          triangleCount(scene.triangleCount()) {}
+          triangleCount(scene.triangleCount()),
+          hasAlphaCutout(hasReferencedCutout(scene)) {}
 
     ValidationState validation;
     VulkanInstance instance;
@@ -965,12 +1034,20 @@ struct VulkanRuntime::Implementation::State {
     VulkanRayQueryOptions options;
     VulkanRayQuerySetupTimings timings;
     std::size_t triangleCount{0U};
+    bool hasAlphaCutout{false};
     std::mutex operationMutex;
 
     std::unique_ptr<VulkanBuffer> vertexBuffer;
     std::unique_ptr<VulkanBuffer> indexBuffer;
     std::unique_ptr<VulkanBuffer> triangleMaterialIdBuffer;
     std::unique_ptr<VulkanBuffer> materialBuffer;
+    std::unique_ptr<VulkanBuffer> textureDescriptorBuffer;
+    std::unique_ptr<VulkanBuffer> textureMipBuffer;
+    std::unique_ptr<VulkanBuffer> textureTexelBuffer;
+    std::unique_ptr<VulkanBuffer> areaLightBuffer;
+    std::unique_ptr<VulkanBuffer> areaLightTriangleBuffer;
+    std::unique_ptr<VulkanBuffer> environmentRowBuffer;
+    std::unique_ptr<VulkanBuffer> environmentTexelBuffer;
     std::unique_ptr<VulkanBuffer> instanceBuffer;
     std::unique_ptr<VulkanBuffer> scratchBuffer;
     std::unique_ptr<AccelerationStructure> bottomLevel;
@@ -1055,6 +1132,38 @@ VulkanRuntime::Implementation::triangleMaterialIdBuffer() const noexcept {
 
 const VulkanBuffer& VulkanRuntime::Implementation::materialBuffer() const noexcept {
     return *state_->materialBuffer;
+}
+
+const VulkanBuffer&
+VulkanRuntime::Implementation::textureDescriptorBuffer() const noexcept {
+    return *state_->textureDescriptorBuffer;
+}
+
+const VulkanBuffer& VulkanRuntime::Implementation::textureMipBuffer() const noexcept {
+    return *state_->textureMipBuffer;
+}
+
+const VulkanBuffer& VulkanRuntime::Implementation::textureTexelBuffer() const noexcept {
+    return *state_->textureTexelBuffer;
+}
+
+const VulkanBuffer& VulkanRuntime::Implementation::areaLightBuffer() const noexcept {
+    return *state_->areaLightBuffer;
+}
+
+const VulkanBuffer&
+VulkanRuntime::Implementation::areaLightTriangleBuffer() const noexcept {
+    return *state_->areaLightTriangleBuffer;
+}
+
+const VulkanBuffer&
+VulkanRuntime::Implementation::environmentRowBuffer() const noexcept {
+    return *state_->environmentRowBuffer;
+}
+
+const VulkanBuffer&
+VulkanRuntime::Implementation::environmentTexelBuffer() const noexcept {
+    return *state_->environmentTexelBuffer;
 }
 
 std::mutex& VulkanRuntime::Implementation::operationMutex() noexcept {
@@ -1182,6 +1291,20 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         "Packed triangle material ID buffer");
     const VkDeviceSize materialBytes = checkedVulkanByteSize(
         scene.materials.size(), sizeof(PackedMaterial), "Packed material buffer");
+    const VkDeviceSize textureDescriptorBytes = packedArrayBufferByteSize(
+        scene.textures, "Packed texture descriptor buffer");
+    const VkDeviceSize textureMipBytes = packedArrayBufferByteSize(
+        scene.textureMipLevels, "Packed texture mip buffer");
+    const VkDeviceSize textureTexelBytes = packedArrayBufferByteSize(
+        scene.textureTexelsRgba8, "Packed texture texel buffer");
+    const VkDeviceSize areaLightBytes = packedArrayBufferByteSize(
+        scene.areaLights, "Packed area light buffer");
+    const VkDeviceSize areaLightTriangleBytes = packedArrayBufferByteSize(
+        scene.areaLightTriangles, "Packed area light triangle buffer");
+    const VkDeviceSize environmentRowBytes = packedArrayBufferByteSize(
+        scene.environmentRows, "Packed environment row buffer");
+    const VkDeviceSize environmentTexelBytes = packedArrayBufferByteSize(
+        scene.environmentTexels, "Packed environment texel buffer");
     constexpr VkBufferUsageFlags kGeometryUsage =
         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -1217,11 +1340,63 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         kShadingDataUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         false);
+    state_->textureDescriptorBuffer = std::make_unique<VulkanBuffer>(
+        logicalDevice,
+        state_->physical.memoryProperties,
+        textureDescriptorBytes,
+        kShadingDataUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        false);
+    state_->textureMipBuffer = std::make_unique<VulkanBuffer>(
+        logicalDevice,
+        state_->physical.memoryProperties,
+        textureMipBytes,
+        kShadingDataUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        false);
+    state_->textureTexelBuffer = std::make_unique<VulkanBuffer>(
+        logicalDevice,
+        state_->physical.memoryProperties,
+        textureTexelBytes,
+        kShadingDataUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        false);
+    state_->areaLightBuffer = std::make_unique<VulkanBuffer>(
+        logicalDevice,
+        state_->physical.memoryProperties,
+        areaLightBytes,
+        kShadingDataUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        false);
+    state_->areaLightTriangleBuffer = std::make_unique<VulkanBuffer>(
+        logicalDevice,
+        state_->physical.memoryProperties,
+        areaLightTriangleBytes,
+        kShadingDataUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        false);
+    state_->environmentRowBuffer = std::make_unique<VulkanBuffer>(
+        logicalDevice,
+        state_->physical.memoryProperties,
+        environmentRowBytes,
+        kShadingDataUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        false);
+    state_->environmentTexelBuffer = std::make_unique<VulkanBuffer>(
+        logicalDevice,
+        state_->physical.memoryProperties,
+        environmentTexelBytes,
+        kShadingDataUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        false);
 
     VkAccelerationStructureGeometryKHR bottomGeometry{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
     bottomGeometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-    bottomGeometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    bottomGeometry.flags =
+        state_->hasAlphaCutout
+            ? VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR
+            : VK_GEOMETRY_OPAQUE_BIT_KHR;
     bottomGeometry.geometry.triangles.sType =
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
     bottomGeometry.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
@@ -1293,103 +1468,198 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
     constexpr VkMemoryPropertyFlags kHostUploadMemory =
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    VulkanBuffer vertexStaging{
+    const PackedTexture dummyTexture{};
+    const PackedTextureMip dummyMip{};
+    const std::uint32_t dummyTexel = 0U;
+    const PackedAreaLight dummyAreaLight{};
+    const PackedAreaLightTriangle dummyAreaLightTriangle{};
+    const PackedEnvironmentRow dummyEnvironmentRow{};
+    const PackedEnvironmentTexel dummyEnvironmentTexel{};
+    const void* textureDescriptorSource =
+        scene.textures.empty()
+            ? static_cast<const void*>(&dummyTexture)
+            : static_cast<const void*>(scene.textures.data());
+    const void* textureMipSource =
+        scene.textureMipLevels.empty()
+            ? static_cast<const void*>(&dummyMip)
+            : static_cast<const void*>(scene.textureMipLevels.data());
+    const void* textureTexelSource =
+        scene.textureTexelsRgba8.empty()
+            ? static_cast<const void*>(&dummyTexel)
+            : static_cast<const void*>(scene.textureTexelsRgba8.data());
+    const void* areaLightSource =
+        scene.areaLights.empty()
+            ? static_cast<const void*>(&dummyAreaLight)
+            : static_cast<const void*>(scene.areaLights.data());
+    const void* areaLightTriangleSource =
+        scene.areaLightTriangles.empty()
+            ? static_cast<const void*>(&dummyAreaLightTriangle)
+            : static_cast<const void*>(scene.areaLightTriangles.data());
+    const void* environmentRowSource =
+        scene.environmentRows.empty()
+            ? static_cast<const void*>(&dummyEnvironmentRow)
+            : static_cast<const void*>(scene.environmentRows.data());
+    const void* environmentTexelSource =
+        scene.environmentTexels.empty()
+            ? static_cast<const void*>(&dummyEnvironmentTexel)
+            : static_cast<const void*>(scene.environmentTexels.data());
+    const VkDeviceSize packedStagingBytes = std::min(
+        std::max(
+            {vertexBytes,
+             indexBytes,
+             triangleMaterialIdBytes,
+             materialBytes,
+             instanceBytes,
+             textureDescriptorBytes,
+             textureMipBytes,
+             textureTexelBytes,
+             areaLightBytes,
+             areaLightTriangleBytes,
+             environmentRowBytes,
+             environmentTexelBytes}),
+        kPackedUploadChunkBytes);
+    VulkanBuffer packedStaging{
         logicalDevice,
         state_->physical.memoryProperties,
-        vertexBytes,
+        packedStagingBytes,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         kHostUploadMemory,
         false};
-    VulkanBuffer indexStaging{
-        logicalDevice,
-        state_->physical.memoryProperties,
-        indexBytes,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        kHostUploadMemory,
-        false};
-    VulkanBuffer triangleMaterialIdStaging{
-        logicalDevice,
-        state_->physical.memoryProperties,
-        triangleMaterialIdBytes,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        kHostUploadMemory,
-        false};
-    VulkanBuffer materialStaging{
-        logicalDevice,
-        state_->physical.memoryProperties,
-        materialBytes,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        kHostUploadMemory,
-        false};
-    VulkanBuffer instanceStaging{
-        logicalDevice,
-        state_->physical.memoryProperties,
-        instanceBytes,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        kHostUploadMemory,
-        false};
-    vertexStaging.write(scene.vertices.data(), vertexBytes);
-    indexStaging.write(scene.triangleIndices.data(), indexBytes);
-    triangleMaterialIdStaging.write(
-        scene.triangleMaterialIds.data(), triangleMaterialIdBytes);
-    materialStaging.write(scene.materials.data(), materialBytes);
-    instanceStaging.write(&instanceRecord, instanceBytes);
-
-    const VkCommandBuffer uploadCommands = beginCommands();
-    const VkBufferCopy vertexCopy{0U, 0U, vertexBytes};
-    const VkBufferCopy indexCopy{0U, 0U, indexBytes};
-    const VkBufferCopy triangleMaterialIdCopy{0U, 0U, triangleMaterialIdBytes};
-    const VkBufferCopy materialCopy{0U, 0U, materialBytes};
-    const VkBufferCopy instanceCopy{0U, 0U, instanceBytes};
-    vkCmdCopyBuffer(
-        uploadCommands,
-        vertexStaging.get(),
-        state_->vertexBuffer->get(),
-        1U,
-        &vertexCopy);
-    vkCmdCopyBuffer(
-        uploadCommands,
-        indexStaging.get(),
-        state_->indexBuffer->get(),
-        1U,
-        &indexCopy);
-    vkCmdCopyBuffer(
-        uploadCommands,
-        triangleMaterialIdStaging.get(),
-        state_->triangleMaterialIdBuffer->get(),
-        1U,
-        &triangleMaterialIdCopy);
-    vkCmdCopyBuffer(
-        uploadCommands,
-        materialStaging.get(),
-        state_->materialBuffer->get(),
-        1U,
-        &materialCopy);
-    vkCmdCopyBuffer(
-        uploadCommands,
-        instanceStaging.get(),
-        state_->instanceBuffer->get(),
-        1U,
-        &instanceCopy);
-    const VkMemoryBarrier transferBarrier{
-        VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        nullptr,
-        VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT,
-    };
-    vkCmdPipelineBarrier(
-        uploadCommands,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
+    const auto uploadPackedBuffer =
+        [&](const VulkanBuffer& destination,
+            const void* source,
+            VkDeviceSize byteCount,
+            VkAccessFlags destinationAccess,
+            VkPipelineStageFlags destinationStages,
+            const char* description) {
+            const auto* sourceBytes = static_cast<const std::uint8_t*>(source);
+            for (VkDeviceSize offset = 0U; offset < byteCount;) {
+                const VkDeviceSize chunkBytes =
+                    std::min(byteCount - offset, packedStagingBytes);
+                packedStaging.write(
+                    sourceBytes + static_cast<std::size_t>(offset), chunkBytes);
+                const VkCommandBuffer commands = beginCommands();
+                const VkBufferCopy copy{0U, offset, chunkBytes};
+                vkCmdCopyBuffer(
+                    commands, packedStaging.get(), destination.get(), 1U, &copy);
+                const VkBufferMemoryBarrier transferToDestination{
+                    VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                    nullptr,
+                    VK_ACCESS_TRANSFER_WRITE_BIT,
+                    destinationAccess,
+                    VK_QUEUE_FAMILY_IGNORED,
+                    VK_QUEUE_FAMILY_IGNORED,
+                    destination.get(),
+                    offset,
+                    chunkBytes,
+                };
+                vkCmdPipelineBarrier(
+                    commands,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    destinationStages,
+                    0U,
+                    0U,
+                    nullptr,
+                    1U,
+                    &transferToDestination,
+                    0U,
+                    nullptr);
+                submitAndWait(description);
+                offset += chunkBytes;
+            }
+        };
+    constexpr VkAccessFlags kGeometryDestinationAccess =
+        VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT;
+    constexpr VkPipelineStageFlags kGeometryDestinationStages =
         VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0U,
-        1U,
-        &transferBarrier,
-        0U,
-        nullptr,
-        0U,
-        nullptr);
-    submitAndWait("packed scene upload");
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    constexpr VkAccessFlags kShaderDestinationAccess = VK_ACCESS_SHADER_READ_BIT;
+    constexpr VkPipelineStageFlags kShaderDestinationStage =
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    uploadPackedBuffer(
+        *state_->vertexBuffer,
+        scene.vertices.data(),
+        vertexBytes,
+        kGeometryDestinationAccess,
+        kGeometryDestinationStages,
+        "packed vertex upload");
+    uploadPackedBuffer(
+        *state_->indexBuffer,
+        scene.triangleIndices.data(),
+        indexBytes,
+        kGeometryDestinationAccess,
+        kGeometryDestinationStages,
+        "packed index upload");
+    uploadPackedBuffer(
+        *state_->triangleMaterialIdBuffer,
+        scene.triangleMaterialIds.data(),
+        triangleMaterialIdBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "packed triangle material ID upload");
+    uploadPackedBuffer(
+        *state_->materialBuffer,
+        scene.materials.data(),
+        materialBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "packed material upload");
+    uploadPackedBuffer(
+        *state_->instanceBuffer,
+        &instanceRecord,
+        instanceBytes,
+        VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        "acceleration-structure instance upload");
+    uploadPackedBuffer(
+        *state_->textureDescriptorBuffer,
+        textureDescriptorSource,
+        textureDescriptorBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "packed texture descriptor upload");
+    uploadPackedBuffer(
+        *state_->textureMipBuffer,
+        textureMipSource,
+        textureMipBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "packed texture mip upload");
+    uploadPackedBuffer(
+        *state_->textureTexelBuffer,
+        textureTexelSource,
+        textureTexelBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "packed texture texel upload");
+    uploadPackedBuffer(
+        *state_->areaLightBuffer,
+        areaLightSource,
+        areaLightBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "packed area light upload");
+    uploadPackedBuffer(
+        *state_->areaLightTriangleBuffer,
+        areaLightTriangleSource,
+        areaLightTriangleBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "packed area light triangle upload");
+    uploadPackedBuffer(
+        *state_->environmentRowBuffer,
+        environmentRowSource,
+        environmentRowBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "packed environment row upload");
+    uploadPackedBuffer(
+        *state_->environmentTexelBuffer,
+        environmentTexelSource,
+        environmentTexelBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "packed environment texel upload");
     state_->timings.uploadMilliseconds = elapsedMilliseconds(uploadBegin);
 
     VkAccelerationStructureGeometryKHR topGeometry{
@@ -1565,6 +1835,34 @@ const VulkanBuffer& VulkanRuntime::triangleMaterialIdBuffer() const noexcept {
 
 const VulkanBuffer& VulkanRuntime::materialBuffer() const noexcept {
     return implementation_->materialBuffer();
+}
+
+const VulkanBuffer& VulkanRuntime::textureDescriptorBuffer() const noexcept {
+    return implementation_->textureDescriptorBuffer();
+}
+
+const VulkanBuffer& VulkanRuntime::textureMipBuffer() const noexcept {
+    return implementation_->textureMipBuffer();
+}
+
+const VulkanBuffer& VulkanRuntime::textureTexelBuffer() const noexcept {
+    return implementation_->textureTexelBuffer();
+}
+
+const VulkanBuffer& VulkanRuntime::areaLightBuffer() const noexcept {
+    return implementation_->areaLightBuffer();
+}
+
+const VulkanBuffer& VulkanRuntime::areaLightTriangleBuffer() const noexcept {
+    return implementation_->areaLightTriangleBuffer();
+}
+
+const VulkanBuffer& VulkanRuntime::environmentRowBuffer() const noexcept {
+    return implementation_->environmentRowBuffer();
+}
+
+const VulkanBuffer& VulkanRuntime::environmentTexelBuffer() const noexcept {
+    return implementation_->environmentTexelBuffer();
 }
 
 std::mutex& VulkanRuntime::operationMutex() noexcept {

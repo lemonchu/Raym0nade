@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -88,13 +89,43 @@ void writeTextFile(const std::filesystem::path& path, std::string_view contents)
     }
 }
 
+void writeTinyHdr(const std::filesystem::path& path) {
+    std::ofstream output{path, std::ios::binary};
+    if (!output) {
+        throw std::runtime_error("Could not create the HDR test fixture.");
+    }
+    constexpr std::string_view header{
+        "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 2\n"};
+    constexpr std::array<std::uint8_t, 8> pixels{
+        128U, 0U, 0U, 129U,
+        0U, 128U, 0U, 129U,
+    };
+    output.write(header.data(), static_cast<std::streamsize>(header.size()));
+    output.write(
+        reinterpret_cast<const char*>(pixels.data()),
+        static_cast<std::streamsize>(pixels.size()));
+    if (!output) {
+        throw std::runtime_error("Could not write the HDR test fixture.");
+    }
+}
+
 PackedSceneData makeGeometryScene() {
     PackedSceneData scene;
-    scene.vertices.push_back(PackedVertex{
-        {0.0F, 0.0F, 1.0F, 0.0F},
-        {0.0F, -1.0F, 0.0F, 0.0F},
-    });
-    scene.triangleIndices = {0U, 0U, 0U};
+    scene.vertices = {
+        PackedVertex{
+            {0.0F, 0.0F, 1.0F, 0.0F},
+            {0.0F, -1.0F, 0.0F, 0.0F},
+        },
+        PackedVertex{
+            {1.0F, 0.0F, 1.0F, 0.0F},
+            {0.0F, -1.0F, 1.0F, 0.0F},
+        },
+        PackedVertex{
+            {0.0F, 1.0F, 1.0F, 0.0F},
+            {0.0F, -1.0F, 0.0F, 1.0F},
+        },
+    };
+    scene.triangleIndices = {0U, 1U, 2U};
     scene.triangleMaterialIds = {0U};
     scene.materials.emplace_back();
     return scene;
@@ -121,6 +152,190 @@ PackedSceneData makeOddMipScene() {
     scene.materials[0].flagsAndReserved[0] |= kPackedMaterialHasDiffuseTexture;
     scene.materials[0].textureIds[0] = 0U;
     return scene;
+}
+
+void addOneAreaLight(PackedSceneData& scene) {
+    scene.materials[0].emissionAndIor[0] = 2.0F;
+    scene.areaLights.push_back(PackedAreaLight{
+        {0.0F, 0.0F, 1.0F, 2.0F},
+        {0U, 1U, 0U, 0U},
+    });
+    scene.areaLightTriangles.push_back(PackedAreaLightTriangle{
+        {0U, 1U, 2U, 0U},
+        {0.5F, 1.0F, 1.0F, 0.0F},
+    });
+}
+
+void addSampleableEnvironment(PackedSceneData& scene) {
+    scene.environment =
+        PackedEnvironment{2U, 2U, kPackedEnvironmentHasImportance, 0U};
+    scene.environmentRows = {
+        PackedEnvironmentRow{3.0F / 11.0F, 3.0F / 11.0F, kPi, 0.0F},
+        PackedEnvironmentRow{8.0F / 11.0F, 1.0F, kPi, 0.0F},
+    };
+    scene.environmentTexels = {
+        PackedEnvironmentTexel{{1.0F, 0.0F, 0.0F, 1.0F / 3.0F}},
+        PackedEnvironmentTexel{{2.0F, 0.0F, 0.0F, 1.0F}},
+        PackedEnvironmentTexel{{0.0F, 1.0F, 0.0F, 0.25F}},
+        PackedEnvironmentTexel{{0.0F, 3.0F, 0.0F, 1.0F}},
+    };
+}
+
+void testLightingValidation() {
+    PackedSceneData lightScene = makeGeometryScene();
+    addOneAreaLight(lightScene);
+    try {
+        lightScene.validate();
+    } catch (...) {
+        expect(false, "A complete packed area light must validate.");
+    }
+
+    PackedSceneData badLightRange = lightScene;
+    badLightRange.areaLights[0].triangleRangeAndReserved[0] = 1U;
+    expectInvalidArgument(
+        [&] { badLightRange.validate(); },
+        "A non-contiguous area-light range must be rejected.");
+
+    PackedSceneData orphanLightTriangle = lightScene;
+    orphanLightTriangle.areaLights.clear();
+    expectInvalidArgument(
+        [&] { orphanLightTriangle.validate(); },
+        "An unreferenced area-light triangle must be rejected.");
+
+    PackedSceneData badLightVertex = lightScene;
+    badLightVertex.areaLightTriangles[0].vertexIdsAndMaterialId[0] = 1U;
+    expectInvalidArgument(
+        [&] { badLightVertex.validate(); },
+        "An out-of-range area-light vertex must be rejected.");
+
+    PackedSceneData nonEmissiveLight = lightScene;
+    nonEmissiveLight.materials[0].emissionAndIor[0] = 0.0F;
+    expectInvalidArgument(
+        [&] { nonEmissiveLight.validate(); },
+        "An area-light triangle with a non-emissive material must be rejected.");
+
+    PackedSceneData badFaceDistribution = lightScene;
+    badFaceDistribution.areaLightTriangles[0]
+        .areaProbabilityCdfAndReserved[2] = 0.5F;
+    expectInvalidArgument(
+        [&] { badFaceDistribution.validate(); },
+        "An area-light face CDF that does not end at one must be rejected.");
+
+    PackedSceneData badLightArea = lightScene;
+    badLightArea.areaLightTriangles[0].areaProbabilityCdfAndReserved[0] =
+        0.25F;
+    expectInvalidArgument(
+        [&] { badLightArea.validate(); },
+        "An area-light area that disagrees with its triangle must be rejected.");
+
+    PackedSceneData environmentScene = makeGeometryScene();
+    addSampleableEnvironment(environmentScene);
+    try {
+        environmentScene.validate();
+    } catch (...) {
+        expect(false, "A complete sampleable packed environment must validate.");
+    }
+
+    PackedSceneData blackEnvironment = makeGeometryScene();
+    blackEnvironment.environment = PackedEnvironment{2U, 1U, 0U, 0U};
+    blackEnvironment.environmentRows = {
+        PackedEnvironmentRow{0.0F, 0.0F, 2.0F * kPi, 0.0F},
+    };
+    blackEnvironment.environmentTexels = {
+        PackedEnvironmentTexel{{0.0F, 0.0F, 0.0F, 0.5F}},
+        PackedEnvironmentTexel{{0.0F, 0.0F, 0.0F, 1.0F}},
+    };
+    try {
+        blackEnvironment.validate();
+    } catch (...) {
+        expect(false, "A black lookup-only packed environment must validate.");
+    }
+
+    PackedSceneData zeroWeightRow = makeGeometryScene();
+    zeroWeightRow.environment =
+        PackedEnvironment{1U, 2U, kPackedEnvironmentHasImportance, 0U};
+    zeroWeightRow.environmentRows = {
+        PackedEnvironmentRow{1.0F, 1.0F, 2.0F * kPi, 0.0F},
+        PackedEnvironmentRow{0.0F, 1.0F, 2.0F * kPi, 0.0F},
+    };
+    zeroWeightRow.environmentTexels = {
+        PackedEnvironmentTexel{{1.0F, 0.0F, 0.0F, 1.0F}},
+        PackedEnvironmentTexel{{0.0F, 0.0F, 0.0F, 1.0F}},
+    };
+    try {
+        zeroWeightRow.validate();
+    } catch (...) {
+        expect(
+            false,
+            "A zero-weight row in a sampleable environment must retain a valid CDF plateau.");
+    }
+
+    PackedSceneData badEnvironmentExtent = environmentScene;
+    badEnvironmentExtent.environment.width = 0U;
+    expectInvalidArgument(
+        [&] { badEnvironmentExtent.validate(); },
+        "A partially zero environment extent must be rejected.");
+
+    PackedSceneData badEnvironmentFlag = environmentScene;
+    badEnvironmentFlag.environment.flags |= 0x80000000U;
+    expectInvalidArgument(
+        [&] { badEnvironmentFlag.validate(); },
+        "An unknown packed-environment flag must be rejected.");
+
+    PackedSceneData missingEnvironmentTexel = environmentScene;
+    missingEnvironmentTexel.environmentTexels.pop_back();
+    expectInvalidArgument(
+        [&] { missingEnvironmentTexel.validate(); },
+        "Environment storage that does not match its extent must be rejected.");
+
+    PackedSceneData badRowDistribution = environmentScene;
+    badRowDistribution.environmentRows[0].probability = 0.5F;
+    expectInvalidArgument(
+        [&] { badRowDistribution.validate(); },
+        "Inconsistent environment row probability and CDF data must be rejected.");
+
+    PackedSceneData badConditionalCdf = environmentScene;
+    badConditionalCdf.environmentTexels[1].radianceAndConditionalCdf[3] = 0.9F;
+    expectInvalidArgument(
+        [&] { badConditionalCdf.validate(); },
+        "An environment conditional CDF that does not end at one must be rejected.");
+
+    PackedSceneData biasedConditionalCdf = environmentScene;
+    biasedConditionalCdf.environmentTexels[0].radianceAndConditionalCdf[3] =
+        0.4F;
+    expectInvalidArgument(
+        [&] { biasedConditionalCdf.validate(); },
+        "An environment CDF that disagrees with its radiance must be rejected.");
+
+    PackedSceneData badSolidAngle = environmentScene;
+    badSolidAngle.environmentRows[0].solidAngle = 1.0F;
+    expectInvalidArgument(
+        [&] { badSolidAngle.validate(); },
+        "An environment solid angle that disagrees with its extent must be rejected.");
+
+    PackedSceneData missingImportance = environmentScene;
+    missingImportance.environment.flags = 0U;
+    for (PackedEnvironmentRow& row : missingImportance.environmentRows) {
+        row.probability = 0.0F;
+        row.cumulativeProbability = 0.0F;
+    }
+    expectInvalidArgument(
+        [&] { missingImportance.validate(); },
+        "A non-black environment without importance metadata must be rejected.");
+
+    PackedSceneData spuriousImportance = blackEnvironment;
+    spuriousImportance.environment.flags = kPackedEnvironmentHasImportance;
+    spuriousImportance.environmentRows[0].probability = 1.0F;
+    spuriousImportance.environmentRows[0].cumulativeProbability = 1.0F;
+    expectInvalidArgument(
+        [&] { spuriousImportance.validate(); },
+        "A black environment with importance metadata must be rejected.");
+
+    PackedSceneData negativeEnvironment = environmentScene;
+    negativeEnvironment.environmentTexels[0].radianceAndConditionalCdf[0] = -1.0F;
+    expectInvalidArgument(
+        [&] { negativeEnvironment.validate(); },
+        "Negative packed-environment radiance must be rejected.");
 }
 
 void testTextureValidation() {
@@ -419,12 +634,54 @@ void testImportedTexturePacking() {
     }
 }
 
+void testImportedEnvironmentPacking() {
+    TemporaryDirectory directory;
+    createImportedFixture(directory.path());
+    writeTinyHdr(directory.path() / "tiny.hdr");
+
+    Model model{directory.path(), "scene.obj", "tiny.hdr"};
+    const PackedSceneData scene = model.packScene();
+    scene.validate();
+
+    expect(
+        scene.environment.width == 2U && scene.environment.height == 1U &&
+            scene.environment.flags == kPackedEnvironmentHasImportance,
+        "The imported 2x1 HDR environment must publish sampleable metadata.");
+    expect(
+        scene.environmentRows.size() == 1U &&
+            scene.environmentTexels.size() == 2U,
+        "The imported HDR arrays must exactly match their extent.");
+    if (scene.environmentRows.size() == 1U &&
+        scene.environmentTexels.size() == 2U) {
+        const PackedEnvironmentRow& row = scene.environmentRows.front();
+        expect(
+            row.probability == 1.0F && row.cumulativeProbability == 1.0F &&
+                row.solidAngle > 0.0F,
+            "A single HDR row must have unit probability and a positive solid angle.");
+        const PackedEnvironmentTexel& red = scene.environmentTexels[0];
+        const PackedEnvironmentTexel& green = scene.environmentTexels[1];
+        expect(
+            red.radianceAndConditionalCdf[0] > 0.0F &&
+                red.radianceAndConditionalCdf[1] == 0.0F &&
+                green.radianceAndConditionalCdf[0] == 0.0F &&
+                green.radianceAndConditionalCdf[1] > 0.0F,
+            "Packed HDR texels must preserve linear red and green radiance.");
+        expect(
+            std::abs(red.radianceAndConditionalCdf[3] - (1.0F / 3.0F)) <
+                    1.0e-5F &&
+                green.radianceAndConditionalCdf[3] == 1.0F,
+            "The HDR conditional CDF must follow luminance times solid angle.");
+    }
+}
+
 }  // namespace
 
 int main() {
     try {
+        testLightingValidation();
         testTextureValidation();
         testImportedTexturePacking();
+        testImportedEnvironmentPacking();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: unexpected exception: " << error.what() << '\n';
         return 1;

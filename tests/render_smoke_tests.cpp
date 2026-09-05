@@ -94,11 +94,25 @@ int main() {
         const PackedSceneData packedScene = model.packScene();
         if (packedScene.triangleCount() != model.faceCount() ||
             packedScene.triangleMaterialIds.size() != model.faceCount() ||
-            packedScene.vertices.empty() || packedScene.materials.empty()) {
+            packedScene.vertices.empty() || packedScene.materials.empty() ||
+            packedScene.areaLights.size() != 1U ||
+            packedScene.areaLightTriangles.size() != 1U) {
             throw std::runtime_error(
-                "The imported smoke scene did not produce complete packed geometry.");
+                "The imported smoke scene did not produce complete packed geometry and lighting.");
         }
         packedScene.validate();
+        const PackedAreaLight& packedLight = packedScene.areaLights.front();
+        const PackedAreaLightTriangle& packedLightTriangle =
+            packedScene.areaLightTriangles.front();
+        if (packedLight.centerAndPower[3] <= 0.0F ||
+            packedLight.triangleRangeAndReserved[0] != 0U ||
+            packedLight.triangleRangeAndReserved[1] != 1U ||
+            packedLightTriangle.areaProbabilityCdfAndReserved[0] <= 0.0F ||
+            packedLightTriangle.areaProbabilityCdfAndReserved[1] != 1.0F ||
+            packedLightTriangle.areaProbabilityCdfAndReserved[2] != 1.0F) {
+            throw std::runtime_error(
+                "The imported smoke-scene area light has invalid packed sampling data.");
+        }
         const HitRecord centerHit = model.intersect(Ray{vec3{0.0F}, vec3{0.0F, 0.0F, 1.0F}});
         if (centerHit.face == nullptr) {
             throw std::runtime_error("The smoke-test ray did not hit its triangle.");

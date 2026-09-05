@@ -3,15 +3,52 @@
 
 #include "include/counter_rng.glsl"
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 4, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) writeonly buffer ResultBuffer {
     uvec2 values[];
 } resultBuffer;
 
+const uvec4 raym0nadeKatAddressHead[12] = uvec4[](
+    uvec4(0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U),
+    uvec4(0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U),
+    uvec4(0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U),
+    uvec4(0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U),
+    uvec4(0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U),
+    uvec4(0x00000001U, 0x00000000U, 0x00000000U, 0x00000000U),
+    uvec4(0x12345678U, 0x9ABCDEF0U, 0x13579BDFU, 0x2468ACE0U),
+    uvec4(0x12345678U, 0x9ABCDEF0U, 0x13579BDFU, 0x2468ACE0U),
+    uvec4(0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU),
+    uvec4(0x0000002AU, 0x001FA3FFU, 0x0000003FU, 0x00000010U),
+    uvec4(0xDEADBEEFU, 0x00000011U, 0x0000001DU, 0x00000003U),
+    uvec4(0x00000007U, 0x0001E240U, 0x000F423FU, 0x0000000FU));
+
+const uint raym0nadeKatDimension[12] = uint[](
+    0x00000000U,
+    0x00000001U,
+    0x00000002U,
+    0x00000003U,
+    0x00000004U,
+    0x00000000U,
+    0x00000000U,
+    0x00000003U,
+    0xFFFFFFFFU,
+    0x0000001BU,
+    0x00000400U,
+    0x00000009U);
+
 void main() {
     uint index = gl_GlobalInvocationID.x;
-    uint word = raym0nadeCounterRandomUint32(0U, index, 0U, 0U, 0U);
+    if (index >= 12U) {
+        return;
+    }
+    uvec4 address = raym0nadeKatAddressHead[index];
+    uint word = raym0nadeCounterRandomUint32(
+        address.x,
+        address.y,
+        address.z,
+        address.w,
+        raym0nadeKatDimension[index]);
     resultBuffer.values[index] = uvec2(
         word,
         floatBitsToUint(raym0nadeCounterRandomWordToOpen01(word)));
