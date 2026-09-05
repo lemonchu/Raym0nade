@@ -11,12 +11,16 @@
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
+      "environment": {
+        "VSLANG": "1033"
+      },
       "cacheVariables": {
         "BUILD_TESTING": "ON",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_PREFIX_PATH": "$env{CONDA_PREFIX}",
+        "CMAKE_PREFIX_PATH": "$env{CONDA_PREFIX};$env{CONDA_PREFIX}/Library",
         "RAYM0NADE_BUILD_FXAA": "ON",
-        "RAYM0NADE_BUILD_RENDERER": "ON"
+        "RAYM0NADE_BUILD_RENDERER": "ON",
+        "RAYM0NADE_ENABLE_VULKAN": "OFF"
       }
     },
     {
@@ -36,6 +40,24 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "gpu-debug",
+      "displayName": "Debug with experimental Vulkan GPU backend",
+      "description": "Debug build with the optional headless Vulkan Ray Query backend",
+      "inherits": "debug",
+      "cacheVariables": {
+        "RAYM0NADE_ENABLE_VULKAN": "ON"
+      }
+    },
+    {
+      "name": "gpu-release",
+      "displayName": "Release with experimental Vulkan GPU backend",
+      "description": "Optimized build with the optional headless Vulkan Ray Query backend",
+      "inherits": "release",
+      "cacheVariables": {
+        "RAYM0NADE_ENABLE_VULKAN": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -46,6 +68,14 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "gpu-debug",
+      "configurePreset": "gpu-debug"
+    },
+    {
+      "name": "gpu-release",
+      "configurePreset": "gpu-release"
     }
   ],
   "testPresets": [
@@ -62,6 +92,26 @@
     {
       "name": "release",
       "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "gpu-debug",
+      "configurePreset": "gpu-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "gpu-release",
+      "configurePreset": "gpu-release",
       "output": {
         "outputOnFailure": true
       },

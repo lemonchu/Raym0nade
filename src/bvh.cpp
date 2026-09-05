@@ -103,6 +103,7 @@ void Bvh::intersectNode(
             if (distance > closestHit.tMinimum && distance < closestHit.tMaximum) {
                 closestHit.tMaximum = distance;
                 closestHit.face = &face;
+                closestHit.primitiveIndex = index;
             }
         }
         return;

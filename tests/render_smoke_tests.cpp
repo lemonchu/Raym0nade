@@ -90,9 +90,21 @@ int main() {
             throw std::runtime_error(
                 "The smoke-test model must contain one diffuse face and one area light.");
         }
+        const PackedSceneData packedScene = model.packScene();
+        if (packedScene.triangleCount() != model.faceCount() ||
+            packedScene.triangleMaterialIds.size() != model.faceCount() ||
+            packedScene.vertices.empty() || packedScene.materials.empty()) {
+            throw std::runtime_error(
+                "The imported smoke scene did not produce complete packed geometry.");
+        }
+        packedScene.validate();
         const HitRecord centerHit = model.intersect(Ray{vec3{0.0F}, vec3{0.0F, 0.0F, 1.0F}});
         if (centerHit.face == nullptr) {
             throw std::runtime_error("The smoke-test ray did not hit its triangle.");
+        }
+        if (centerHit.primitiveIndex >= packedScene.triangleCount()) {
+            throw std::runtime_error(
+                "The CPU hit did not map to the packed-scene primitive range.");
         }
 
         RenderSettings settings;

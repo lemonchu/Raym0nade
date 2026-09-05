@@ -1,0 +1,142 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+struct PackedVertex {
+    vec4 positionAndNormalX;
+    vec4 normalYZAndUv;
+};
+
+struct PackedMaterial {
+    vec4 diffuseAndOpacity;
+    vec4 emissionAndIor;
+    vec4 transmissionAndRoughness;
+    vec4 metallicSpecularAndReserved;
+    uvec4 textureIds;
+    uvec4 flagsAndReserved;
+};
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevel;
+layout(set = 0, binding = 1, std430) readonly buffer VertexBuffer {
+    PackedVertex vertices[];
+} vertexBuffer;
+layout(set = 0, binding = 2, std430) readonly buffer IndexBuffer {
+    uint indices[];
+} indexBuffer;
+layout(set = 0, binding = 3, std430) readonly buffer TriangleMaterialBuffer {
+    uint materialIds[];
+} triangleMaterialBuffer;
+layout(set = 0, binding = 4, std430) readonly buffer MaterialBuffer {
+    PackedMaterial materials[];
+} materialBuffer;
+layout(set = 0, binding = 5, std430) writeonly buffer OutputBuffer {
+    vec4 pixels[];
+} outputBuffer;
+
+layout(push_constant, std430) uniform RenderParameters {
+    vec4 cameraPositionAndPixelScale;
+    vec4 cameraDirectionAndUnused;
+    vec4 cameraUpAndUnused;
+    vec4 cameraRightAndUnused;
+    uvec4 extentAovAndReserved;
+} parameters;
+
+const uint primaryAovBaseColor = 0U;
+const float rayMinimum = 1.0e-4;
+const float rayMaximum = 3.402823466e+38;
+const float minimumNormalFloat = 1.175494351e-38;
+
+bool isFiniteVector(vec3 value) {
+    return !any(isnan(value)) && !any(isinf(value));
+}
+
+vec3 normalizedOrZero(vec3 value) {
+    if (!isFiniteVector(value)) {
+        return vec3(0.0);
+    }
+    const float scale = max(max(abs(value.x), abs(value.y)), abs(value.z));
+    if (!(scale > minimumNormalFloat)) {
+        return vec3(0.0);
+    }
+    const vec3 scaled = value / scale;
+    const float lengthSquared = dot(scaled, scaled);
+    if (!(lengthSquared > 0.0) || isnan(lengthSquared) || isinf(lengthSquared)) {
+        return vec3(0.0);
+    }
+    return scaled * inversesqrt(lengthSquared);
+}
+
+vec3 safeNormalize(vec3 value, vec3 fallback) {
+    const vec3 normalized = normalizedOrZero(value);
+    if (dot(normalized, normalized) > 0.0) {
+        return normalized;
+    }
+    return normalizedOrZero(fallback);
+}
+
+void main() {
+    const uvec2 pixel = gl_GlobalInvocationID.xy;
+    const uint width = parameters.extentAovAndReserved.x;
+    const uint height = parameters.extentAovAndReserved.y;
+    if (pixel.x >= width || pixel.y >= height) {
+        return;
+    }
+
+    const uint outputIndex = pixel.y * width + pixel.x;
+    const float imageX = float(pixel.x) - float(width) * 0.5;
+    const float imageY = float(pixel.y) - float(height) * 0.5;
+    const vec3 unnormalizedDirection =
+        parameters.cameraDirectionAndUnused.xyz +
+        parameters.cameraPositionAndPixelScale.w *
+            (imageX * parameters.cameraRightAndUnused.xyz +
+             imageY * parameters.cameraUpAndUnused.xyz);
+    const vec3 rayDirection = normalizedOrZero(unnormalizedDirection);
+    if (dot(rayDirection, rayDirection) == 0.0) {
+        outputBuffer.pixels[outputIndex] = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    rayQueryEXT query;
+    rayQueryInitializeEXT(
+        query,
+        topLevel,
+        gl_RayFlagsOpaqueEXT,
+        0xff,
+        parameters.cameraPositionAndPixelScale.xyz,
+        rayMinimum,
+        rayDirection,
+        rayMaximum);
+    while (rayQueryProceedEXT(query)) {
+    }
+
+    if (rayQueryGetIntersectionTypeEXT(query, true) ==
+        gl_RayQueryCommittedIntersectionNoneEXT) {
+        outputBuffer.pixels[outputIndex] = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    const uint primitiveId = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+    vec3 color = vec3(0.0);
+    if (parameters.extentAovAndReserved.z == primaryAovBaseColor) {
+        const uint materialId = triangleMaterialBuffer.materialIds[primitiveId];
+        color = max(
+            materialBuffer.materials[materialId].diffuseAndOpacity.xyz, vec3(0.0));
+    } else {
+        const uint indexOffset = primitiveId * 3U;
+        const vec3 v0 =
+            vertexBuffer.vertices[indexBuffer.indices[indexOffset]].positionAndNormalX.xyz;
+        const vec3 v1 =
+            vertexBuffer.vertices[indexBuffer.indices[indexOffset + 1U]].positionAndNormalX.xyz;
+        const vec3 v2 =
+            vertexBuffer.vertices[indexBuffer.indices[indexOffset + 2U]].positionAndNormalX.xyz;
+        vec3 shapeNormal = safeNormalize(cross(v1 - v0, v2 - v0), -rayDirection);
+        if (dot(shapeNormal, -rayDirection) < 0.0) {
+            shapeNormal = -shapeNormal;
+        }
+        color = isFiniteVector(shapeNormal)
+                    ? (shapeNormal + vec3(1.0)) * 0.5
+                    : vec3(0.0);
+    }
+    outputBuffer.pixels[outputIndex] = vec4(color, 1.0);
+}

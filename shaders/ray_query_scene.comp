@@ -1,0 +1,72 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct RayRecord {
+    vec4 originAndTMin;
+    vec4 directionAndTMax;
+};
+
+struct HitRecord {
+    uint hit;
+    uint primitiveId;
+    float distance;
+    float barycentricU;
+    float barycentricV;
+    uint reserved0;
+    uint reserved1;
+    uint reserved2;
+};
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevel;
+layout(set = 0, binding = 1, std430) readonly buffer RayBuffer {
+    RayRecord rays[];
+} rayBuffer;
+layout(set = 0, binding = 2, std430) writeonly buffer HitBuffer {
+    HitRecord hits[];
+} hitBuffer;
+
+layout(push_constant) uniform DispatchParameters {
+    uint rayCount;
+} parameters;
+
+const uint invalidPrimitiveId = 0xffffffffU;
+
+void main() {
+    const uint rayIndex = gl_GlobalInvocationID.x;
+    if (rayIndex >= parameters.rayCount) {
+        return;
+    }
+
+    const RayRecord ray = rayBuffer.rays[rayIndex];
+    rayQueryEXT query;
+    rayQueryInitializeEXT(
+        query,
+        topLevel,
+        gl_RayFlagsOpaqueEXT,
+        0xff,
+        ray.originAndTMin.xyz,
+        ray.originAndTMin.w,
+        ray.directionAndTMax.xyz,
+        ray.directionAndTMax.w);
+    while (rayQueryProceedEXT(query)) {
+    }
+
+    const uint intersectionType = rayQueryGetIntersectionTypeEXT(query, true);
+    const bool hasHit = intersectionType != gl_RayQueryCommittedIntersectionNoneEXT;
+    const vec2 barycentrics =
+        hasHit ? rayQueryGetIntersectionBarycentricsEXT(query, true) : vec2(0.0);
+
+    HitRecord result;
+    result.hit = hasHit ? 1U : 0U;
+    result.primitiveId =
+        hasHit ? rayQueryGetIntersectionPrimitiveIndexEXT(query, true) : invalidPrimitiveId;
+    result.distance = hasHit ? rayQueryGetIntersectionTEXT(query, true) : 0.0;
+    result.barycentricU = barycentrics.x;
+    result.barycentricV = barycentrics.y;
+    result.reserved0 = 0U;
+    result.reserved1 = 0U;
+    result.reserved2 = 0U;
+    hitBuffer.hits[rayIndex] = result;
+}

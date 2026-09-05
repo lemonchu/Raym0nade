@@ -7,7 +7,8 @@ changes.
 ## Project rules
 
 - Repository content added or rewritten during the modernization must be in English.
-- Development happens on the `dev` branch. The `main` branch remains the legacy baseline.
+- The CPU modernization was merged to `main`. Experimental GPU work happens on `dev-gpu` until it
+  reaches its documented correctness and performance gates.
 - Preserve a working CPU renderer while refactoring. GPU work starts only after the CPU
   reference path is deterministic, tested, and benchmarked.
 - Project package downloads should use a direct connection rather than the local
@@ -23,7 +24,8 @@ changes.
 - Miniforge command-line distribution, installed outside the repository
 - Conda environment: `raym0nade`
 - Toolchain: Visual Studio 2022 Build Tools / MSVC, CMake, and Ninja
-- Main dependencies: Assimp, libpng, Python 3.12, NumPy, ImageIO, Pillow, and FreeImage
+- Main dependencies: Assimp, libpng, Python 3.12, NumPy, ImageIO, Pillow, FreeImage, and the
+  optional Vulkan development stack
 - Environment manifest: `environment.yml`
 
 The environment can be removed with:
@@ -31,6 +33,48 @@ The environment can be removed with:
 ```text
 conda env remove --name raym0nade
 ```
+
+### AMD GPU research and Vulkan toolchain bring-up
+
+On 2026-09-04, GPU development started from the merged CPU baseline on a new `dev-gpu` branch. A
+read-only architecture audit compared HIP/HIPRT with Vulkan KHR ray tracing. The first backend is a
+headless Vulkan compute implementation using `VK_KHR_ray_query`; HIPRT remains a possible A/B
+candidate for a future officially supported AMD discrete GPU. This choice avoids depending on the
+HIP SDK for the current unsupported `gfx1036` development APU while retaining AMD hardware ray
+traversal through a ratified cross-vendor API.
+
+The Vulkan development packages were installed directly from conda-forge without the local proxy:
+
+- Vulkan headers and loader 1.4.357;
+- shaderc 2026.3, glslang 16.5, and SPIR-V Tools 2026.3;
+- Vulkan tools and Khronos validation layers 1.4.357.
+
+The packages are declared in `environment.yml` and remain removable with the complete Conda
+environment. CMake keeps the backend disabled by default and provides separate `gpu-debug` and
+`gpu-release` presets. The first project-owned C++ capability probe configured and built
+successfully in `gpu-debug`, then reported:
+
+- device: integrated `AMD Radeon(TM) Graphics`, vendor/device `0x1002/0x13c0`;
+- device API 1.4.315 and AMD proprietary driver dated 2026-04-17;
+- compute queue family 0 and subgroup size 64;
+- buffer device address, acceleration structures, Ray Query, and Ray Tracing Pipeline all enabled;
+- acceleration-structure primitive limit 536,870,912; and
+- successful Raym0nade AMD Ray Query capability status.
+
+The host is a Ryzen 9 9950X with 16 CPU cores and only two integrated GPU graphics cores. It is a
+valid functionality node but not a credible target for promising a large speedup over the current
+CPU renderer. Performance acceptance therefore separates this integrated-GPU compatibility gate
+from future RX 6000/7000/9000 discrete-GPU targets. A limited primary-AOV renderer now exists, but
+no complete GPU path renderer or speedup is claimed.
+
+The G1 hardware-intersection self-test compiles a checked-in compute shader to generated SPIR-V,
+builds a one-triangle BLAS and identity TLAS, and executes deterministic hit and miss Ray Queries.
+The hit returns primitive 0, distance 1, and barycentrics `(0.25, 0.5)`; the miss returns the
+invalid primitive sentinel. G2 now also packs an imported scene and compares repeated Vulkan
+primary-hit batches with the CPU BVH. G3a adds deterministic CPU/GPU `BaseColor` and `ShapeNormal`
+images with device-side primary-ray generation. The clean validation records below close the
+current Windows G1, G2, and G3a functionality slices. G3, a minimal lit GPU render, remains the next
+implementation gate. See `gpu-backend.md` for the durable design and measurement plan.
 
 ## Validation history
 
@@ -71,6 +115,55 @@ does not cover sky lighting, textures, transmission, cutouts, or indirect-path d
 
 The CI workflow runs the Release build and all tests on Windows, Ubuntu, and macOS, and also runs a
 Windows Debug build/test job to exercise the Conda-compatible MSVC ABI configuration.
+
+### Clean CPU and Vulkan G2 validation
+
+On 2026-09-04, the previous generated `build/debug`, `build/gpu-debug`, and
+`build/dependency-check` trees were removed before validating from clean build directories on
+Windows 11 x64. No cross-platform GPU validation is implied by these results.
+
+- CPU Debug completed all 23 Ninja build steps and all three CTest entries.
+- CPU Release completed all 23 Ninja build steps and all three CTest entries.
+- GPU Debug completed all 33 Ninja build steps and all five CTest entries.
+- GPU Release completed all 33 Ninja build steps and all five CTest entries.
+- Both Ray Query compute shaders were compiled by `glslc` for Vulkan 1.2 and accepted by
+  `spirv-val`.
+
+The clean Debug dependency database reported 170, 137, 140, and 143 dependencies for
+`model.cpp`, `bvh.cpp`, `scene_data.cpp`, and `render.cpp`, respectively. This confirms that
+the localized MSVC `/showIncludes` repair eliminated the earlier zero-dependency Ninja records
+rather than merely reusing an old build tree.
+
+Manual G1 runs in both Debug and Release enabled the Khronos validation layer and synchronization
+validation. Each returned the expected hit and miss records with zero validation errors and zero
+warnings. The latest complete manual G2 rerun used an imported packed fixture containing three
+materials, six vertices, and two faces. Both repeated batches matched the CPU BVH:
+
+| Build | Pack | Host setup | Upload | BLAS/TLAS build | Batch 1 | Batch 2 | Validation | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| Debug | 0.019 ms | 81.312 ms | 2.143 ms | 0.882 ms | 0.201 ms | 0.104 ms | layer + synchronization enabled, 0 errors / 0 warnings | 0 |
+| Release | 0.003 ms | 78.993 ms | 2.285 ms | 1.040 ms | 0.197 ms | 0.135 ms | layer + synchronization enabled, 0 errors / 0 warnings | 0 |
+
+After the timing-only test change, both `gpu-debug` and `gpu-release` were rebuilt and all five
+CTest entries passed again.
+
+These are host wall-clock bring-up diagnostics for a five-ray batch, not GPU timestamp
+measurements or evidence of renderer speedup. The current device is the two-compute-unit integrated
+GPU in the Ryzen 9 9950X; meaningful performance claims remain deferred to a supported AMD
+discrete GPU and a complete resident rendering workload. The earlier Debug
+`0x80000003` process failure did not recur in either clean configuration.
+
+The current open G2 risks are:
+
+- the imported comparison fixture has only two faces, so a greater-than-ten-face fixture is still
+  needed to exercise CPU BVH face reordering;
+- proactive Vulkan memory-budget accounting is not implemented;
+- exact `tMin` and `tMax` ray-interval endpoint behavior is not covered;
+- validation messages emitted during teardown are not included in the pre-destruction report;
+- a fence timeout may still wait indefinitely while quiescing the queue for safe destruction; and
+- GPU texture sampling and complete material shading are not implemented. G3a supports only the
+  restricted constant `BaseColor` diagnostic described below, and alpha cutouts referenced by the
+  packed scene are rejected rather than silently treated as opaque.
 
 ### Review hardening pass
 
@@ -257,6 +350,64 @@ exposure `14` documented as the slightly brighter alternative. `Filter_FXAA` rem
 output; bloom is excluded while judging base exposure. These are scene-specific appearance
 candidates, not universal legacy conversion factors.
 
+### G3a deterministic primary-AOV vertical slice
+
+On 2026-09-05, the first backend-neutral render boundary and device-generated primary image were
+completed on `dev-gpu`. `ImageExtent`, `PinholeCamera`, `PrimaryAov`, `PrimaryRenderRequest`, and
+`LinearImage` contain no Vulkan, console, file-output, sampling, or post-processing policy. The new
+CPU no-file oracle renders deterministic `BaseColor` and encoded geometric `ShapeNormal` values.
+It shares the exact legacy camera helper with the production CPU renderer:
+
+```text
+direction + pixelScale * ((x - width * 0.5) * right + (y - height * 0.5) * up)
+```
+
+Pixel coordinates are integers, there is no half-pixel offset, and the supplied camera basis is not
+implicitly orthonormalized. Output is a row-major linear RGB image.
+
+Packed scene format version 2 now records explicit alpha-cutout, diffuse-texture,
+specular-texture, emissive-texture, and normal-texture presence bits. Texture IDs remain invalid
+sentinels until device texture storage is implemented. This preserves enough source-material
+capability information for a GPU backend to reject unsupported shading instead of silently using a
+constant material.
+
+The Vulkan host implementation was factored around a private `VulkanRuntime` shared by the G2
+intersector and G3a renderer. It keeps device-local vertex, index, triangle-material, and material
+buffers plus the BLAS/TLAS alive across operations. Acceleration-structure scratch and
+instance-input buffers are freed after the build submission completes. `VulkanPrimaryRenderer`
+generates the full primary-ray grid on the device in one two-dimensional compute dispatch using
+8 x 8 workgroups and returns one completed `LinearImage` after one readback. It also reports an
+optional GPU dispatch timestamp and handles counter wrap according to the queue family's valid
+timestamp bits.
+
+GPU `BaseColor` currently accepts only referenced opaque materials without diffuse textures.
+`ShapeNormal` has the wider capability and accepts every scene that passes the current Vulkan
+geometry boundary. Referenced alpha cutouts remain rejected for both AOVs.
+
+Validation completed on Windows 11 x64:
+
+- CPU Debug passed all 4 CTest entries.
+- CPU Release passed all 4 CTest entries.
+- GPU Debug passed all 7 CTest entries.
+- GPU Release passed all 7 CTest entries.
+- The Release primary-AOV run on `AMD Radeon(TM) Graphics` enabled the Khronos validation layer and
+  synchronization validation and reported 0 errors and 0 warnings.
+
+That Release run reported 2.861 ms for the persistent scene upload and 0.853 ms for BLAS/TLAS
+construction. Its selected 4 x 4 primary diagnostics were:
+
+| AOV invocation | Host dispatch/readback | GPU dispatch timestamp |
+| --- | ---: | ---: |
+| `BaseColor`, first | 0.270 ms | 0.009 ms |
+| `BaseColor`, second | 0.104 ms | 0.005 ms |
+| `ShapeNormal`, first | 0.093 ms | 0.006 ms |
+| `ShapeNormal`, second | 0.108 ms | 0.006 ms |
+
+This 4 x 4 test is a correctness and synchronization diagnostic, not a throughput workload or
+evidence of speedup. G3a is not the complete G3 milestone: GPU lighting, random sampling, path
+continuation, texture sampling, accumulation, and post-processing remain open. Performance claims
+remain deferred until a representative resident workload runs on a supported AMD discrete GPU.
+
 ## Fixes completed before the modernization
 
 - Changed the GLM submodule URL from SSH to HTTPS.
@@ -394,8 +545,8 @@ fixtures and a controlled benchmark harness remain open.
   and image I/O into stable interfaces.
 - Complete the NEE/continuation estimator design and validate BSDF/light PDFs and energy with
   analytic tests before treating appearance as a permanent contract.
-- Flatten and pack immutable scene data, then introduce an optional GPU backend behind the same
-  renderer-facing interface.
+- Continue the versioned packed scene and optional GPU backend beyond the completed indexed
+  geometry, material-capability flags, shared primary-AOV contract, and G3a Vulkan renderer.
 
 ## Work in progress
 
@@ -411,6 +562,11 @@ fixtures and a controlled benchmark harness remain open.
 - [x] Reproduce and scope Bistro FBX topology variation against current and legacy import flags.
 - [x] Rebuild and visually inspect Bistro with resolution-correct camera scaling.
 - [x] Record the available legacy and post-refactor timing observations with their limitations.
+- [x] Merge the CPU refactor to `main` and create `dev-gpu` for experimental backend work.
+- [x] Complete Vulkan G0/G1 and the initial imported packed-geometry G2 slice on Windows AMD.
+- [x] Complete G3a deterministic CPU/GPU `BaseColor` and `ShapeNormal` primary AOVs.
+- [ ] Complete G3 with GPU lighting and path integration under a CPU correctness comparison.
+- [ ] Add GPU texture storage and sampling before enabling textured `BaseColor` or alpha cutouts.
 - [ ] Resolve or replace nondeterministic Bistro FBX import before treating its topology as a
   deterministic regression gate.
 - [ ] Add controlled before/after benchmarks, analytic estimator tests, and golden-image tolerances.

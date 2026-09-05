@@ -13,6 +13,7 @@
 #include "raym0nade/material.hpp"
 #include "raym0nade/render.hpp"
 #include "raym0nade/sampling.hpp"
+#include "raym0nade/scene_data.hpp"
 
 namespace {
 
@@ -304,6 +305,59 @@ void testMaterialConstants() {
     expectNear(metallic, 0.65F, 1.0e-6F, "Constant metallic must survive without a texture.");
 }
 
+void testPackedSceneValidation() {
+    PackedSceneData scene;
+    expectInvalidArgument(
+        [&] { scene.validate(); }, "An empty packed scene must be rejected.");
+
+    scene.vertices.push_back(PackedVertex{
+        {0.0F, 0.0F, 1.0F, 0.0F},
+        {0.0F, 1.0F, 0.25F, 0.75F},
+    });
+    scene.triangleIndices = {0U, 0U, 0U};
+    scene.triangleMaterialIds = {0U};
+    scene.materials.emplace_back();
+    try {
+        scene.validate();
+    } catch (...) {
+        expect(false, "A finite in-range packed scene must validate.");
+    }
+
+    scene.triangleIndices[2] = 1U;
+    expectInvalidArgument(
+        [&] { scene.validate(); }, "An out-of-range packed vertex index must be rejected.");
+    scene.triangleIndices[2] = 0U;
+    scene.vertices[0].normalYZAndUv[2] = std::numeric_limits<float>::quiet_NaN();
+    expectInvalidArgument(
+        [&] { scene.validate(); }, "A non-finite packed vertex attribute must be rejected.");
+    scene.vertices[0].normalYZAndUv[2] = 0.25F;
+
+    scene.materials[0].flagsAndReserved[0] = kPackedMaterialKnownFlags;
+    try {
+        scene.validate();
+    } catch (...) {
+        expect(false, "Every defined packed material flag must be accepted.");
+    }
+    scene.materials[0].flagsAndReserved[0] = 1U << 31U;
+    expectInvalidArgument(
+        [&] { scene.validate(); }, "An unknown packed material flag must be rejected.");
+    scene.materials[0].flagsAndReserved[0] = 0U;
+
+    scene.materials[0].textureIds[0] = 0U;
+    expectInvalidArgument(
+        [&] { scene.validate(); },
+        "A texture ID must remain invalid until packed textures are supported.");
+    scene.materials[0].textureIds[0] = kInvalidSceneId;
+
+    scene.materials[0].flagsAndReserved[1] = 1U;
+    expectInvalidArgument(
+        [&] { scene.validate(); }, "A nonzero reserved material flag lane must be rejected.");
+    scene.materials[0].flagsAndReserved[1] = 0U;
+    scene.materials[0].metallicSpecularAndReserved[2] = 1.0F;
+    expectInvalidArgument(
+        [&] { scene.validate(); }, "A nonzero reserved material float lane must be rejected.");
+}
+
 void testRenderSettingsValidation() {
     RenderSettings settings;
     settings.validate();
@@ -403,7 +457,8 @@ void testBvh() {
     const Ray ray{vec3{0.0F}, vec3{0.0F, 0.0F, 1.0F}};
     HitRecord emptyHit;
     bvh.intersect(ray, emptyHit);
-    expect(emptyHit.face == nullptr && std::isinf(emptyHit.tMaximum),
+    expect(emptyHit.face == nullptr && std::isinf(emptyHit.tMaximum) &&
+               emptyHit.primitiveIndex == std::numeric_limits<std::size_t>::max(),
            "Intersecting an empty BVH must preserve the miss record.");
 
     faces.push_back(triangleAt(2.0F));
@@ -412,6 +467,7 @@ void testBvh() {
     HitRecord hit;
     bvh.intersect(ray, hit);
     expect(hit.face != nullptr, "The BVH must report a triangle hit.");
+    expect(hit.primitiveIndex == 0U, "A BVH hit must report its face-array primitive index.");
     expectNear(hit.tMaximum, 2.0F, 1.0e-6F, "The BVH must report the nearest distance.");
 
     faces.clear();
@@ -423,6 +479,9 @@ void testBvh() {
     HitRecord nearestHit;
     bvh.intersect(ray, nearestHit);
     expect(nearestHit.face != nullptr, "A larger BVH must report a hit.");
+    expect(nearestHit.primitiveIndex < faces.size() &&
+               nearestHit.face == &faces[nearestHit.primitiveIndex],
+           "A BVH hit primitive index must identify the returned face.");
     expectNear(nearestHit.tMaximum, 1.0F, 1.0e-6F, "BVH traversal must return the nearest triangle.");
 
     HitRecord clippedHit{1.5F, 3.5F};
@@ -436,7 +495,8 @@ void testBvh() {
 
     HitRecord boundedMiss{kRayEpsilon, 0.5F};
     bvh.intersect(ray, boundedMiss);
-    expect(boundedMiss.face == nullptr && boundedMiss.tMaximum == 0.5F,
+    expect(boundedMiss.face == nullptr && boundedMiss.tMaximum == 0.5F &&
+               boundedMiss.primitiveIndex == std::numeric_limits<std::size_t>::max(),
            "BVH traversal must preserve a hit bound that ends before the root.");
 
     const Ray reverseRay{vec3{0.0F, 0.0F, 30.0F}, vec3{0.0F, 0.0F, -1.0F}};
@@ -463,6 +523,7 @@ int main() {
     testRandomGeneratorAndDistribution();
     testImageData();
     testMaterialConstants();
+    testPackedSceneValidation();
     testRenderSettingsValidation();
     testDielectricBsdf();
     testBvh();

@@ -26,10 +26,17 @@ The build creates these targets:
 - `raym0nade_tests`: the CTest regression executable when testing is enabled
 - `raym0nade_render_tests`: the tiny lit imported-scene render regression executable when testing
   is enabled
+- `raym0nade_primary_render_tests`: the deterministic, no-file CPU primary-AOV regression
+  executable when testing is enabled
 - `raym0nade_console_tests`: the command-loop regression executable when testing is enabled
+- `raym0nade_vulkan`: the optional experimental Vulkan backend library
+- `raym0nade_gpu_probe`: the optional AMD Ray Query capability and hardware self-test executable
+- `raym0nade_gpu_scene_tests`: the optional packed-scene CPU/GPU intersection comparison
+- `raym0nade_gpu_primary_render_tests`: the optional CPU/GPU primary-AOV comparison
 
 See `docs/architecture.md` for module boundaries, ownership rules, render data flow,
-determinism guarantees, current limitations, and the staged GPU roadmap.
+determinism guarantees, current limitations, and the staged GPU roadmap. The experimental AMD GPU
+work is specified in `docs/gpu-backend.md`.
 
 ## Requirements
 
@@ -102,6 +109,7 @@ build/release/bin/raym0nade
 build/release/bin/raym0nade_fxaa
 build/release/bin/raym0nade_tests
 build/release/bin/raym0nade_render_tests
+build/release/bin/raym0nade_primary_render_tests
 build/release/bin/raym0nade_console_tests
 ```
 
@@ -138,8 +146,8 @@ excluded from version control.
 
 ## Tests and continuous integration
 
-CTest runs the core regression suite, the tiny lit cross-thread imported-scene render smoke test,
-and the command-loop regression suite:
+CPU CTest presets run the core regression suite, the tiny lit cross-thread imported-scene render
+smoke test, the deterministic no-file primary-AOV oracle, and the command-loop regression suite:
 
 ```sh
 ctest --preset debug
@@ -174,7 +182,43 @@ artifacts. Miniforge and the platform compiler remain separately managed system 
 
 ## GPU roadmap
 
-The renderer currently uses `std::thread` for CPU parallelism. The library boundary introduced by
-this refactor is intended to let future CUDA, Metal, or Vulkan backends reuse scene and material
-data without coupling them to the interactive console application. Reproducible CPU reference
-images and benchmarks should remain the correctness baseline for any GPU backend.
+The renderer currently uses `std::thread` for CPU parallelism. Experimental AMD GPU work lives on
+the `dev-gpu` branch and targets a headless Vulkan compute backend with `VK_KHR_ray_query`. The
+backend is optional, so ordinary CPU builds do not require a Vulkan-capable device.
+
+The completed G3a vertical slice adds a shared backend-neutral render contract (`ImageExtent`,
+`PinholeCamera`, `PrimaryRenderRequest`, `PrimaryAov`, and `LinearImage`). The CPU implementation is
+a deterministic, no-file reference for `BaseColor` and `ShapeNormal`. The experimental
+`VulkanPrimaryRenderer` generates every primary ray on the device in one two-dimensional compute
+dispatch using 8 x 8 workgroups and returns a row-major linear image after one readback. GPU
+`BaseColor` currently accepts only referenced opaque materials without diffuse textures;
+`ShapeNormal` supports every scene accepted by the current Vulkan geometry boundary.
+
+G3a is a diagnostic primary-hit renderer, not a complete GPU path tracer: lighting, path
+continuation, texture sampling, accumulation, and post-processing have not moved to the GPU. Its
+validated 4 x 4 timings are bring-up diagnostics and do not establish a speedup.
+
+After activating the Conda environment, configure, build, and test the optional backend with:
+
+```sh
+cmake --preset gpu-release
+cmake --build --preset gpu-release
+ctest --preset gpu-release
+```
+
+Run `build/gpu-release/bin/raym0nade_gpu_probe` (`.exe` on Windows) to inspect the available device.
+Add `--self-test` to build a one-triangle BLAS/TLAS and execute deterministic hardware Ray Queries;
+add `--validation` during development to request the Khronos validation layer. The Conda environment
+contains the Vulkan headers, loader, shader compiler, tools, and validation layers, so the
+development dependencies are removed together with the environment. GPU architecture, feature
+gates, packed-scene design, migration order, and performance methodology are documented in
+`docs/gpu-backend.md`.
+
+The Windows Conda layout requires the layer manifest directory to be explicit when validation is
+requested. PowerShell development sessions can enable the layer and synchronization checks with:
+
+```powershell
+$env:VK_LAYER_PATH = "$env:CONDA_PREFIX\Library\bin"
+$env:VK_LAYER_VALIDATE_SYNC = "1"
+build\gpu-debug\bin\raym0nade_gpu_probe.exe --self-test --validation
+```

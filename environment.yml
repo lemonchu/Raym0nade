@@ -16,3 +16,11 @@ dependencies:
   - ninja>=1.11
   - assimp>=5.4,<6
   - libpng>=1.6,<2
+
+  # Headless Vulkan GPU development and validation tools; the backend remains a CMake option.
+  - libvulkan-headers>=1.4.357,<2
+  - libvulkan-loader>=1.4.357,<2
+  - shaderc>=2026.3,<2027
+  - spirv-tools>=2026.3,<2027
+  - vulkan-tools>=1.4.357,<2
+  - vulkan-validation-layers>=1.4.357,<2

@@ -1,14 +1,15 @@
 # Raym0nade Architecture
 
-This document describes the architecture implemented on the `dev` branch after the CPU
-renderer refactor. It is a contract for future changes, not a description of the legacy source
-layout. Read it together with `development-log.md` for chronological decisions and validation
-results.
+This document describes the architecture after the CPU renderer refactor merged to `main` and the
+experimental GPU work began on `dev-gpu`. It is a contract for future changes, not a description
+of the legacy source layout. Read it together with `development-log.md` for chronological
+decisions and validation results, and with `gpu-backend.md` for the detailed AMD GPU plan.
 
 ## Architectural goals
 
-The current design establishes a safe, portable CPU reference renderer before GPU work begins.
-Its most important properties are:
+The current design preserves a safe, portable CPU reference renderer while an optional Vulkan
+hardware-intersection path is developed behind explicit capability gates. Its most important
+properties are:
 
 - one reusable C++17 core target with platform dependencies hidden behind implementation files;
 - thin command-line applications instead of duplicate renderer builds;
@@ -17,9 +18,10 @@ Its most important properties are:
 - reproducible sampling when the CPU worker count changes; and
 - the same CMake presets and dependency manifest on Windows, Linux, and macOS.
 
-The architecture is intentionally transitional. It is substantially safer than the legacy
-layout, but the integrator, scene representation, and image pipeline are not yet suitable for
-direct upload to a GPU.
+The architecture is intentionally transitional. Indexed packed geometry and a deterministic
+primary-AOV request can now cross the experimental Vulkan path, but lighting, path integration,
+texture sampling, accumulation, and post-processing have not yet been ported to device-resident
+execution.
 
 ## System overview
 
@@ -48,6 +50,21 @@ ConsoleApplication ---- creates/owns ----> RenderSettings
                     `-- PNG outputs
 
 fxaa_cli ---- loads PNG directly into Film ---- FXAA ---- saves PNG
+
+Backend-neutral primary-AOV slice:
+
+Model -----------------> CPU primary-AOV oracle(PrimaryRenderRequest) -> LinearImage
+  |
+  `-- packScene() -> immutable PackedSceneData -> private VulkanRuntime
+                                                   |
+                                                   +-- persistent device-local scene buffers
+                                                   +-- persistent BLAS/TLAS
+                                                   +-- VulkanRayQueryIntersector
+                                                   |      `-- batched hit records
+                                                   `-- VulkanPrimaryRenderer(PrimaryRenderRequest)
+                                                          +-- device-generated primary rays
+                                                          +-- one 2D dispatch, 8 x 8 workgroups
+                                                          `-- one readback -> LinearImage
 ```
 
 Scene construction is single-threaded. Once its constructor finishes, a `Model` is treated as an
@@ -65,7 +82,13 @@ The top-level CMake project exposes these targets:
 | `raym0nade_fxaa` | Standalone PNG-to-PNG FXAA utility. |
 | `raym0nade_tests` | Numerical, geometry, texture, material, settings, BSDF, and BVH regression executable registered with CTest. |
 | `raym0nade_render_tests` | Tiny checked-in lit-scene import/render test that compares all output passes across worker counts. |
+| `raym0nade_primary_render_tests` | Deterministic no-file CPU `BaseColor` and `ShapeNormal` primary-AOV regression executable. |
 | `raym0nade_console_tests` | Stream-driven command-loop regression executable, built with the console implementation and linked to the core. |
+| `Raym0nade::vulkan` | Optional static library containing AMD capability discovery, a shared private Vulkan scene runtime, the Ray Query intersector, and the primary-AOV renderer. |
+| `raym0nade_gpu_shaders` | Optional build target that compiles the Ray Query and primary-AOV compute shaders and validates their generated SPIR-V. |
+| `raym0nade_gpu_probe` | Optional capability and deterministic one-triangle hardware-intersection executable. |
+| `raym0nade_gpu_scene_tests` | Optional imported packed-scene CPU/GPU primary-hit comparison registered with CTest. |
+| `raym0nade_gpu_primary_render_tests` | Optional deterministic CPU/GPU primary-AOV comparison registered with CTest. |
 
 `Raym0nade::core` exposes the C++17 headers under `include/raym0nade/` and GLM vector types through
 its build-tree interface; install/export packaging is not implemented yet.
@@ -81,8 +104,10 @@ core renderer dependency. A future non-interactive frontend should call the scen
 APIs directly and should not depend on `ConsoleApplication`.
 
 `CMakePresets.json` uses Ninja and creates isolated `build/debug` and `build/release` trees. The
-same presets apply on Windows, Linux, and macOS. Conda supplies native and Python dependencies;
-GLM is supplied by the pinned repository submodule. CMake does not download third-party packages.
+same CPU presets apply on Windows, Linux, and macOS. Separate `gpu-debug` and `gpu-release`
+presets enable Vulkan when its SDK components are present; they have been validated on Windows,
+not yet across all supported hosts. Conda supplies native and Python dependencies; GLM is supplied
+by the pinned repository submodule. CMake does not download third-party packages.
 
 ## Module responsibilities
 
@@ -181,6 +206,64 @@ CPU faces do not retain or evaluate the source node hierarchy.
 maximum of 32 transparent layers. Hit material evaluation interpolates UVs and normals, estimates a
 texture footprint from ray differentials, and applies a guarded tangent-space normal map.
 
+### Backend-neutral primary rendering (`render_contract.hpp`, `render.hpp`)
+
+`ImageExtent`, `PinholeCamera`, `PrimaryAov`, `PrimaryRenderRequest`, and `LinearImage` form the
+first renderer-facing contract shared by the CPU and Vulkan implementations. The request is
+independent of file naming, post-processing, threading, random sampling, and backend SDK types.
+`LinearImage` owns row-major linear RGB values indexed as `y * width + x`.
+
+The camera helper deliberately preserves the existing renderer's integer-pixel convention. For
+integer coordinates `(x, y)`, the normalized primary direction is derived from:
+
+```text
+direction + pixelScale * ((x - width * 0.5) * right + (y - height * 0.5) * up)
+```
+
+There is no half-pixel offset, and the supplied `right` and `up` vectors are not silently
+orthonormalized. The legacy CPU renderer and CPU primary-AOV oracle call this helper; the Vulkan
+shader implements the same contract and is checked against the oracle, so camera changes cannot
+drift between those paths unnoticed.
+
+`renderPrimaryAovCpu` is the deterministic, no-file correctness oracle. It traces exactly one
+primary ray per pixel and returns either evaluated `BaseColor` or the encoded geometric
+`ShapeNormal` value `(normal + 1) * 0.5`; misses are black. It performs no random sampling,
+post-processing, or image export, and repeated calls with the same model and request are
+pixel-identical.
+
+### Packed scene and Vulkan primary execution (`scene_data.hpp`, `gpu/`)
+
+`Model::packScene` derives a backend-neutral value representation without changing the immutable
+CPU model. `PackedSceneData` owns 32-byte aligned vertex records, tightly packed 32-bit triangle
+indices, one material ID per triangle, and fixed-size material records. Compile-time ABI checks and
+runtime finite-value, count, flag, reserved-field, and index validation protect the host/shader
+boundary. Packed format version 2 records explicit cutout, diffuse-texture, specular-texture,
+emissive-texture, and normal-texture presence bits. All four texture IDs remain invalid sentinels
+until device texture storage exists; the presence bits prevent a backend from silently treating a
+textured source material as an untextured constant.
+
+The private `VulkanRuntime` is shared implementation infrastructure for G2 and G3a. Each owning
+backend object selects a compatible AMD compute device, uploads immutable vertex, index,
+triangle-material, and material arrays to persistent device-local buffers, and builds a persistent
+BLAS plus identity TLAS. Acceleration-structure scratch and instance-input buffers are released once
+the build submission completes. Vulkan handles and SDK types remain below the public include tree.
+
+`VulkanRayQueryIntersector` reuses that runtime for complete ray batches and returns hit flag,
+primitive ID, parametric distance, and barycentrics through Vulkan-free public records.
+`VulkanPrimaryRenderer` instead generates every camera ray on the device, executes one
+two-dimensional compute dispatch using 8 x 8 workgroups, and returns one row-major `LinearImage`
+after one readback.
+Repeated renders reuse the packed scene buffers and acceleration structures. GPU timestamp queries
+measure the compute dispatch when supported, including correct wrap handling for the queue family's
+reported valid-bit count; host timing separately includes submission, waiting, and readback.
+
+The G3a shader supports `BaseColor` only when every referenced material is opaque and has no diffuse
+texture. `ShapeNormal` accepts every scene admitted by the current Vulkan geometry boundary.
+Packed scenes that reference alpha cutouts are rejected until candidate-intersection alpha testing
+is implemented. These primary AOVs are a renderer-boundary vertical slice, not a complete second
+renderer: lighting, path continuation, texture sampling, film accumulation, and post-processing
+remain unimplemented on the GPU.
+
 ### Sampling (`sampling.hpp`, `sampling.cpp`)
 
 `Bsdf` evaluates and samples the current diffuse, microfacet reflection, clearcoat, and rough
@@ -272,6 +355,11 @@ depends on the following invariants:
 | `HitRecord` | distance range | Pointer to a face in the model's reordered face array | Consume only while that model remains alive. |
 | `HitInfo` | A value snapshot of evaluated surface data | Nothing | Safe to store in the film independently of a face pointer. |
 | `Film` | Every image/G-buffer/radiance allocation | Public references obtained by callers | Do not resize buffers while rendering or filtering. |
+| `LinearImage` | Row-major linear RGB pixels and their extent | Nothing | Validate extent and pixel count before publication. |
+| `PackedSceneData` | Indexed vertices, triangles, material IDs, and material records | Nothing | Validate before publication; treat as immutable while any backend upload is derived from it. |
+| Private `VulkanRuntime` | Vulkan instance/device, queue synchronization, persistent device-local scene buffers, BLAS, and TLAS | Packed scene data only during synchronous construction | Serialize command-buffer use; submitted work must quiesce before owned resources are destroyed. |
+| `VulkanRayQueryIntersector` | One `VulkanRuntime`, batched-ray buffers, pipeline, and descriptor state | Nothing after construction | Do not call one intersector concurrently. |
+| `VulkanPrimaryRenderer` | One `VulkanRuntime`, reusable output/readback buffers, timestamp query pool, pipeline, and descriptor state | Nothing after construction | Do not call one renderer concurrently; the packed scene's supported-feature restrictions are checked per requested AOV. |
 
 Before mesh conversion, `Model` reserves the total Assimp-reported vertex and face counts. Material
 storage is sized once. These steps keep pointers embedded in `Face` stable. Both `Model` and `Bvh`
@@ -353,14 +441,18 @@ whose construction failed, and do not suppress render validation errors inside w
 These are known boundaries of the current implementation, not accidental omissions from this
 document:
 
-1. The only renderer backend is CPU. There is no backend interface, device memory representation,
-   shader/kernel source, or runtime GPU selection yet.
+1. The only complete renderer backend is CPU. The optional Vulkan module now provides AMD device
+   selection, packed scene upload, persistent BLAS/TLAS construction, batched primary-hit queries,
+   and a limited primary-AOV renderer that produces `LinearImage`. It still has no lighting, path
+   integration, texture sampling, accumulation, or post-processing kernel.
 2. `renderToFiles` combines integration, timing, progress output, post-processing policy, and file
-   naming. It cannot currently render into a caller-provided film without writing the fixed pass
-   set.
-3. Scene data is pointer-rich array-of-structures data. Faces duplicate positions, light objects
-   copy faces, and the BVH points into host memory. This representation is neither compact nor
-   directly serializable/uploadable.
+   naming. The new no-file primary-AOV function is deliberately narrow; the complete CPU path
+   tracer still cannot render into a caller-provided film without writing the fixed pass set.
+3. CPU traversal still consumes pointer-rich array-of-structures data: faces duplicate positions,
+   light objects copy faces, and the BVH points into host memory. `Model::packScene` now derives a
+   compact indexed upload representation, but the CPU renderer does not consume it directly and
+   textures, lights, and environments are not packed yet. Format version 2 records texture-presence
+   flags, but its texture IDs remain invalid because no device texture store exists.
 4. BVH construction uses a median split rather than SAH and has no instancing, refit, parallel
    build, wide-node layout, or stackless/device traversal form. Assimp pre-transforms vertices, so
    source hierarchy and instances are flattened during import. The Bistro FBX topology has also
@@ -414,10 +506,18 @@ document:
     small renders.
 14. Current tests cover numerical helpers, distributions, intersections, tangent bases, BVH
     behavior, texture and material invariants, selected dielectric behavior, render-setting
-    validation, and a tiny lit imported-scene direct-light render. The project still needs
-    deterministic sky, textured, transmission, and indirect-path fixtures, broader loader fixtures,
-    analytic BSDF/PDF and energy tests, stored golden images with tolerances, sanitizer runs, and
-    measured cross-platform performance gates.
+    validation, a tiny lit imported-scene direct-light render, and deterministic CPU/GPU primary
+    `BaseColor` and `ShapeNormal` AOVs. The project still needs deterministic sky, textured,
+    transmission, and indirect-path fixtures, broader loader fixtures, analytic BSDF/PDF and energy
+    tests, stored golden images with tolerances, sanitizer runs, and measured cross-platform
+    performance gates.
+15. Vulkan G2/G3a is validated only on the current Windows AMD integrated GPU. The imported fixture
+    has two faces and does not exercise the CPU BVH's greater-than-ten-face reorder path. Proactive
+    memory-budget enforcement, exact ray-interval endpoint tests, and teardown-time validation
+    capture remain open. Fence timeout recovery may wait indefinitely while quiescing the queue.
+    `BaseColor` rejects referenced non-opaque or diffuse-textured materials, alpha-cutout geometry is
+    unsupported, and the completed 4 x 4 primary-AOV diagnostic is not evidence of speedup on the
+    current two-compute-unit functionality device.
 
 ## GPU-backend roadmap
 
@@ -449,6 +549,10 @@ CPU thread counts; benchmark inputs and measurements are reproducible.
   data rather than console behavior.
 - Keep all file I/O and interactive parsing above the backend boundary.
 
+Status: partially implemented. The backend-neutral extent, pinhole-camera, primary-AOV request,
+and linear-image contracts now support deterministic no-file CPU and Vulkan primary rendering.
+The complete path-tracing request/backend interface and the separation of film export remain open.
+
 Gate: the existing CLI and golden CPU images use the new interface without visual changes.
 
 ### Stage 2: Build a device-ready scene representation
@@ -461,32 +565,42 @@ Gate: the existing CLI and golden CPU images use the new interface without visua
 - Replace Python DDS/HDR decoding with native asset decoding and define a consistent linear-color,
   alpha, mipmap, and environment convention.
 
+Status: partially implemented. Packed format version 2 supplies validated indexed geometry,
+triangle material IDs, fixed material records, and explicit texture-presence flags. Texture IDs,
+texture storage, lights, environments, and a packed-scene CPU shading path remain open.
+
 Gate: packed-scene CPU traversal and shading match the Stage 0 reference before any GPU kernels are
 accepted.
 
-### Stage 3: Convert the integrator to wavefront execution
+### Stage 3: Convert the integrator to device-ready iterative execution
 
-- Replace recursive `std::vector<LightSample>` returns with fixed records and queues for ray
-  generation, intersection, material evaluation, shadow rays, and path continuation.
+- Replace recursive `std::vector<LightSample>` returns with fixed records and an iterative path
+  state machine. Validate that transformation on the CPU before porting it.
 - Use a counter-based random sequence keyed by pixel, sample, bounce, and dimension. This removes
   dependence on queue compaction and GPU scheduling order.
-- Define queue capacities, overflow behavior, termination flags, and per-path medium state.
-- First run this wavefront design on the CPU to isolate algorithm changes from device-port bugs.
+- Define fixed capacities, overflow behavior, termination flags, and per-path medium state.
+- Start the GPU implementation with one invocation per pixel, small SPP dispatch batches, and an
+  iterative megakernel. Introduce compacted wavefront queues only if profiling demonstrates that
+  divergence or register pressure justifies their synchronization and storage cost.
 
-Gate: scalar CPU and wavefront CPU results agree statistically and remain deterministic under queue
-schedule changes.
+Gate: recursive-reference and iterative CPU results agree statistically, and random streams remain
+deterministic when execution order changes.
 
-### Stage 4: Add an optional first GPU backend
+### Stage 4: Add the optional Vulkan Ray Query backend
 
-- Select the API through a measured prototype rather than embedding vendor types in public scene
-  headers. CUDA is a useful NVIDIA-only performance spike; Vulkan compute covers Windows/Linux;
-  native Metal is the practical macOS path. Supporting all three host platforms may require Vulkan
-  plus Metal implementations sharing the same packed data and integrator specification.
+- Use headless Vulkan compute with `VK_KHR_ray_query`, initially gated to AMD devices. Keep Vulkan
+  types out of public scene and renderer headers. A full Ray Tracing Pipeline and HIPRT remain
+  measured alternatives after the first working vertical slice.
 - Keep GPU targets optional so the portable CPU build never requires a device SDK.
-- Upload immutable scene buffers once, keep wavefront queues and accumulation resident, and transfer
-  only control data and completed film layers during a render.
+- Upload immutable scene buffers once, keep path state, accumulation, and any later work queues
+  resident, and transfer only control data and completed film layers during a render.
 - Start with triangle traversal, a minimal opaque material, and environment lighting; add textures,
   emissive triangles, transmission, cutouts, and post-processing only after parity at each step.
+
+Status: G0, G1, the initial G2 imported-geometry slice, and G3a primary AOVs are complete on the
+current Windows AMD functionality device. G3a generates primary rays on the device and returns
+deterministic `BaseColor` or `ShapeNormal` pixels, but it does not yet implement the minimal lit
+render required to close this stage.
 
 Gate: every supported feature has a CPU/GPU comparison scene, and unsupported features fail through
 capability checks rather than silently changing appearance.

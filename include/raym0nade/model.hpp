@@ -7,6 +7,7 @@
 
 #include "raym0nade/bvh.hpp"
 #include "raym0nade/material.hpp"
+#include "raym0nade/scene_data.hpp"
 
 namespace raym0nade {
 
@@ -59,6 +60,7 @@ public:
     [[nodiscard]] const SkyBox& sky() const noexcept;
     [[nodiscard]] const std::filesystem::path& modelPath() const noexcept;
     [[nodiscard]] std::size_t faceCount() const noexcept;
+    [[nodiscard]] PackedSceneData packScene() const;
 
 private:
     friend class ModelBuilder;

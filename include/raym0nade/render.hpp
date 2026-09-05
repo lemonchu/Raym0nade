@@ -4,6 +4,7 @@
 #include <filesystem>
 
 #include "raym0nade/model.hpp"
+#include "raym0nade/render_contract.hpp"
 
 namespace raym0nade {
 
@@ -35,5 +36,7 @@ struct RenderStats {
 };
 
 [[nodiscard]] RenderStats renderToFiles(const Model& model, const RenderSettings& settings);
+[[nodiscard]] LinearImage renderPrimaryAovCpu(
+    const Model& model, const PrimaryRenderRequest& request);
 
 }  // namespace raym0nade

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -30,6 +31,8 @@ struct HitRecord {
     float tMinimum{kRayEpsilon};
     float tMaximum{std::numeric_limits<float>::infinity()};
     const Face* face{nullptr};
+    // Index in the face array borrowed by the BVH, or max() for a miss.
+    std::size_t primitiveIndex{std::numeric_limits<std::size_t>::max()};
 
     HitRecord() = default;
     HitRecord(float tMinimum, float tMaximum);

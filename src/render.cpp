@@ -479,10 +479,11 @@ void sampleDirectFromFirstHit(
     }
 }
 
-RayDifferential initialRayDifferential(const vec3& unnormalizedDirection, const RenderSettings& settings) noexcept {
+RayDifferential initialRayDifferential(
+    const vec3& unnormalizedDirection, const PinholeCamera& camera) noexcept {
     RayDifferential differential;
-    const vec3 directionDx = settings.pixelScale * settings.right;
-    const vec3 directionDy = settings.pixelScale * settings.up;
+    const vec3 directionDx = camera.pixelScale * camera.right;
+    const vec3 directionDy = camera.pixelScale * camera.up;
     const float squaredLength = glm::dot(unnormalizedDirection, unnormalizedDirection);
     if (squaredLength <= 1.0e-12F || !isFinite(squaredLength)) {
         return differential;
@@ -528,27 +529,27 @@ void finishVariance(RadianceData& radiance, float exposure) noexcept {
 void renderPixel(
     const Model& model,
     const RenderSettings& settings,
+    const PinholeCamera& camera,
+    const ImageExtent& extent,
     RenderContext& context,
     Film& film,
     int x,
     int y) {
     const std::size_t pixelIndex = static_cast<std::size_t>(y) * static_cast<std::size_t>(settings.width) +
                                    static_cast<std::size_t>(x);
-    const float imageX = static_cast<float>(x) - static_cast<float>(settings.width) * 0.5F;
-    const float imageY = static_cast<float>(y) - static_cast<float>(settings.height) * 0.5F;
-    const vec3 unnormalizedDirection = settings.direction +
-                                       settings.pixelScale *
-                                           (imageX * settings.right + imageY * settings.up);
-    const RayDifferential differential = initialRayDifferential(unnormalizedDirection, settings);
-    const vec3 direction = safeNormalize(unnormalizedDirection);
-    const Ray ray{settings.position, direction};
+    const auto pixelX = static_cast<std::uint32_t>(x);
+    const auto pixelY = static_cast<std::uint32_t>(y);
+    const vec3 unnormalizedDirection =
+        primaryRayDirectionUnnormalized(camera, extent, pixelX, pixelY);
+    const RayDifferential differential = initialRayDifferential(unnormalizedDirection, camera);
+    const Ray ray{camera.position, safeNormalize(unnormalizedDirection)};
     HitInfo& gBuffer = film.gBuffer[pixelIndex];
 
     const HitRecord hit = model.intersect(ray);
     if (hit.face == nullptr) {
         gBuffer.position = vec3{std::numeric_limits<float>::quiet_NaN()};
         if (!model.sky().empty()) {
-            gBuffer.emission = model.sky().radiance(direction);
+            gBuffer.emission = model.sky().radiance(ray.direction);
         }
         return;
     }
@@ -620,6 +621,17 @@ void renderRows(
     Film& film,
     std::atomic<int>& nextRow,
     std::atomic<std::uint64_t>& directLightSamples) {
+    const PinholeCamera camera{
+        settings.position,
+        settings.direction,
+        settings.up,
+        settings.right,
+        settings.pixelScale,
+    };
+    const ImageExtent extent{
+        static_cast<std::uint32_t>(settings.width),
+        static_cast<std::uint32_t>(settings.height),
+    };
     while (true) {
         const int row = nextRow.fetch_add(1, std::memory_order_relaxed);
         if (row >= settings.height) {
@@ -627,13 +639,54 @@ void renderRows(
         }
         RenderContext context{hashSeed(settings.seed, static_cast<std::uint32_t>(row))};
         for (int x = 0; x < settings.width; ++x) {
-            renderPixel(model, settings, context, film, x, row);
+            renderPixel(model, settings, camera, extent, context, film, x, row);
         }
         directLightSamples.fetch_add(context.directLightSamples, std::memory_order_relaxed);
     }
 }
 
 }  // namespace
+
+LinearImage renderPrimaryAovCpu(const Model& model, const PrimaryRenderRequest& request) {
+    request.validate();
+    LinearImage image{
+        request.extent,
+        std::vector<vec3>(request.extent.pixelCount(), vec3{0.0F}),
+    };
+
+    for (std::uint32_t y = 0U; y < request.extent.height; ++y) {
+        for (std::uint32_t x = 0U; x < request.extent.width; ++x) {
+            const std::size_t pixelIndex =
+                static_cast<std::size_t>(y) * static_cast<std::size_t>(request.extent.width) +
+                static_cast<std::size_t>(x);
+            const vec3 unnormalizedDirection =
+                primaryRayDirectionUnnormalized(request.camera, request.extent, x, y);
+            const Ray ray{request.camera.position, safeNormalize(unnormalizedDirection)};
+            const HitRecord hit = model.intersect(ray);
+            if (hit.face == nullptr) {
+                continue;
+            }
+
+            HitInfo hitInfo;
+            hitInfo.position = ray.origin + hit.tMaximum * ray.direction;
+            const RayDifferential differential =
+                initialRayDifferential(unnormalizedDirection, request.camera);
+            vec3 positionDx;
+            vec3 positionDy;
+            populateHitInfo(hit, ray, differential, positionDx, positionDy, hitInfo);
+
+            if (request.aov == PrimaryAov::BaseColor) {
+                image.pixels[pixelIndex] =
+                    isFinite(hitInfo.baseColor) ? hitInfo.baseColor : vec3{0.0F};
+            } else {
+                image.pixels[pixelIndex] = isFinite(hitInfo.shapeNormal)
+                                               ? (hitInfo.shapeNormal + vec3{1.0F}) * 0.5F
+                                               : vec3{0.0F};
+            }
+        }
+    }
+    return image;
+}
 
 void RenderSettings::validate() const {
     if (width <= 0 || height <= 0) {
