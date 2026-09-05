@@ -47,12 +47,26 @@ void PinholeCamera::validate() const {
     }
 }
 
+void DirectionalLight::validate() const {
+    const vec3 normalizedDirection = safeNormalize(directionToLight);
+    if (!isFinite(directionToLight) || glm::dot(normalizedDirection, normalizedDirection) == 0.0F) {
+        throw std::invalid_argument("Directional-light direction must be finite and non-zero.");
+    }
+    if (!isFinite(incidentRadiance) || incidentRadiance.x < 0.0F ||
+        incidentRadiance.y < 0.0F || incidentRadiance.z < 0.0F) {
+        throw std::invalid_argument(
+            "Directional-light incident radiance must be finite and non-negative.");
+    }
+}
+
 void PrimaryRenderRequest::validate() const {
     extent.validate();
     camera.validate();
+    directionalLight.validate();
     switch (aov) {
         case PrimaryAov::BaseColor:
         case PrimaryAov::ShapeNormal:
+        case PrimaryAov::DirectDiffuse:
             return;
     }
     throw std::invalid_argument("Primary AOV is not supported.");

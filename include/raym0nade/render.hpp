@@ -35,8 +35,20 @@ struct RenderStats {
     std::uint64_t directLightSamples{0};
 };
 
+struct CpuPrimaryRenderOptions {
+    // Zero selects hardware concurrency; positive values request an explicit worker count.
+    int threadCount{1};
+
+    void validate() const;
+    [[nodiscard]] std::uint32_t resolvedThreadCount(std::uint32_t imageHeight) const noexcept;
+};
+
 [[nodiscard]] RenderStats renderToFiles(const Model& model, const RenderSettings& settings);
 [[nodiscard]] LinearImage renderPrimaryAovCpu(
     const Model& model, const PrimaryRenderRequest& request);
+[[nodiscard]] LinearImage renderPrimaryAovCpu(
+    const Model& model,
+    const PrimaryRenderRequest& request,
+    const CpuPrimaryRenderOptions& options);
 
 }  // namespace raym0nade

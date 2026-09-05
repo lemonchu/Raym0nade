@@ -36,16 +36,20 @@ layout(set = 0, binding = 5, std430) writeonly buffer OutputBuffer {
 
 layout(push_constant, std430) uniform RenderParameters {
     vec4 cameraPositionAndPixelScale;
-    vec4 cameraDirectionAndUnused;
+    vec4 cameraDirectionAndRayMinimum;
     vec4 cameraUpAndUnused;
     vec4 cameraRightAndUnused;
     uvec4 extentAovAndReserved;
+    vec4 directionToLightAndUnused;
+    vec4 incidentRadianceAndUnused;
 } parameters;
 
 const uint primaryAovBaseColor = 0U;
-const float rayMinimum = 1.0e-4;
+const uint primaryAovShapeNormal = 1U;
+const uint primaryAovDirectDiffuse = 2U;
 const float rayMaximum = 3.402823466e+38;
 const float minimumNormalFloat = 1.175494351e-38;
+const float pi = 3.14159265358979323846;
 
 bool isFiniteVector(vec3 value) {
     return !any(isnan(value)) && !any(isinf(value));
@@ -87,7 +91,7 @@ void main() {
     const float imageX = float(pixel.x) - float(width) * 0.5;
     const float imageY = float(pixel.y) - float(height) * 0.5;
     const vec3 unnormalizedDirection =
-        parameters.cameraDirectionAndUnused.xyz +
+        parameters.cameraDirectionAndRayMinimum.xyz +
         parameters.cameraPositionAndPixelScale.w *
             (imageX * parameters.cameraRightAndUnused.xyz +
              imageY * parameters.cameraUpAndUnused.xyz);
@@ -104,7 +108,7 @@ void main() {
         gl_RayFlagsOpaqueEXT,
         0xff,
         parameters.cameraPositionAndPixelScale.xyz,
-        rayMinimum,
+        parameters.cameraDirectionAndRayMinimum.w,
         rayDirection,
         rayMaximum);
     while (rayQueryProceedEXT(query)) {
@@ -134,9 +138,41 @@ void main() {
         if (dot(shapeNormal, -rayDirection) < 0.0) {
             shapeNormal = -shapeNormal;
         }
-        color = isFiniteVector(shapeNormal)
-                    ? (shapeNormal + vec3(1.0)) * 0.5
-                    : vec3(0.0);
+        if (parameters.extentAovAndReserved.z == primaryAovShapeNormal) {
+            color = isFiniteVector(shapeNormal)
+                        ? (shapeNormal + vec3(1.0)) * 0.5
+                        : vec3(0.0);
+        } else if (parameters.extentAovAndReserved.z == primaryAovDirectDiffuse) {
+            const float normalDotLight =
+                max(dot(shapeNormal, parameters.directionToLightAndUnused.xyz), 0.0);
+            if (normalDotLight > 0.0) {
+                const vec3 hitPosition =
+                    parameters.cameraPositionAndPixelScale.xyz +
+                    rayQueryGetIntersectionTEXT(query, true) * rayDirection;
+                rayQueryInitializeEXT(
+                    query,
+                    topLevel,
+                    gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                    0xff,
+                    hitPosition,
+                    parameters.cameraDirectionAndRayMinimum.w,
+                    parameters.directionToLightAndUnused.xyz,
+                    rayMaximum);
+                while (rayQueryProceedEXT(query)) {
+                }
+                if (rayQueryGetIntersectionTypeEXT(query, true) ==
+                    gl_RayQueryCommittedIntersectionNoneEXT) {
+                    const uint materialId =
+                        triangleMaterialBuffer.materialIds[primitiveId];
+                    const vec3 diffuse = max(
+                        materialBuffer.materials[materialId].diffuseAndOpacity.xyz,
+                        vec3(0.0));
+                    color = diffuse * parameters.incidentRadianceAndUnused.xyz *
+                            (normalDotLight / pi);
+                }
+            }
+        }
     }
+    color = isFiniteVector(color) ? color : vec3(0.0);
     outputBuffer.pixels[outputIndex] = vec4(color, 1.0);
 }

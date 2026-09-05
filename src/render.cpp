@@ -645,44 +645,155 @@ void renderRows(
     }
 }
 
+void renderPrimaryAovRow(
+    const Model& model,
+    const PrimaryRenderRequest& request,
+    const vec3& directionToLight,
+    LinearImage& image,
+    std::uint32_t y) {
+    for (std::uint32_t x = 0U; x < request.extent.width; ++x) {
+        const std::size_t pixelIndex =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(request.extent.width) +
+            static_cast<std::size_t>(x);
+        const vec3 unnormalizedDirection =
+            primaryRayDirectionUnnormalized(request.camera, request.extent, x, y);
+        const Ray ray{request.camera.position, safeNormalize(unnormalizedDirection)};
+        const HitRecord hit = model.intersect(ray);
+        if (hit.face == nullptr) {
+            continue;
+        }
+
+        HitInfo hitInfo;
+        hitInfo.position = ray.origin + hit.tMaximum * ray.direction;
+        if (request.aov == PrimaryAov::ShapeNormal) {
+            const Face& face = *hit.face;
+            const vec3 coordinates = barycentric(
+                face.vertices[0], face.vertices[1], face.vertices[2], hitInfo.position);
+            getHitNormals(
+                face,
+                ray.direction,
+                coordinates,
+                hitInfo.shapeNormal,
+                hitInfo.surfaceNormal,
+                hitInfo.entering);
+            image.pixels[pixelIndex] = isFinite(hitInfo.shapeNormal)
+                                           ? (hitInfo.shapeNormal + vec3{1.0F}) * 0.5F
+                                           : vec3{0.0F};
+            continue;
+        }
+
+        const RayDifferential differential =
+            initialRayDifferential(unnormalizedDirection, request.camera);
+        vec3 positionDx;
+        vec3 positionDy;
+        populateHitInfo(hit, ray, differential, positionDx, positionDy, hitInfo);
+
+        if (request.aov == PrimaryAov::BaseColor) {
+            image.pixels[pixelIndex] =
+                isFinite(hitInfo.baseColor) ? hitInfo.baseColor : vec3{0.0F};
+        } else {
+            if (!isFinite(hitInfo.shapeNormal) || !isFinite(hitInfo.baseColor)) {
+                continue;
+            }
+            const float normalDotLight = glm::dot(hitInfo.shapeNormal, directionToLight);
+            if (!(normalDotLight > 0.0F)) {
+                continue;
+            }
+            if (model.occluded(
+                    Ray{hitInfo.position, directionToLight},
+                    std::numeric_limits<float>::infinity())) {
+                continue;
+            }
+            const vec3 radiance =
+                glm::max(hitInfo.baseColor, vec3{0.0F}) *
+                request.directionalLight.incidentRadiance * (normalDotLight / kPi);
+            image.pixels[pixelIndex] = isFinite(radiance) ? radiance : vec3{0.0F};
+        }
+    }
+}
+
+void renderPrimaryAovRows(
+    const Model& model,
+    const PrimaryRenderRequest& request,
+    const vec3& directionToLight,
+    LinearImage& image,
+    std::atomic<std::uint32_t>& nextRow) {
+    while (true) {
+        const std::uint32_t row = nextRow.fetch_add(1U, std::memory_order_relaxed);
+        if (row >= request.extent.height) {
+            return;
+        }
+        renderPrimaryAovRow(model, request, directionToLight, image, row);
+    }
+}
+
 }  // namespace
 
 LinearImage renderPrimaryAovCpu(const Model& model, const PrimaryRenderRequest& request) {
+    return renderPrimaryAovCpu(model, request, CpuPrimaryRenderOptions{});
+}
+
+void CpuPrimaryRenderOptions::validate() const {
+    if (threadCount < 0) {
+        throw std::invalid_argument(
+            "CPU primary-render thread count must be zero (automatic) or positive.");
+    }
+}
+
+std::uint32_t CpuPrimaryRenderOptions::resolvedThreadCount(
+    std::uint32_t imageHeight) const noexcept {
+    const unsigned int hardwareThreads =
+        std::max(1U, std::thread::hardware_concurrency());
+    const std::uint32_t available = static_cast<std::uint32_t>(hardwareThreads);
+    const std::uint32_t requested =
+        threadCount > 0 ? static_cast<std::uint32_t>(threadCount) : available;
+    const std::uint32_t boundedHeight = imageHeight == 0U ? 1U : imageHeight;
+    return std::min(requested, boundedHeight);
+}
+
+LinearImage renderPrimaryAovCpu(
+    const Model& model,
+    const PrimaryRenderRequest& request,
+    const CpuPrimaryRenderOptions& options) {
     request.validate();
+    options.validate();
+    const vec3 directionToLight = safeNormalize(request.directionalLight.directionToLight);
     LinearImage image{
         request.extent,
         std::vector<vec3>(request.extent.pixelCount(), vec3{0.0F}),
     };
 
-    for (std::uint32_t y = 0U; y < request.extent.height; ++y) {
-        for (std::uint32_t x = 0U; x < request.extent.width; ++x) {
-            const std::size_t pixelIndex =
-                static_cast<std::size_t>(y) * static_cast<std::size_t>(request.extent.width) +
-                static_cast<std::size_t>(x);
-            const vec3 unnormalizedDirection =
-                primaryRayDirectionUnnormalized(request.camera, request.extent, x, y);
-            const Ray ray{request.camera.position, safeNormalize(unnormalizedDirection)};
-            const HitRecord hit = model.intersect(ray);
-            if (hit.face == nullptr) {
-                continue;
-            }
-
-            HitInfo hitInfo;
-            hitInfo.position = ray.origin + hit.tMaximum * ray.direction;
-            const RayDifferential differential =
-                initialRayDifferential(unnormalizedDirection, request.camera);
-            vec3 positionDx;
-            vec3 positionDy;
-            populateHitInfo(hit, ray, differential, positionDx, positionDy, hitInfo);
-
-            if (request.aov == PrimaryAov::BaseColor) {
-                image.pixels[pixelIndex] =
-                    isFinite(hitInfo.baseColor) ? hitInfo.baseColor : vec3{0.0F};
-            } else {
-                image.pixels[pixelIndex] = isFinite(hitInfo.shapeNormal)
-                                               ? (hitInfo.shapeNormal + vec3{1.0F}) * 0.5F
-                                               : vec3{0.0F};
-            }
+    const std::uint32_t workerCount =
+        options.resolvedThreadCount(request.extent.height);
+    std::atomic<std::uint32_t> nextRow{0U};
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+    std::vector<std::exception_ptr> workerErrors(workerCount);
+    try {
+        for (std::uint32_t index = 0U; index < workerCount; ++index) {
+            workers.emplace_back([&, index] {
+                try {
+                    renderPrimaryAovRows(
+                        model, request, directionToLight, image, nextRow);
+                } catch (...) {
+                    nextRow.store(request.extent.height, std::memory_order_relaxed);
+                    workerErrors[index] = std::current_exception();
+                }
+            });
+        }
+    } catch (...) {
+        nextRow.store(request.extent.height, std::memory_order_relaxed);
+        for (std::thread& worker : workers) {
+            worker.join();
+        }
+        throw;
+    }
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+    for (const std::exception_ptr& error : workerErrors) {
+        if (error != nullptr) {
+            std::rethrow_exception(error);
         }
     }
     return image;

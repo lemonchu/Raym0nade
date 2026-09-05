@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -162,6 +163,34 @@ int main() {
         if (!foundDirectLighting) {
             throw std::runtime_error(
                 "The area light did not produce a visible direct-light sample.");
+        }
+
+        const std::filesystem::path linearImagePath =
+            outputDirectory / "linear-image-display-scale.png";
+        LinearImage linearImage{
+            ImageExtent{2U, 1U},
+            {
+                vec3{std::numeric_limits<float>::max()},
+                vec3{0.25F, 0.125F, 0.0625F},
+            },
+        };
+        saveLinearImagePng(linearImage, linearImagePath, 2.0F);
+        const Film scaledImage{linearImagePath};
+        if (scaledImage.width() != 2 || scaledImage.height() != 1 ||
+            scaledImage.pixels[0].x < 0.9F || scaledImage.pixels[0].y < 0.9F ||
+            scaledImage.pixels[0].z < 0.9F || scaledImage.pixels[1].x <= 0.0F) {
+            throw std::runtime_error(
+                "Linear-image display scaling must keep overflowing highlights bright.");
+        }
+        bool rejectedInvalidScale = false;
+        try {
+            saveLinearImagePng(linearImage, linearImagePath, -1.0F);
+        } catch (const std::invalid_argument&) {
+            rejectedInvalidScale = true;
+        }
+        if (!rejectedInvalidScale) {
+            throw std::runtime_error(
+                "Linear-image PNG export must reject a negative display scale.");
         }
 
         std::cout << "Render smoke test passed.\n";

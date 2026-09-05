@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "raym0nade/model.hpp"
+#include "raym0nade/render_contract.hpp"
 #include "raym0nade/sampling.hpp"
 
 namespace raym0nade {
@@ -74,6 +75,13 @@ private:
     int width_{0};
     int height_{0};
 };
+
+// Encodes a linear image with the same highlight compression and gamma transform as Film.
+// displayScale is applied in linear space before the display transform.
+void saveLinearImagePng(
+    const LinearImage& image,
+    const std::filesystem::path& filename,
+    float displayScale = 1.0F);
 
 void accumulateInwardRadiance(
     const vec3& baseColor,

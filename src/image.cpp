@@ -60,6 +60,33 @@ void requireSize(const std::vector<T>& values, const std::size_t expected, const
     return glm::dot(color, kLuminanceWeights);
 }
 
+[[nodiscard]] vec3 scaledForDisplay(vec3 pixel, const float scale) noexcept {
+    constexpr double floatLimit =
+        static_cast<double>(std::numeric_limits<float>::max());
+    for (int channel = 0; channel < 3; ++channel) {
+        const double scaled =
+            static_cast<double>(pixel[channel]) * static_cast<double>(scale);
+        pixel[channel] = static_cast<float>(
+            std::clamp(scaled, -floatLimit, floatLimit));
+    }
+    return pixel;
+}
+
+[[nodiscard]] vec3 displayTransform(vec3 pixel) noexcept {
+    pixel = glm::max(finiteOrBlack(pixel), vec3{0.0F});
+    const double value = 0.3 * static_cast<double>(pixel.x) +
+                         0.6 * static_cast<double>(pixel.y) +
+                         0.1 * static_cast<double>(pixel.z);
+    if (std::isfinite(value) && value > 0.75) {
+        const double boundedValue = std::tanh(3.0 * (value - 0.75)) / 3.0 + 0.75;
+        pixel *= static_cast<float>(boundedValue / value);
+    } else if (!std::isfinite(value)) {
+        pixel = vec3{1.0F};
+    }
+    pixel = glm::clamp(pixel, vec3{0.0F}, vec3{1.0F});
+    return glm::pow(pixel, vec3{1.0F / kGamma});
+}
+
 void spatialClampRadiance(std::vector<RadianceData>& radiance, const int width, const int height) {
     const std::size_t count = checkedPixelCount(width, height);
     requireSize(radiance, count, "Radiance buffer");
@@ -386,6 +413,40 @@ public:
 [[nodiscard]] std::string pngError(const char* operation, const png_image& image) {
     const char* message = image.message[0] == '\0' ? "unknown libpng error" : image.message;
     return std::string{operation} + ": " + message;
+}
+
+template <typename PixelTransform>
+void writeRgbPng(
+    const std::filesystem::path& filename,
+    png_uint_32 width,
+    png_uint_32 height,
+    const std::vector<vec3>& pixels,
+    const PixelTransform& transform) {
+    if (pixels.size() > std::numeric_limits<std::size_t>::max() / 3U) {
+        throw std::length_error("PNG output buffer is too large");
+    }
+    std::vector<png_byte> imageData(pixels.size() * 3U, 0);
+    for (std::size_t index = 0; index < pixels.size(); ++index) {
+        const vec3 color = glm::clamp(
+            finiteOrBlack(transform(pixels[index])), vec3{0.0F}, vec3{1.0F});
+        for (int channel = 0; channel < 3; ++channel) {
+            imageData[index * 3U + static_cast<std::size_t>(channel)] =
+                static_cast<png_byte>(color[channel] * 255.0F);
+        }
+    }
+
+    FileHandle file = openImageFile(filename, true);
+    if (file == nullptr) {
+        throw std::runtime_error("Could not open PNG file for writing: " + filename.string());
+    }
+
+    PngImageHandle png;
+    png.image.width = width;
+    png.image.height = height;
+    png.image.format = PNG_FORMAT_RGB;
+    if (png_image_write_to_stdio(&png.image, file.get(), 0, imageData.data(), 0, nullptr) == 0) {
+        throw std::runtime_error(pngError("Could not write PNG image", png.image));
+    }
 }
 
 void accumulateRadiance(RadianceData& destination, const vec3& incomingRadiance, const float weight) noexcept {
@@ -821,18 +882,7 @@ void Film::gammaCorrect() {
     requireSize(pixels, count, "Pixel buffer");
 
     for (vec3& pixel : pixels) {
-        pixel = glm::max(finiteOrBlack(pixel), vec3{0.0F});
-        const double value = 0.3 * static_cast<double>(pixel.x) +
-                             0.6 * static_cast<double>(pixel.y) +
-                             0.1 * static_cast<double>(pixel.z);
-        if (std::isfinite(value) && value > 0.75) {
-            const double boundedValue = std::tanh(3.0 * (value - 0.75)) / 3.0 + 0.75;
-            pixel *= static_cast<float>(boundedValue / value);
-        } else if (!std::isfinite(value)) {
-            pixel = vec3{1.0F};
-        }
-        pixel = glm::clamp(pixel, vec3{0.0F}, vec3{1.0F});
-        pixel = glm::pow(pixel, vec3{1.0F / kGamma});
+        pixel = displayTransform(pixel);
     }
 }
 
@@ -861,31 +911,30 @@ void Film::postProcess(const int shadeOptions) {
 void Film::save(const std::filesystem::path& filename) const {
     const std::size_t count = checkedPixelCount(width_, height_);
     requireSize(pixels, count, "Pixel buffer");
+    writeRgbPng(
+        filename,
+        static_cast<png_uint_32>(width_),
+        static_cast<png_uint_32>(height_),
+        pixels,
+        [](const vec3& pixel) noexcept { return pixel; });
+}
 
-    if (count > std::numeric_limits<std::size_t>::max() / 3U) {
-        throw std::length_error("PNG output buffer is too large");
+void saveLinearImagePng(
+    const LinearImage& image,
+    const std::filesystem::path& filename,
+    const float displayScale) {
+    image.validate();
+    if (!isFinite(displayScale) || displayScale < 0.0F) {
+        throw std::invalid_argument("PNG display scale must be finite and non-negative.");
     }
-    std::vector<png_byte> imageData(count * 3U, 0);
-    for (std::size_t index = 0; index < count; ++index) {
-        const vec3 color = glm::clamp(finiteOrBlack(pixels[index]), vec3{0.0F}, vec3{1.0F});
-        for (int channel = 0; channel < 3; ++channel) {
-            imageData[index * 3U + static_cast<std::size_t>(channel)] =
-                static_cast<png_byte>(color[channel] * 255.0F);
-        }
-    }
-
-    FileHandle file = openImageFile(filename, true);
-    if (file == nullptr) {
-        throw std::runtime_error("Could not open PNG file for writing: " + filename.string());
-    }
-
-    PngImageHandle png;
-    png.image.width = static_cast<png_uint_32>(width_);
-    png.image.height = static_cast<png_uint_32>(height_);
-    png.image.format = PNG_FORMAT_RGB;
-    if (png_image_write_to_stdio(&png.image, file.get(), 0, imageData.data(), 0, nullptr) == 0) {
-        throw std::runtime_error(pngError("Could not write PNG image", png.image));
-    }
+    writeRgbPng(
+        filename,
+        static_cast<png_uint_32>(image.extent.width),
+        static_cast<png_uint_32>(image.extent.height),
+        image.pixels,
+        [displayScale](const vec3& pixel) noexcept {
+            return displayTransform(scaledForDisplay(pixel, displayScale));
+        });
 }
 
 void Film::load(const std::filesystem::path& filename) {

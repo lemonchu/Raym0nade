@@ -19,9 +19,9 @@ properties are:
 - the same CMake presets and dependency manifest on Windows, Linux, and macOS.
 
 The architecture is intentionally transitional. Indexed packed geometry and a deterministic
-primary-AOV request can now cross the experimental Vulkan path, but lighting, path integration,
-texture sampling, accumulation, and post-processing have not yet been ported to device-resident
-execution.
+primary-AOV request now cross the experimental Vulkan path, including one request-local directional
+light and hard opaque shadows. General lighting, path integration, texture sampling, accumulation,
+and post-processing have not yet been ported to device-resident execution.
 
 ## System overview
 
@@ -63,6 +63,7 @@ Model -----------------> CPU primary-AOV oracle(PrimaryRenderRequest) -> LinearI
                                                    |      `-- batched hit records
                                                    `-- VulkanPrimaryRenderer(PrimaryRenderRequest)
                                                           +-- device-generated primary rays
+                                                          +-- optional same-invocation shadow query
                                                           +-- one 2D dispatch, 8 x 8 workgroups
                                                           `-- one readback -> LinearImage
 ```
@@ -82,13 +83,14 @@ The top-level CMake project exposes these targets:
 | `raym0nade_fxaa` | Standalone PNG-to-PNG FXAA utility. |
 | `raym0nade_tests` | Numerical, geometry, texture, material, settings, BSDF, and BVH regression executable registered with CTest. |
 | `raym0nade_render_tests` | Tiny checked-in lit-scene import/render test that compares all output passes across worker counts. |
-| `raym0nade_primary_render_tests` | Deterministic no-file CPU `BaseColor` and `ShapeNormal` primary-AOV regression executable. |
+| `raym0nade_primary_render_tests` | Deterministic no-file CPU `BaseColor`, `ShapeNormal`, and `DirectDiffuse` primary-AOV regression executable. |
 | `raym0nade_console_tests` | Stream-driven command-loop regression executable, built with the console implementation and linked to the core. |
 | `Raym0nade::vulkan` | Optional static library containing AMD capability discovery, a shared private Vulkan scene runtime, the Ray Query intersector, and the primary-AOV renderer. |
 | `raym0nade_gpu_shaders` | Optional build target that compiles the Ray Query and primary-AOV compute shaders and validates their generated SPIR-V. |
 | `raym0nade_gpu_probe` | Optional capability and deterministic one-triangle hardware-intersection executable. |
 | `raym0nade_gpu_scene_tests` | Optional imported packed-scene CPU/GPU primary-hit comparison registered with CTest. |
-| `raym0nade_gpu_primary_render_tests` | Optional deterministic CPU/GPU primary-AOV comparison registered with CTest. |
+| `raym0nade_gpu_primary_render_tests` | Optional deterministic CPU/GPU primary-AOV and directional-light comparison registered with CTest. |
+| `raym0nade_gpu_primary_benchmark` | Optional Bistro ShapeNormal CPU/GPU wall-clock and GPU-only diagnostic utility; generated images and reports remain under ignored `output/`. |
 
 `Raym0nade::core` exposes the C++17 headers under `include/raym0nade/` and GLM vector types through
 its build-tree interface; install/export packaging is not implemented yet.
@@ -208,10 +210,13 @@ texture footprint from ray differentials, and applies a guarded tangent-space no
 
 ### Backend-neutral primary rendering (`render_contract.hpp`, `render.hpp`)
 
-`ImageExtent`, `PinholeCamera`, `PrimaryAov`, `PrimaryRenderRequest`, and `LinearImage` form the
-first renderer-facing contract shared by the CPU and Vulkan implementations. The request is
-independent of file naming, post-processing, threading, random sampling, and backend SDK types.
-`LinearImage` owns row-major linear RGB values indexed as `y * width + x`.
+`ImageExtent`, `PinholeCamera`, `DirectionalLight`, `PrimaryAov`, `PrimaryRenderRequest`, and
+`LinearImage` form the first renderer-facing contract shared by the CPU and Vulkan implementations.
+The request is independent of file naming, post-processing, threading, random sampling, and
+backend SDK types. `DirectionalLight` stores a direction from the shaded point toward an infinitely
+distant light plus its linear incident radiance; validation requires a finite nonzero direction and
+finite nonnegative radiance. `LinearImage` owns row-major linear RGB values indexed as
+`y * width + x`.
 
 The camera helper deliberately preserves the existing renderer's integer-pixel convention. For
 integer coordinates `(x, y)`, the normalized primary direction is derived from:
@@ -226,10 +231,21 @@ shader implements the same contract and is checked against the oracle, so camera
 drift between those paths unnoticed.
 
 `renderPrimaryAovCpu` is the deterministic, no-file correctness oracle. It traces exactly one
-primary ray per pixel and returns either evaluated `BaseColor` or the encoded geometric
-`ShapeNormal` value `(normal + 1) * 0.5`; misses are black. It performs no random sampling,
-post-processing, or image export, and repeated calls with the same model and request are
-pixel-identical.
+primary ray per pixel and returns evaluated `BaseColor`, encoded geometric `ShapeNormal` value
+`(normal + 1) * 0.5`, or G3b `DirectDiffuse`; misses are black. `DirectDiffuse` orients the shape
+normal toward the camera, normalizes the request direction, traces a conditional hard-shadow ray,
+and evaluates:
+
+```text
+max(baseColor, 0) * incidentRadiance * max(dot(N, L), 0) / pi
+```
+
+It performs no random sampling, post-processing, or image export, and repeated calls with the same
+model and request are pixel-identical. The two-argument overload remains a single-thread oracle.
+`CpuPrimaryRenderOptions` is a CPU-only scheduling argument for the three-argument overload: a
+positive count selects that many workers, zero selects hardware concurrency, and the resolved count
+is clamped to the image height. Every worker claims complete rows from a relaxed atomic counter, so
+one-worker and multi-worker images are component-exact for the current primary AOVs.
 
 ### Packed scene and Vulkan primary execution (`scene_data.hpp`, `gpu/`)
 
@@ -242,27 +258,36 @@ emissive-texture, and normal-texture presence bits. All four texture IDs remain 
 until device texture storage exists; the presence bits prevent a backend from silently treating a
 textured source material as an untextured constant.
 
-The private `VulkanRuntime` is shared implementation infrastructure for G2 and G3a. Each owning
-backend object selects a compatible AMD compute device, uploads immutable vertex, index,
+The private `VulkanRuntime` is shared implementation infrastructure for G2, G3a, and G3b. Each
+owning backend object selects a compatible AMD compute device, uploads immutable vertex, index,
 triangle-material, and material arrays to persistent device-local buffers, and builds a persistent
 BLAS plus identity TLAS. Acceleration-structure scratch and instance-input buffers are released once
 the build submission completes. Vulkan handles and SDK types remain below the public include tree.
 
 `VulkanRayQueryIntersector` reuses that runtime for complete ray batches and returns hit flag,
 primitive ID, parametric distance, and barycentrics through Vulkan-free public records.
-`VulkanPrimaryRenderer` instead generates every camera ray on the device, executes one
-two-dimensional compute dispatch using 8 x 8 workgroups, and returns one row-major `LinearImage`
-after one readback.
+`VulkanPrimaryRenderer` instead generates every camera ray on the device and executes one
+two-dimensional compute dispatch using 8 x 8 workgroups. For `DirectDiffuse`, the same shader
+invocation reuses one `rayQueryEXT` variable for the primary query and then, only for a front-lit
+hit, for an opaque terminate-on-first-hit shadow query. The host normalizes the light direction and
+supplies it with the incident radiance through a 112-byte push-constant block. The host also stores
+`std::nextafter(kRayEpsilon, +infinity)` in the otherwise padded `cameraDirection.w`; both primary
+and shadow queries use that value as `tMin`. This maps Vulkan's closed lower bound to the CPU
+intersector's strict `t > kRayEpsilon` rule without changing the push-constant size. G3b did not
+change the packed-scene ABI or descriptor bindings. Each render still uses one dispatch, one
+submission, and one completed row-major `LinearImage` readback.
+
 Repeated renders reuse the packed scene buffers and acceleration structures. GPU timestamp queries
 measure the compute dispatch when supported, including correct wrap handling for the queue family's
 reported valid-bit count; host timing separately includes submission, waiting, and readback.
 
-The G3a shader supports `BaseColor` only when every referenced material is opaque and has no diffuse
-texture. `ShapeNormal` accepts every scene admitted by the current Vulkan geometry boundary.
-Packed scenes that reference alpha cutouts are rejected until candidate-intersection alpha testing
-is implemented. These primary AOVs are a renderer-boundary vertical slice, not a complete second
-renderer: lighting, path continuation, texture sampling, film accumulation, and post-processing
-remain unimplemented on the GPU.
+The shader supports `BaseColor` and `DirectDiffuse` only when every referenced material is opaque
+and has no diffuse texture. `ShapeNormal` accepts every scene admitted by the current Vulkan
+geometry boundary. Packed scenes that reference alpha cutouts are rejected at runtime until
+candidate-intersection alpha testing is implemented. G3b is a deterministic diagnostic rather than
+a complete second renderer: it has no environment or area lighting, emission, specular response,
+metallic or roughness response, smooth normals, normal maps, distance attenuation, random sampling,
+path continuation, texture sampling, film accumulation, or post-processing.
 
 ### Sampling (`sampling.hpp`, `sampling.cpp`)
 
@@ -329,6 +354,11 @@ outlier clamping, geometry-aware radiance filtering, composition of diagnostic o
 bloom, depth-of-field blur, gamma/tone mapping, FXAA, and native PNG load/save. Filtering the four
 radiance buffers uses four independent threads; each thread mutates a different buffer and reads
 the shared G-buffer.
+
+`saveLinearImagePng` is the narrow display/export path for a validated `LinearImage`. It applies an
+optional nonnegative linear scale, then the same highlight shoulder and gamma transform as `Film`,
+and allocates only the final three-byte-per-pixel RGB buffer. This avoids constructing the full
+G-buffer and radiance-buffer set merely to inspect a CPU/GPU diagnostic image.
 
 ### Console and applications (`console.hpp`, `console.cpp`, `apps/`)
 
@@ -422,6 +452,11 @@ The four-thread film filter is deterministic because each worker owns one comple
 Other post-processing stages currently run after render workers have joined and are mostly
 single-threaded.
 
+The CPU primary-AOV overload uses the same disjoint-row scheduling rule but has no random state.
+Its `ShapeNormal` branch evaluates geometric and interpolated normals directly after the hit and
+does not calculate ray differentials or sample unrelated material channels. Alpha-cutout handling
+still occurs inside `Model::intersect` before the AOV-specific hit evaluation.
+
 ## Failure and validation boundaries
 
 - Invalid render dimensions, sample counts, camera data, probabilities, or output paths throw
@@ -443,8 +478,9 @@ document:
 
 1. The only complete renderer backend is CPU. The optional Vulkan module now provides AMD device
    selection, packed scene upload, persistent BLAS/TLAS construction, batched primary-hit queries,
-   and a limited primary-AOV renderer that produces `LinearImage`. It still has no lighting, path
-   integration, texture sampling, accumulation, or post-processing kernel.
+   and a limited primary-AOV renderer that produces `LinearImage`, including deterministic
+   request-local directional Lambert lighting and hard opaque shadows. It still has no general
+   lighting or path integration, texture sampling, accumulation, or post-processing kernel.
 2. `renderToFiles` combines integration, timing, progress output, post-processing policy, and file
    naming. The new no-file primary-AOV function is deliberately narrow; the complete CPU path
    tracer still cannot render into a caller-provided film without writing the fixed pass set.
@@ -507,17 +543,21 @@ document:
 14. Current tests cover numerical helpers, distributions, intersections, tangent bases, BVH
     behavior, texture and material invariants, selected dielectric behavior, render-setting
     validation, a tiny lit imported-scene direct-light render, and deterministic CPU/GPU primary
-    `BaseColor` and `ShapeNormal` AOVs. The project still needs deterministic sky, textured,
-    transmission, and indirect-path fixtures, broader loader fixtures, analytic BSDF/PDF and energy
-    tests, stored golden images with tolerances, sanitizer runs, and measured cross-platform
-    performance gates.
-15. Vulkan G2/G3a is validated only on the current Windows AMD integrated GPU. The imported fixture
-    has two faces and does not exercise the CPU BVH's greater-than-ten-face reorder path. Proactive
-    memory-budget enforcement, exact ray-interval endpoint tests, and teardown-time validation
-    capture remain open. Fence timeout recovery may wait indefinitely while quiescing the queue.
-    `BaseColor` rejects referenced non-opaque or diffuse-textured materials, alpha-cutout geometry is
-    unsupported, and the completed 4 x 4 primary-AOV diagnostic is not evidence of speedup on the
-    current two-compute-unit functionality device.
+    `BaseColor`, `ShapeNormal`, and directional `DirectDiffuse` AOVs. The G3b fixture covers
+    analytic values, hard shadow, backlighting, two-sided viewing, direction scaling, non-multiple-
+    of-eight extents, render-target growth and shrinkage, repeatability, and unsupported materials.
+    The project still needs deterministic sky, textured, transmission, and indirect-path fixtures,
+    broader loader fixtures, analytic BSDF/PDF and energy tests, stored golden images with
+    tolerances, sanitizer runs, and measured cross-platform performance gates.
+15. Vulkan G2/G3a/G3b is validated only on the current Windows AMD integrated GPU. The imported
+    fixture has two faces and does not exercise the CPU BVH's greater-than-ten-face reorder path.
+    Proactive memory-budget enforcement and teardown-time validation capture remain open. G3b now
+    matches the CPU strict fixed lower bound, but G2 arbitrary `tMax` and general ray-interval
+    endpoint tests remain open. Fence timeout recovery may wait indefinitely while quiescing the
+    queue.
+    `BaseColor` and `DirectDiffuse` reject referenced non-opaque or diffuse-textured materials,
+    alpha-cutout geometry is unsupported, and the completed 4 x 4 and 13 x 9 diagnostics are not
+    evidence of speedup on the current two-compute-unit functionality device.
 
 ## GPU-backend roadmap
 
@@ -549,9 +589,10 @@ CPU thread counts; benchmark inputs and measurements are reproducible.
   data rather than console behavior.
 - Keep all file I/O and interactive parsing above the backend boundary.
 
-Status: partially implemented. The backend-neutral extent, pinhole-camera, primary-AOV request,
-and linear-image contracts now support deterministic no-file CPU and Vulkan primary rendering.
-The complete path-tracing request/backend interface and the separation of film export remain open.
+Status: partially implemented. The backend-neutral extent, pinhole-camera, directional-light,
+primary-AOV request, and linear-image contracts now support deterministic no-file CPU and Vulkan
+primary rendering. The complete path-tracing request/backend interface and the separation of film
+export remain open.
 
 Gate: the existing CLI and golden CPU images use the new interface without visual changes.
 
@@ -597,10 +638,12 @@ deterministic when execution order changes.
 - Start with triangle traversal, a minimal opaque material, and environment lighting; add textures,
   emissive triangles, transmission, cutouts, and post-processing only after parity at each step.
 
-Status: G0, G1, the initial G2 imported-geometry slice, and G3a primary AOVs are complete on the
-current Windows AMD functionality device. G3a generates primary rays on the device and returns
-deterministic `BaseColor` or `ShapeNormal` pixels, but it does not yet implement the minimal lit
-render required to close this stage.
+Status: G0, G1, the initial G2 imported-geometry slice, G3a primary AOVs, and the G3b deterministic
+directional-light slice are complete on the current Windows AMD functionality device. G3b adds
+camera-facing Lambert shading and conditional hard-shadow queries, but the full G3 milestone and
+this stage remain open until general lighting and path integration run under CPU/GPU comparison.
+The next bounded G3c slice should add constant environment or emission, or begin true iterative
+path state; device texture storage and sampling follow after that transport boundary is stable.
 
 Gate: every supported feature has a CPU/GPU comparison scene, and unsupported features fail through
 capability checks rather than silently changing appearance.

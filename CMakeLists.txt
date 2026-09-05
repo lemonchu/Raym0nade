@@ -263,6 +263,30 @@ if(RAYM0NADE_ENABLE_VULKAN)
     )
     raym0nade_enable_warnings(raym0nade_gpu_probe)
     raym0nade_set_runtime_directory(raym0nade_gpu_probe)
+
+    file(TO_CMAKE_PATH
+        "${RAYM0NADE_PRIMARY_AOV_SHADER_BINARY}"
+        RAYM0NADE_PRIMARY_AOV_SHADER_BINARY_CMAKE_PATH
+    )
+    add_executable(
+        raym0nade_gpu_primary_benchmark
+        apps/gpu_primary_benchmark.cpp
+    )
+    target_link_libraries(raym0nade_gpu_primary_benchmark PRIVATE
+        Raym0nade::core
+        Raym0nade::vulkan
+    )
+    add_dependencies(raym0nade_gpu_primary_benchmark raym0nade_gpu_shaders)
+    file(TO_CMAKE_PATH
+        "${PROJECT_SOURCE_DIR}"
+        RAYM0NADE_BENCHMARK_SOURCE_DIR_CMAKE_PATH
+    )
+    target_compile_definitions(raym0nade_gpu_primary_benchmark PRIVATE
+        "RAYM0NADE_BENCHMARK_SOURCE_DIR=\"${RAYM0NADE_BENCHMARK_SOURCE_DIR_CMAKE_PATH}\""
+        "RAYM0NADE_PRIMARY_AOV_SHADER=\"${RAYM0NADE_PRIMARY_AOV_SHADER_BINARY_CMAKE_PATH}\""
+    )
+    raym0nade_enable_warnings(raym0nade_gpu_primary_benchmark)
+    raym0nade_set_runtime_directory(raym0nade_gpu_primary_benchmark)
 endif()
 
 if(BUILD_TESTING)
@@ -323,10 +347,6 @@ if(BUILD_TESTING)
             Raym0nade::vulkan
         )
         add_dependencies(raym0nade_gpu_primary_render_tests raym0nade_gpu_shaders)
-        file(TO_CMAKE_PATH
-            "${RAYM0NADE_PRIMARY_AOV_SHADER_BINARY}"
-            RAYM0NADE_PRIMARY_AOV_SHADER_BINARY_CMAKE_PATH
-        )
         target_compile_definitions(raym0nade_gpu_primary_render_tests PRIVATE
             "RAYM0NADE_TEST_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
             "RAYM0NADE_PRIMARY_AOV_SHADER=\"${RAYM0NADE_PRIMARY_AOV_SHADER_BINARY_CMAKE_PATH}\""

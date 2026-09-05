@@ -29,9 +29,9 @@ struct VulkanPrimaryRenderResult {
 // Persistent, headless AMD Vulkan primary-AOV renderer for one immutable packed scene.
 // Construction uploads scene buffers and builds one BLAS plus one TLAS. render() creates
 // primary rays on the device and returns a row-major linear RGB image.
-// ShapeNormal supports every scene accepted by this backend. BaseColor currently requires
-// every referenced material to be opaque and to have no diffuse texture; render() throws
-// std::invalid_argument when that restricted BaseColor contract is not satisfied.
+// ShapeNormal supports every scene accepted by this backend. BaseColor and DirectDiffuse
+// currently require every referenced material to be opaque and to have no diffuse texture;
+// render() throws std::invalid_argument when the selected AOV contract is not satisfied.
 class VulkanPrimaryRenderer {
 public:
     VulkanPrimaryRenderer(

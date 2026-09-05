@@ -30,23 +30,27 @@ constexpr std::uint32_t kTimestampQueryCount = 2U;
 
 struct alignas(16) PrimaryRenderPushConstants {
     std::array<float, 4> cameraPositionAndPixelScale{};
-    std::array<float, 4> cameraDirectionAndUnused{};
+    std::array<float, 4> cameraDirectionAndRayMinimum{};
     std::array<float, 4> cameraUpAndUnused{};
     std::array<float, 4> cameraRightAndUnused{};
     std::array<std::uint32_t, 4> extentAovAndReserved{};
+    std::array<float, 4> directionToLightAndUnused{};
+    std::array<float, 4> incidentRadianceAndUnused{};
 };
 
 struct alignas(16) PrimaryOutputPixel {
     std::array<float, 4> color{};
 };
 
-static_assert(sizeof(PrimaryRenderPushConstants) == 80U);
+static_assert(sizeof(PrimaryRenderPushConstants) == 112U);
 static_assert(alignof(PrimaryRenderPushConstants) == 16U);
 static_assert(offsetof(PrimaryRenderPushConstants, cameraPositionAndPixelScale) == 0U);
-static_assert(offsetof(PrimaryRenderPushConstants, cameraDirectionAndUnused) == 16U);
+static_assert(offsetof(PrimaryRenderPushConstants, cameraDirectionAndRayMinimum) == 16U);
 static_assert(offsetof(PrimaryRenderPushConstants, cameraUpAndUnused) == 32U);
 static_assert(offsetof(PrimaryRenderPushConstants, cameraRightAndUnused) == 48U);
 static_assert(offsetof(PrimaryRenderPushConstants, extentAovAndReserved) == 64U);
+static_assert(offsetof(PrimaryRenderPushConstants, directionToLightAndUnused) == 80U);
+static_assert(offsetof(PrimaryRenderPushConstants, incidentRadianceAndUnused) == 96U);
 static_assert(std::is_standard_layout_v<PrimaryRenderPushConstants>);
 static_assert(std::is_trivially_copyable_v<PrimaryRenderPushConstants>);
 static_assert(sizeof(PrimaryOutputPixel) == 16U);
@@ -55,6 +59,7 @@ static_assert(std::is_standard_layout_v<PrimaryOutputPixel>);
 static_assert(std::is_trivially_copyable_v<PrimaryOutputPixel>);
 static_assert(static_cast<std::uint32_t>(PrimaryAov::BaseColor) == 0U);
 static_assert(static_cast<std::uint32_t>(PrimaryAov::ShapeNormal) == 1U);
+static_assert(static_cast<std::uint32_t>(PrimaryAov::DirectDiffuse) == 2U);
 
 [[nodiscard]] bool referencedMaterialsHaveFlag(
     const PackedSceneData& scene, std::uint32_t flag) noexcept {
@@ -95,17 +100,23 @@ static_assert(static_cast<std::uint32_t>(PrimaryAov::ShapeNormal) == 1U);
 [[nodiscard]] PrimaryRenderPushConstants makePushConstants(
     const PrimaryRenderRequest& request) noexcept {
     PrimaryRenderPushConstants result;
+    const vec3 directionToLight =
+        safeNormalize(request.directionalLight.directionToLight);
     result.cameraPositionAndPixelScale = {
         request.camera.position.x,
         request.camera.position.y,
         request.camera.position.z,
         request.camera.pixelScale,
     };
-    result.cameraDirectionAndUnused = {
+    // Vulkan ray queries include the lower interval endpoint, while the CPU triangle test uses a
+    // strict distance > kRayEpsilon comparison. Advancing by one float makes the intervals match.
+    const float rayMinimum =
+        std::nextafter(kRayEpsilon, std::numeric_limits<float>::infinity());
+    result.cameraDirectionAndRayMinimum = {
         request.camera.direction.x,
         request.camera.direction.y,
         request.camera.direction.z,
-        0.0F,
+        rayMinimum,
     };
     result.cameraUpAndUnused = {
         request.camera.up.x,
@@ -124,6 +135,18 @@ static_assert(static_cast<std::uint32_t>(PrimaryAov::ShapeNormal) == 1U);
         request.extent.height,
         static_cast<std::uint32_t>(request.aov),
         0U,
+    };
+    result.directionToLightAndUnused = {
+        directionToLight.x,
+        directionToLight.y,
+        directionToLight.z,
+        0.0F,
+    };
+    result.incidentRadianceAndUnused = {
+        request.directionalLight.incidentRadiance.x,
+        request.directionalLight.incidentRadiance.y,
+        request.directionalLight.incidentRadiance.z,
+        0.0F,
     };
     return result;
 }
@@ -322,16 +345,20 @@ private:
     }
 
     void validateAovFeatures(PrimaryAov aov) const {
-        if (aov != PrimaryAov::BaseColor) {
+        if (aov != PrimaryAov::BaseColor && aov != PrimaryAov::DirectDiffuse) {
             return;
         }
+        const char* aovName =
+            aov == PrimaryAov::BaseColor ? "BaseColor" : "DirectDiffuse";
         if (hasReferencedDiffuseTexture_) {
             throw std::invalid_argument(
-                "Vulkan BaseColor rendering does not yet support diffuse textures.");
+                std::string{"Vulkan "} + aovName +
+                " rendering does not yet support diffuse textures.");
         }
         if (hasReferencedTransparentMaterial_) {
             throw std::invalid_argument(
-                "Vulkan BaseColor rendering currently requires fully opaque materials.");
+                std::string{"Vulkan "} + aovName +
+                " rendering currently requires fully opaque materials.");
         }
     }
 

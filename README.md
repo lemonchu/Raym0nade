@@ -33,6 +33,8 @@ The build creates these targets:
 - `raym0nade_gpu_probe`: the optional AMD Ray Query capability and hardware self-test executable
 - `raym0nade_gpu_scene_tests`: the optional packed-scene CPU/GPU intersection comparison
 - `raym0nade_gpu_primary_render_tests`: the optional CPU/GPU primary-AOV comparison
+- `raym0nade_gpu_primary_benchmark`: the optional Bistro ShapeNormal comparison and GPU-only
+  diagnostic utility
 
 See `docs/architecture.md` for module boundaries, ownership rules, render data flow,
 determinism guarantees, current limitations, and the staged GPU roadmap. The experimental AMD GPU
@@ -186,17 +188,49 @@ The renderer currently uses `std::thread` for CPU parallelism. Experimental AMD 
 the `dev-gpu` branch and targets a headless Vulkan compute backend with `VK_KHR_ray_query`. The
 backend is optional, so ordinary CPU builds do not require a Vulkan-capable device.
 
-The completed G3a vertical slice adds a shared backend-neutral render contract (`ImageExtent`,
-`PinholeCamera`, `PrimaryRenderRequest`, `PrimaryAov`, and `LinearImage`). The CPU implementation is
-a deterministic, no-file reference for `BaseColor` and `ShapeNormal`. The experimental
-`VulkanPrimaryRenderer` generates every primary ray on the device in one two-dimensional compute
-dispatch using 8 x 8 workgroups and returns a row-major linear image after one readback. GPU
-`BaseColor` currently accepts only referenced opaque materials without diffuse textures;
-`ShapeNormal` supports every scene accepted by the current Vulkan geometry boundary.
+The G3a/G3b vertical slices provide a shared backend-neutral render contract (`ImageExtent`,
+`PinholeCamera`, `DirectionalLight`, `PrimaryRenderRequest`, `PrimaryAov`, and `LinearImage`). The
+CPU implementation is a deterministic, no-file reference for `BaseColor`, `ShapeNormal`, and the
+G3b `DirectDiffuse` diagnostic. The experimental `VulkanPrimaryRenderer` generates every primary
+ray on the device in one two-dimensional compute dispatch using 8 x 8 workgroups and returns a
+row-major linear image after one readback.
 
-G3a is a diagnostic primary-hit renderer, not a complete GPU path tracer: lighting, path
-continuation, texture sampling, accumulation, and post-processing have not moved to the GPU. Its
-validated 4 x 4 timings are bring-up diagnostics and do not establish a speedup.
+G3b adds a request-local directional light and hard opaque shadows. A miss is black; a visible hit
+uses its camera-facing shape normal and evaluates
+`max(baseColor, 0) * incidentRadiance * max(dot(N, L), 0) / pi`, with the light direction normalized
+on the host. The same GPU invocation performs the primary query and, when needed, a terminate-on-
+first-hit shadow query before writing the pixel. The render still uses one dispatch, one submit,
+and one readback. `BaseColor` and `DirectDiffuse` accept only referenced opaque materials without
+diffuse textures; `ShapeNormal` supports every scene accepted by the current Vulkan geometry
+boundary, while alpha-cutout scenes are rejected.
+
+G3b is a deterministic lighting diagnostic, not a complete GPU path tracer. It has no environment
+or area lighting, emission, specular or metallic/roughness response, smooth normals, normal maps,
+distance attenuation, random sampling, path continuation, texture sampling, accumulation, or
+post-processing. The validated 4 x 4 and 13 x 9 timings are bring-up diagnostics and do not
+establish a speedup; the full G3 milestone remains open.
+
+`raym0nade_gpu_primary_benchmark` provides an explicitly limited Bistro geometry-throughput check.
+It reports single-thread CPU, parallel CPU, complete GPU-call, and dispatch/readback wall-clock
+timings plus a separate GPU device-timestamp duration. CPU/GPU ShapeNormal images are written
+outside the timed region. Because GPU texture and candidate alpha testing are not implemented, its
+benchmark-local packed-scene copy treats cutout triangles as opaque and its report records that
+semantic difference. It is not a textured beauty benchmark or a substitute for the complete-
+topology performance gate.
+
+Pass `--gpu-only` for a manual GPU diagnostic that performs scene import, packing, Vulkan setup,
+GPU warm-up, and measured GPU renders without executing any CPU render. This mode writes only the
+GPU ShapeNormal PNG, GPU timing CSV, and an explicitly GPU-only summary. Use a dedicated output
+directory so files left by an earlier CPU/GPU comparison cannot be mistaken for current output:
+
+```sh
+./build/gpu-release/bin/raym0nade_gpu_primary_benchmark --gpu-only \
+    --width 3840 --height 2160 \
+    --output-dir output/benchmarks/gpu-only-3840x2160
+```
+
+Windows users should invoke the corresponding `.exe`. This remains a geometry diagnostic with
+benchmark-local opaque cutout fallback, not a textured or path-traced Bistro beauty render.
 
 After activating the Conda environment, configure, build, and test the optional backend with:
 

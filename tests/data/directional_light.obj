@@ -1,0 +1,17 @@
+mtllib directional_light.mtl
+
+o Receiver
+v -2.6 -1.25 4.0
+v 2.6 -1.25 4.0
+v 0.0 1.4 4.0
+
+usemtl Receiver
+f 1 2 3
+
+o Blocker
+v 0.21 -0.84 3.0
+v 1.27 -0.9 3.0
+v 0.68 0.82 3.0
+
+usemtl Blocker
+f 4 5 6

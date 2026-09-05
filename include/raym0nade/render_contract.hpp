@@ -26,14 +26,24 @@ struct PinholeCamera {
     void validate() const;
 };
 
+struct DirectionalLight {
+    // Direction from the shaded point toward the infinitely distant light.
+    vec3 directionToLight{0.0F, 0.0F, -1.0F};
+    vec3 incidentRadiance{1.0F};
+
+    void validate() const;
+};
+
 enum class PrimaryAov : std::uint32_t {
-    BaseColor,
-    ShapeNormal,
+    BaseColor = 0U,
+    ShapeNormal = 1U,
+    DirectDiffuse = 2U,
 };
 
 struct PrimaryRenderRequest {
     ImageExtent extent{};
     PinholeCamera camera{};
+    DirectionalLight directionalLight{};
     PrimaryAov aov{PrimaryAov::BaseColor};
 
     void validate() const;
