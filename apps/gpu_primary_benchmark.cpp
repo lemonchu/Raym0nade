@@ -50,6 +50,7 @@ struct Options {
     int cpuThreadCount{0};
     bool gpuOnly{false};
     bool requestValidation{false};
+    bool forceUnifiedCandidateGeometry{false};
     std::filesystem::path outputDirectory{"output/benchmarks/g3b-bistro-shape-normal"};
 };
 
@@ -142,6 +143,8 @@ struct ErrorMetrics {
            "  --cpu-threads N    Parallel CPU workers; ignored with --gpu-only.\n"
            "  --output-dir PATH  Generated image and report directory.\n"
            "  --gpu-only         Skip CPU renders and CPU/GPU comparison outputs.\n"
+           "  --unified-candidate-geometry\n"
+           "                     Use the legacy single candidate geometry for GPU A/B.\n"
            "  --validation       Enable Vulkan validation (not for performance results).\n";
     std::exit(0);
 }
@@ -175,6 +178,8 @@ struct ErrorMetrics {
             options.gpuOnly = true;
         } else if (argument == "--validation") {
             options.requestValidation = true;
+        } else if (argument == "--unified-candidate-geometry") {
+            options.forceUnifiedCandidateGeometry = true;
         } else if (argument == "--help" || argument == "-h") {
             printUsageAndExit();
         } else {
@@ -585,6 +590,8 @@ int main(int argc, char** argv) {
 
         VulkanRayQueryOptions gpuOptions;
         gpuOptions.requestValidation = options.requestValidation;
+        gpuOptions.forceUnifiedCandidateGeometry =
+            options.forceUnifiedCandidateGeometry;
         const auto rendererStart = Clock::now();
         auto renderer = std::make_unique<VulkanPrimaryRenderer>(
             scene, std::filesystem::path{RAYM0NADE_PRIMARY_AOV_SHADER}, gpuOptions);

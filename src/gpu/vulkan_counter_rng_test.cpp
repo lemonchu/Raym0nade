@@ -45,6 +45,8 @@ ObservationArray makePoisonedObservations(const std::uint32_t salt) noexcept {
         const std::uint32_t value = static_cast<std::uint32_t>(index);
         result[index].word = 0xA5A50000U ^ salt ^ value;
         result[index].open01Bits = 0x5A5A0000U ^ salt ^ (value << 8U);
+        result[index].blockWord = 0x3C3C0000U ^ salt ^ (value << 12U);
+        result[index].blockOpen01Bits = 0xC3C30000U ^ salt ^ (value << 16U);
     }
     return result;
 }

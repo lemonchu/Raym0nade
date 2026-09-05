@@ -7,11 +7,13 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "raym0nade/image.hpp"
 #include "raym0nade/model.hpp"
 #include "raym0nade/render.hpp"
+#include "raym0nade/sampling.hpp"
 
 #ifndef RAYM0NADE_TEST_SOURCE_DIR
 #error "RAYM0NADE_TEST_SOURCE_DIR must be defined by CMake."
@@ -64,6 +66,81 @@ std::filesystem::path outputFile(
     return filename;
 }
 
+void writeTinyHdr(const std::filesystem::path& path) {
+    std::ofstream output{path, std::ios::binary};
+    if (!output) {
+        throw std::runtime_error("Could not create the HDR test fixture.");
+    }
+    constexpr std::string_view header{
+        "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 2\n"};
+    constexpr std::array<std::uint8_t, 8> pixels{
+        128U, 0U, 0U, 129U,
+        0U, 128U, 0U, 129U,
+    };
+    output.write(header.data(), static_cast<std::streamsize>(header.size()));
+    output.write(
+        reinterpret_cast<const char*>(pixels.data()),
+        static_cast<std::streamsize>(pixels.size()));
+    if (!output) {
+        throw std::runtime_error("Could not write the HDR test fixture.");
+    }
+}
+
+bool exactlyEqual(const vec3& left, const vec3& right) noexcept {
+    return left.x == right.x && left.y == right.y && left.z == right.z;
+}
+
+void compareCachedAreaLightSampling(
+    const Model& model,
+    const vec3& surfacePosition,
+    const vec3& surfaceNormal,
+    Generator& referenceGenerator,
+    Generator& cachedGenerator,
+    DirectLightSamplingScratch& scratch) {
+    HitInfo surface;
+    surface.shapeNormal = surfaceNormal;
+    surface.surfaceNormal = surface.shapeNormal;
+    surface.baseColor = vec3{0.7F, 0.6F, 0.5F};
+    surface.position = surfacePosition;
+    surface.roughness = 0.45F;
+    surface.metallic = 0.2F;
+    const Bsdf bsdf{surfaceNormal, surface};
+
+    constexpr int sampleCount = 32;
+    std::vector<LightSample> referenceSamples;
+    std::vector<LightSample> cachedSamples;
+
+    sampleDirectLight(
+        bsdf,
+        model,
+        referenceGenerator,
+        sampleCount,
+        referenceSamples);
+    sampleDirectLight(
+        bsdf,
+        model,
+        cachedGenerator,
+        sampleCount,
+        cachedSamples,
+        scratch);
+
+    if (referenceSamples.empty() ||
+        referenceSamples.size() != cachedSamples.size()) {
+        throw std::runtime_error(
+            "Cached area-light selection changed the valid sample count.");
+    }
+    for (std::size_t index = 0U; index < referenceSamples.size(); ++index) {
+        const LightSample& reference = referenceSamples[index];
+        const LightSample& cached = cachedSamples[index];
+        if (!exactlyEqual(reference.throughput, cached.throughput) ||
+            !exactlyEqual(reference.radiance, cached.radiance) ||
+            reference.weight != cached.weight) {
+            throw std::runtime_error(
+                "Cached area-light selection changed an exact sample value.");
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -72,6 +149,58 @@ int main() {
         const std::filesystem::path outputDirectory =
             std::filesystem::path{RAYM0NADE_TEST_BINARY_DIR} / "render-smoke-output";
         std::filesystem::create_directories(outputDirectory);
+
+        Model multipleLights{
+            sourceDirectory / "tests" / "data", "multiple_lights.obj", "null"};
+        if (multipleLights.lights().size() != 3U) {
+            throw std::runtime_error(
+                "The area-light cache fixture must contain three light objects.");
+        }
+        DirectLightSamplingScratch directLightSamplingScratch;
+        Generator referenceGenerator{0x13579BDFU};
+        Generator cachedGenerator{0x13579BDFU};
+        for (int invocation = 0; invocation < 3; ++invocation) {
+            compareCachedAreaLightSampling(
+                multipleLights,
+                vec3{0.0F},
+                vec3{0.0F, 0.0F, 1.0F},
+                referenceGenerator,
+                cachedGenerator,
+                directLightSamplingScratch);
+        }
+        compareCachedAreaLightSampling(
+            multipleLights,
+            vec3{0.35F, -0.2F, 0.0F},
+            vec3{0.0F, 0.0F, 1.0F},
+            referenceGenerator,
+            cachedGenerator,
+            directLightSamplingScratch);
+        compareCachedAreaLightSampling(
+            multipleLights,
+            vec3{0.0F},
+            vec3{0.0F, 0.0F, 1.0F},
+            referenceGenerator,
+            cachedGenerator,
+            directLightSamplingScratch);
+
+        const std::filesystem::path environmentPath =
+            outputDirectory / "mixed-light-environment.hdr";
+        writeTinyHdr(environmentPath);
+        Model mixedLights{
+            sourceDirectory / "tests" / "data",
+            "multiple_lights.obj",
+            environmentPath};
+        if (mixedLights.lights().size() != 3U || mixedLights.sky().empty()) {
+            throw std::runtime_error(
+                "The mixed-light cache fixture must contain area and environment lights.");
+        }
+        compareCachedAreaLightSampling(
+            mixedLights,
+            vec3{0.0F},
+            vec3{0.0F, 0.0F, 1.0F},
+            referenceGenerator,
+            cachedGenerator,
+            directLightSamplingScratch);
 
         Model invalidVertexModel{
             sourceDirectory / "tests" / "data", "non_finite_vertices.obj", "null"};
@@ -90,6 +219,17 @@ int main() {
         if (model.faceCount() != 2 || model.lights().empty()) {
             throw std::runtime_error(
                 "The smoke-test model must contain one diffuse face and one area light.");
+        }
+        compareCachedAreaLightSampling(
+            model,
+            vec3{0.0F, 0.0F, 3.0F},
+            vec3{0.0F, 0.0F, -1.0F},
+            referenceGenerator,
+            cachedGenerator,
+            directLightSamplingScratch);
+        if (referenceGenerator() != cachedGenerator()) {
+            throw std::runtime_error(
+                "Cached area-light selection changed the continuous random draw stream.");
         }
         const PackedSceneData packedScene = model.packScene();
         if (packedScene.triangleCount() != model.faceCount() ||

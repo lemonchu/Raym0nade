@@ -39,19 +39,38 @@ uvec4 raym0nadeCounterRandomBlock(
         uvec2(seed, 0U));
 }
 
+uvec4 raym0nadeCounterRandomBlockForDimension(
+    uint seed,
+    uint pixelIndex,
+    uint sampleIndex,
+    uint bounceIndex,
+    uint dimension) {
+    return raym0nadeCounterRandomBlock(
+        seed, pixelIndex, sampleIndex, bounceIndex, dimension >> 2U);
+}
+
+uint raym0nadeCounterRandomBlockWord(uvec4 block, uint dimension) {
+    return block[dimension & 3U];
+}
+
 uint raym0nadeCounterRandomUint32(
     uint seed,
     uint pixelIndex,
     uint sampleIndex,
     uint bounceIndex,
     uint dimension) {
-    uvec4 block = raym0nadeCounterRandomBlock(
-        seed, pixelIndex, sampleIndex, bounceIndex, dimension >> 2U);
-    return block[dimension & 3U];
+    const uvec4 block = raym0nadeCounterRandomBlockForDimension(
+        seed, pixelIndex, sampleIndex, bounceIndex, dimension);
+    return raym0nadeCounterRandomBlockWord(block, dimension);
 }
 
 float raym0nadeCounterRandomWordToOpen01(uint word) {
     return (float(word >> 9U) + 0.5) * (1.0 / 8388608.0);
+}
+
+float raym0nadeCounterRandomBlockOpen01(uvec4 block, uint dimension) {
+    return raym0nadeCounterRandomWordToOpen01(
+        raym0nadeCounterRandomBlockWord(block, dimension));
 }
 
 float raym0nadeCounterRandomOpen01(

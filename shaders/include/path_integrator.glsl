@@ -241,6 +241,7 @@ void pathTraceIndirectFromPrimary(
     uint pixelIndex,
     uint sampleIndex,
     uint replicateIndex,
+    uvec4 firstBounceRandomBlock,
     inout vec4 indirectDiffuse,
     inout vec4 indirectSpecular,
     inout uint directSampleCount) {
@@ -259,15 +260,19 @@ void pathTraceIndirectFromPrimary(
     const vec3 firstIncoming = -primaryRayDirection;
     const float firstReflectionProbability =
         pathTransparentReflectionProbability(firstSurface, firstIncoming, media);
-    const float firstBranchRandom = pathRandom(
-        pixelIndex,
-        sampleIndex,
-        0U,
+    const float firstBranchRandom = pathRandomFromBlock(
+        firstBounceRandomBlock,
         replicateIndex,
         pathDimensionBranch);
     const bool firstReflect = firstReflectionProbability >= 1.0 ||
         (firstReflectionProbability > 0.0 &&
          firstBranchRandom < firstReflectionProbability);
+    const uvec4 firstScatterRandomBlock = pathRandomBlockForDimension(
+        pixelIndex,
+        sampleIndex,
+        0U,
+        replicateIndex,
+        pathDimensionBsdfFirst);
     vec3 rayDirection;
     vec3 firstThroughput;
     PathRayDifferential differential = primaryDifferential;
@@ -276,22 +281,16 @@ void pathTraceIndirectFromPrimary(
         validScatter = pathSampleReflection(
             firstSurface,
             firstIncoming,
-            pathRandom(
-                pixelIndex,
-                sampleIndex,
-                0U,
+            pathRandomFromBlock(
+                firstBounceRandomBlock,
                 replicateIndex,
                 pathDimensionBsdfTechnique),
-            pathRandom(
-                pixelIndex,
-                sampleIndex,
-                0U,
+            pathRandomFromBlock(
+                firstScatterRandomBlock,
                 replicateIndex,
                 pathDimensionBsdfFirst),
-            pathRandom(
-                pixelIndex,
-                sampleIndex,
-                0U,
+            pathRandomFromBlock(
+                firstScatterRandomBlock,
                 replicateIndex,
                 pathDimensionBsdfSecond),
             rayDirection,
@@ -307,16 +306,12 @@ void pathTraceIndirectFromPrimary(
         validScatter = pathSampleTransmission(
             firstSurface,
             firstIncoming,
-            pathRandom(
-                pixelIndex,
-                sampleIndex,
-                0U,
+            pathRandomFromBlock(
+                firstScatterRandomBlock,
                 replicateIndex,
                 pathDimensionBsdfFirst),
-            pathRandom(
-                pixelIndex,
-                sampleIndex,
-                0U,
+            pathRandomFromBlock(
+                firstScatterRandomBlock,
                 replicateIndex,
                 pathDimensionBsdfSecond),
             rayDirection,
@@ -402,10 +397,14 @@ void pathTraceIndirectFromPrimary(
         const vec3 incoming = -rayDirection;
         const float reflectionProbability =
             pathTransparentReflectionProbability(surface, incoming, media);
-        const float branchRandom = pathRandom(
+        const uvec4 bounceRandomBlock = pathRandomBlockForDimension(
             pixelIndex,
             sampleIndex,
             depth,
+            replicateIndex,
+            pathDimensionBranch);
+        const float branchRandom = pathRandomFromBlock(
+            bounceRandomBlock,
             replicateIndex,
             pathDimensionBranch);
         const bool reflect = reflectionProbability >= 1.0 ||
@@ -421,10 +420,8 @@ void pathTraceIndirectFromPrimary(
         }
         const bool terminateWithDirect = maySampleDirect &&
             (depth >= pathMaximumDepth ||
-             pathRandom(
-                 pixelIndex,
-                 sampleIndex,
-                 depth,
+             pathRandomFromBlock(
+                 bounceRandomBlock,
                  replicateIndex,
                  pathDimensionContinuation) > rouletteProbability);
         if (terminateWithDirect) {
@@ -474,26 +471,26 @@ void pathTraceIndirectFromPrimary(
         vec3 newDirection;
         vec3 scatterThroughput;
         bool scatterValid = false;
+        const uvec4 scatterRandomBlock = pathRandomBlockForDimension(
+            pixelIndex,
+            sampleIndex,
+            depth,
+            replicateIndex,
+            pathDimensionBsdfFirst);
         if (reflect) {
             scatterValid = pathSampleReflection(
                 surface,
                 incoming,
-                pathRandom(
-                    pixelIndex,
-                    sampleIndex,
-                    depth,
+                pathRandomFromBlock(
+                    bounceRandomBlock,
                     replicateIndex,
                     pathDimensionBsdfTechnique),
-                pathRandom(
-                    pixelIndex,
-                    sampleIndex,
-                    depth,
+                pathRandomFromBlock(
+                    scatterRandomBlock,
                     replicateIndex,
                     pathDimensionBsdfFirst),
-                pathRandom(
-                    pixelIndex,
-                    sampleIndex,
-                    depth,
+                pathRandomFromBlock(
+                    scatterRandomBlock,
                     replicateIndex,
                     pathDimensionBsdfSecond),
                 newDirection,
@@ -512,16 +509,12 @@ void pathTraceIndirectFromPrimary(
             scatterValid = pathSampleTransmission(
                 surface,
                 incoming,
-                pathRandom(
-                    pixelIndex,
-                    sampleIndex,
-                    depth,
+                pathRandomFromBlock(
+                    scatterRandomBlock,
                     replicateIndex,
                     pathDimensionBsdfFirst),
-                pathRandom(
-                    pixelIndex,
-                    sampleIndex,
-                    depth,
+                pathRandomFromBlock(
+                    scatterRandomBlock,
                     replicateIndex,
                     pathDimensionBsdfSecond),
                 newDirection,
@@ -661,10 +654,14 @@ void raym0nadePathTraceInvocation() {
 
     for (uint batchSample = 0U; batchSample < sampleCount; ++batchSample) {
         const uint sampleIndex = sampleBase + batchSample;
-        const float techniqueRandom = pathRandom(
+        const uvec4 primaryRandomBlock = pathRandomBlockForDimension(
             pixelIndex,
             sampleIndex,
             0U,
+            0U,
+            pathDimensionTechnique);
+        const float techniqueRandom = pathRandomFromBlock(
+            primaryRandomBlock,
             0U,
             pathDimensionTechnique);
         const bool chooseDirect = directProbability >= 1.0 ||
@@ -689,6 +686,15 @@ void raym0nadePathTraceInvocation() {
         for (uint replicateIndex = 0U;
              replicateIndex < replicateCount;
              ++replicateIndex) {
+            uvec4 firstBounceRandomBlock = primaryRandomBlock;
+            if (replicateIndex != 0U) {
+                firstBounceRandomBlock = pathRandomBlockForDimension(
+                    pixelIndex,
+                    sampleIndex,
+                    0U,
+                    replicateIndex,
+                    pathDimensionTechnique);
+            }
             pathTraceIndirectFromPrimary(
                 primarySurface,
                 primaryRayDirection,
@@ -700,6 +706,7 @@ void raym0nadePathTraceInvocation() {
                 pixelIndex,
                 sampleIndex,
                 replicateIndex,
+                firstBounceRandomBlock,
                 indirectDiffuse,
                 indirectSpecular,
                 directSampleCount);

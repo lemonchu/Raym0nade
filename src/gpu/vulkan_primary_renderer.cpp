@@ -26,6 +26,9 @@ namespace {
 constexpr std::uint32_t kLocalSizeX = 8U;
 constexpr std::uint32_t kLocalSizeY = 8U;
 constexpr std::uint32_t kTimestampQueryCount = 2U;
+constexpr std::uint32_t kStorageBufferBindingCount = 9U;
+constexpr std::uint32_t kDescriptorBindingCount = 10U;
+constexpr std::uint32_t kPrimitiveRemapBinding = 13U;
 
 struct alignas(16) PrimaryRenderPushConstants {
     std::array<float, 4> cameraPositionAndPixelScale{};
@@ -77,7 +80,8 @@ static_assert(static_cast<std::uint32_t>(PrimaryAov::DirectDiffuse) == 2U);
 }
 
 [[nodiscard]] PrimaryRenderPushConstants makePushConstants(
-    const PrimaryRenderRequest& request) noexcept {
+    const PrimaryRenderRequest& request,
+    bool primitiveRemapRequired) noexcept {
     PrimaryRenderPushConstants result;
     const vec3 directionToLight =
         safeNormalize(request.directionalLight.directionToLight);
@@ -113,7 +117,7 @@ static_assert(static_cast<std::uint32_t>(PrimaryAov::DirectDiffuse) == 2U);
         request.extent.width,
         request.extent.height,
         static_cast<std::uint32_t>(request.aov),
-        0U,
+        primitiveRemapRequired ? 1U : 0U,
     };
     result.directionToLightAndUnused = {
         directionToLight.x,
@@ -211,7 +215,8 @@ public:
             &descriptorSet_,
             0U,
             nullptr);
-        const PrimaryRenderPushConstants pushConstants = makePushConstants(request);
+        const PrimaryRenderPushConstants pushConstants =
+            makePushConstants(request, runtime_.primitiveRemapRequired());
         vkCmdPushConstants(
             commandBuffer,
             pipelineLayout_.get(),
@@ -304,7 +309,6 @@ private:
             throw std::runtime_error(
                 "The Vulkan device does not provide enough push-constant storage.");
         }
-        constexpr std::uint32_t kStorageBufferBindingCount = 8U;
         if (limits.maxPerStageDescriptorStorageBuffers < kStorageBufferBindingCount ||
             limits.maxDescriptorSetStorageBuffers < kStorageBufferBindingCount) {
             throw std::runtime_error(
@@ -317,7 +321,8 @@ private:
             runtime_.textureDescriptorBuffer().size() >
                 limits.maxStorageBufferRange ||
             runtime_.textureMipBuffer().size() > limits.maxStorageBufferRange ||
-            runtime_.textureTexelBuffer().size() > limits.maxStorageBufferRange) {
+            runtime_.textureTexelBuffer().size() > limits.maxStorageBufferRange ||
+            runtime_.primitiveRemapBuffer().size() > limits.maxStorageBufferRange) {
             throw std::runtime_error(
                 "A packed-scene buffer exceeds the Vulkan storage-buffer range limit.");
         }
@@ -325,7 +330,7 @@ private:
 
     void createPipeline(const std::vector<std::uint32_t>& shaderCode) {
         const VkDevice device = runtime_.device();
-        std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
+        std::array<VkDescriptorSetLayoutBinding, kDescriptorBindingCount> bindings{};
         bindings[0] = VkDescriptorSetLayoutBinding{
             0U,
             VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
@@ -333,7 +338,9 @@ private:
             VK_SHADER_STAGE_COMPUTE_BIT,
             nullptr,
         };
-        for (std::uint32_t binding = 1U; binding < bindings.size(); ++binding) {
+        for (std::uint32_t binding = 1U;
+             binding < kStorageBufferBindingCount;
+             ++binding) {
             bindings[binding] = VkDescriptorSetLayoutBinding{
                 binding,
                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -342,6 +349,13 @@ private:
                 nullptr,
             };
         }
+        bindings.back() = VkDescriptorSetLayoutBinding{
+            kPrimitiveRemapBinding,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            1U,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            nullptr,
+        };
         const VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             nullptr,
@@ -431,7 +445,7 @@ private:
 
         const std::array<VkDescriptorPoolSize, 2> poolSizes{{
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8U},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kStorageBufferBindingCount},
         }};
         const VkDescriptorPoolCreateInfo descriptorPoolInfo{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -527,7 +541,8 @@ private:
             1U,
             &topLevel,
         };
-        const std::array<VkDescriptorBufferInfo, 8> bufferInfos{{
+        const std::array<VkDescriptorBufferInfo, kStorageBufferBindingCount>
+            bufferInfos{{
             {runtime_.vertexBuffer().get(), 0U, runtime_.vertexBuffer().size()},
             {runtime_.indexBuffer().get(), 0U, runtime_.indexBuffer().size()},
             {runtime_.triangleMaterialIdBuffer().get(),
@@ -544,23 +559,31 @@ private:
             {runtime_.textureTexelBuffer().get(),
              0U,
              runtime_.textureTexelBuffer().size()},
+            {runtime_.primitiveRemapBuffer().get(),
+             0U,
+             runtime_.primitiveRemapBuffer().size()},
         }};
 
-        std::array<VkWriteDescriptorSet, 9> writes{};
+        std::array<VkWriteDescriptorSet, kDescriptorBindingCount> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].pNext = &accelerationWrite;
         writes[0].dstSet = descriptorSet_;
         writes[0].dstBinding = 0U;
         writes[0].descriptorCount = 1U;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        for (std::uint32_t binding = 1U; binding < writes.size(); ++binding) {
-            VkWriteDescriptorSet& write = writes[binding];
+        for (std::uint32_t bufferIndex = 0U;
+             bufferIndex < bufferInfos.size();
+             ++bufferIndex) {
+            VkWriteDescriptorSet& write = writes[bufferIndex + 1U];
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             write.dstSet = descriptorSet_;
-            write.dstBinding = binding;
+            write.dstBinding = bufferIndex + 1U;
+            if (bufferIndex + 1U == kStorageBufferBindingCount) {
+                write.dstBinding = kPrimitiveRemapBinding;
+            }
             write.descriptorCount = 1U;
             write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            write.pBufferInfo = &bufferInfos[binding - 1U];
+            write.pBufferInfo = &bufferInfos[bufferIndex];
         }
         vkUpdateDescriptorSets(
             runtime_.device(),

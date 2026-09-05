@@ -1,0 +1,17 @@
+newmtl RedLight
+Kd 1.0 1.0 1.0
+Ke 12.0 3.0 2.0
+d 1.0
+illum 2
+
+newmtl GreenLight
+Kd 1.0 1.0 1.0
+Ke 2.0 10.0 3.0
+d 1.0
+illum 2
+
+newmtl BlueLight
+Kd 1.0 1.0 1.0
+Ke 3.0 4.0 14.0
+d 1.0
+illum 2

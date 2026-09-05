@@ -131,8 +131,8 @@ vec3 pathEmissiveColor(
         return factor;
     }
     const uint textureId = material.textureIds.z;
-    const float mipDepth = diffuseMipDepth(textureId, textureFootprint);
-    const vec3 encoded = samplePackedTexture(textureId, uv, mipDepth).rgb;
+    const vec3 encoded =
+        samplePackedTextureAtFootprint(textureId, uv, textureFootprint).rgb;
     const vec3 linear = pow(max(encoded, vec3(0.0)), vec3(diffuseGamma));
     const vec3 emission = linear * factor;
     return isFiniteVector(emission) ? emission : vec3(0.0);
@@ -262,9 +262,9 @@ bool pathPopulateSurface(
 
     if ((material.flagsAndReserved.x & pathMaterialHasNormalTexture) != 0U) {
         const uint textureId = material.textureIds.w;
-        const float mipDepth = diffuseMipDepth(textureId, footprint);
         const vec3 normalMap =
-            samplePackedTexture(textureId, uv, mipDepth).rgb * 2.0 - 1.0;
+            samplePackedTextureAtFootprint(textureId, uv, footprint).rgb *
+            2.0 - 1.0;
         surface.surfaceNormal = pathApplyNormalMap(
             hit.primitiveId,
             surface.shapeNormal,

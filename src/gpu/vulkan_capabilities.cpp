@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "vulkan_queue_selection.hpp"
+
 namespace raym0nade::gpu {
 namespace {
 
@@ -104,7 +106,8 @@ std::uint64_t deviceLocalMemory(const VkPhysicalDeviceMemoryProperties& properti
     return total;
 }
 
-std::pair<bool, std::uint32_t> findComputeQueue(VkPhysicalDevice device) {
+std::vector<detail::ComputeQueueFamilyInfo> inspectComputeQueueFamilies(
+    VkPhysicalDevice device) {
     std::uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);
@@ -112,13 +115,18 @@ std::pair<bool, std::uint32_t> findComputeQueue(VkPhysicalDevice device) {
         vkGetPhysicalDeviceQueueFamilyProperties(device, &count, families.data());
         families.resize(count);
     }
-    for (std::uint32_t index = 0; index < families.size(); ++index) {
-        if (families[index].queueCount != 0 &&
-            (families[index].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
-            return {true, index};
-        }
+    std::vector<detail::ComputeQueueFamilyInfo> result;
+    result.reserve(families.size());
+    for (std::uint32_t index = 0U; index < families.size(); ++index) {
+        const VkQueueFamilyProperties& family = families[index];
+        result.push_back({
+            index,
+            family.queueCount,
+            (family.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0U,
+            (family.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0U,
+        });
     }
-    return {false, 0};
+    return result;
 }
 
 void appendMissingRequirements(
@@ -162,7 +170,14 @@ VulkanDeviceCapabilities inspectDevice(VkPhysicalDevice device, bool loaderSuppo
 
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     vkGetPhysicalDeviceMemoryProperties(device, &memoryProperties);
-    const auto [hasComputeQueue, computeQueueFamily] = findComputeQueue(device);
+    const std::vector<detail::ComputeQueueFamilyInfo> queueFamilies =
+        inspectComputeQueueFamilies(device);
+    const detail::ComputeQueueFamilySelection computeQueue =
+        detail::selectComputeQueueFamily(
+            queueFamilies.data(), queueFamilies.size(), 1U);
+    const detail::ComputeQueueFamilySelection maximumComputeQueue =
+        detail::selectLargestComputeQueueFamily(
+            queueFamilies.data(), queueFamilies.size());
 
     VulkanDeviceCapabilities result;
     result.deviceName = basicProperties.deviceName;
@@ -170,8 +185,11 @@ VulkanDeviceCapabilities inspectDevice(VkPhysicalDevice device, bool loaderSuppo
     result.deviceLocalMemoryBytes = deviceLocalMemory(memoryProperties);
     result.vendorId = basicProperties.vendorID;
     result.deviceId = basicProperties.deviceID;
-    result.computeQueueFamily = computeQueueFamily;
-    result.hasComputeQueue = hasComputeQueue;
+    result.computeQueueFamily = computeQueue.family;
+    result.computeQueueCount = computeQueue.queueCount;
+    result.maximumComputeQueueFamily = maximumComputeQueue.family;
+    result.maximumComputeQueueCount = maximumComputeQueue.queueCount;
+    result.hasComputeQueue = computeQueue.available;
     result.integrated = basicProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 
     const bool deviceSupportsVulkan12 = versionAtLeast(basicProperties.apiVersion, 1, 2);

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "raym0nade/scene_data.hpp"
+#include "vulkan_queue_selection.hpp"
 
 namespace raym0nade::gpu::detail {
 namespace {
@@ -290,7 +291,8 @@ private:
     UniqueVulkanHandle<VkDebugUtilsMessengerEXT> messenger_;
 };
 
-std::pair<bool, std::uint32_t> findComputeQueue(VkPhysicalDevice physicalDevice) {
+std::vector<ComputeQueueFamilyInfo> inspectComputeQueueFamilies(
+    VkPhysicalDevice physicalDevice) {
     std::uint32_t count = 0U;
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);
@@ -298,22 +300,18 @@ std::pair<bool, std::uint32_t> findComputeQueue(VkPhysicalDevice physicalDevice)
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &count, families.data());
         families.resize(count);
     }
+    std::vector<ComputeQueueFamilyInfo> result;
+    result.reserve(families.size());
     for (std::uint32_t index = 0U; index < count; ++index) {
         const VkQueueFamilyProperties& family = families[index];
-        if (family.queueCount != 0U &&
-            (family.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0U &&
-            (family.queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0U) {
-            return {true, index};
-        }
+        result.push_back({
+            index,
+            family.queueCount,
+            (family.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0U,
+            (family.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0U,
+        });
     }
-    for (std::uint32_t index = 0U; index < count; ++index) {
-        const VkQueueFamilyProperties& family = families[index];
-        if (family.queueCount != 0U &&
-            (family.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0U) {
-            return {true, index};
-        }
-    }
-    return {false, 0U};
+    return result;
 }
 
 struct PhysicalDeviceSelection {
@@ -324,6 +322,7 @@ struct PhysicalDeviceSelection {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
     VkDeviceSize scratchAlignment{1U};
     std::uint32_t queueFamily{0U};
+    std::uint32_t queueCount{0U};
     std::uint32_t timestampValidBits{0U};
     std::string deviceName;
     bool requiresPortabilitySubset{false};
@@ -345,7 +344,12 @@ std::uint32_t queueTimestampValidBits(
     return families[queueFamily].timestampValidBits;
 }
 
-PhysicalDeviceSelection selectAmdDevice(VkInstance instance) {
+PhysicalDeviceSelection selectAmdDevice(
+    VkInstance instance,
+    const std::uint32_t requestedQueueCount) {
+    if (requestedQueueCount == 0U) {
+        throw std::invalid_argument("The Vulkan compute queue count must be positive.");
+    }
     const std::vector<VkPhysicalDevice> devices = enumerateProperties<VkPhysicalDevice>(
         [instance](std::uint32_t* count, VkPhysicalDevice* values) {
             return vkEnumeratePhysicalDevices(instance, count, values);
@@ -354,6 +358,7 @@ PhysicalDeviceSelection selectAmdDevice(VkInstance instance) {
 
     PhysicalDeviceSelection selected;
     int selectedScore = -1;
+    std::uint32_t maximumCompatibleQueueCount = 0U;
     std::vector<std::string> rejectedAmdDevices;
     for (VkPhysicalDevice physicalDevice : devices) {
         VkPhysicalDeviceProperties properties{};
@@ -385,13 +390,29 @@ PhysicalDeviceSelection selectAmdDevice(VkInstance instance) {
                 hasAllRequiredExtensions = false;
             }
         }
-        const auto [hasComputeQueue, queueFamily] = findComputeQueue(physicalDevice);
-        if (!hasComputeQueue) {
-            missing.emplace_back("compute queue");
+        const std::vector<ComputeQueueFamilyInfo> queueFamilies =
+            inspectComputeQueueFamilies(physicalDevice);
+        const ComputeQueueFamilySelection computeQueue = selectComputeQueueFamily(
+            queueFamilies.data(), queueFamilies.size(), requestedQueueCount);
+        const ComputeQueueFamilySelection maximumComputeQueue =
+            selectLargestComputeQueueFamily(
+                queueFamilies.data(), queueFamilies.size());
+        if (!computeQueue.available) {
+            if (maximumComputeQueue.available) {
+                missing.emplace_back(
+                    std::to_string(requestedQueueCount) +
+                    " compute queues (maximum " +
+                    std::to_string(maximumComputeQueue.queueCount) + ')');
+            } else {
+                missing.emplace_back("compute queue");
+            }
         }
 
         // Extension feature structures are legal in this query only after their extensions
         // and Vulkan 1.2 have been established for this candidate.
+        bool hasBufferDeviceAddress = false;
+        bool hasAccelerationStructure = false;
+        bool hasRayQuery = false;
         if (supportsVulkan12 && hasAllRequiredExtensions) {
             VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
@@ -404,15 +425,25 @@ PhysicalDeviceSelection selectAmdDevice(VkInstance instance) {
             VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
             features.pNext = &addressFeatures;
             vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
-            if (addressFeatures.bufferDeviceAddress != VK_TRUE) {
+            hasBufferDeviceAddress = addressFeatures.bufferDeviceAddress == VK_TRUE;
+            hasAccelerationStructure =
+                accelerationFeatures.accelerationStructure == VK_TRUE;
+            hasRayQuery = rayQueryFeatures.rayQuery == VK_TRUE;
+            if (!hasBufferDeviceAddress) {
                 missing.emplace_back("buffer device address feature");
             }
-            if (accelerationFeatures.accelerationStructure != VK_TRUE) {
+            if (!hasAccelerationStructure) {
                 missing.emplace_back("acceleration structure feature");
             }
-            if (rayQueryFeatures.rayQuery != VK_TRUE) {
+            if (!hasRayQuery) {
                 missing.emplace_back("ray query feature");
             }
+        }
+
+        if (supportsVulkan12 && hasAllRequiredExtensions &&
+            hasBufferDeviceAddress && hasAccelerationStructure && hasRayQuery) {
+            maximumCompatibleQueueCount = std::max(
+                maximumCompatibleQueueCount, maximumComputeQueue.queueCount);
         }
 
         if (!missing.empty()) {
@@ -444,9 +475,10 @@ PhysicalDeviceSelection selectAmdDevice(VkInstance instance) {
         selected.physicalDevice = physicalDevice;
         selected.properties = properties;
         selected.accelerationProperties = accelerationProperties;
-        selected.queueFamily = queueFamily;
+        selected.queueFamily = computeQueue.family;
+        selected.queueCount = computeQueue.queueCount;
         selected.timestampValidBits =
-            queueTimestampValidBits(physicalDevice, queueFamily);
+            queueTimestampValidBits(physicalDevice, computeQueue.family);
         selected.deviceName = properties.deviceName;
         selected.requiresPortabilitySubset = hasPortabilitySubset;
         selected.scratchAlignment = std::max<VkDeviceSize>(
@@ -457,6 +489,14 @@ PhysicalDeviceSelection selectAmdDevice(VkInstance instance) {
     }
 
     if (selected.physicalDevice == VK_NULL_HANDLE) {
+        if (maximumCompatibleQueueCount != 0U &&
+            requestedQueueCount > maximumCompatibleQueueCount) {
+            throw std::invalid_argument(
+                "Requested " + std::to_string(requestedQueueCount) +
+                " Vulkan compute queues, but compatible AMD devices expose at most " +
+                std::to_string(maximumCompatibleQueueCount) +
+                " in one queue family.");
+        }
         std::ostringstream reason;
         reason << "No AMD Vulkan device satisfies the Ray Query backend requirements.";
         if (!rejectedAmdDevices.empty()) {
@@ -494,19 +534,31 @@ struct AccelerationFunctions {
 
 struct LogicalDevice {
     UniqueVulkanHandle<VkDevice> owner;
-    VkQueue queue{VK_NULL_HANDLE};
+    std::vector<VkQueue> queues;
     AccelerationFunctions acceleration;
 };
 
-LogicalDevice createLogicalDevice(const PhysicalDeviceSelection& physical) {
-    constexpr float kQueuePriority = 1.0F;
+LogicalDevice createLogicalDevice(
+    const PhysicalDeviceSelection& physical,
+    const std::uint32_t requestedQueueCount) {
+    if (requestedQueueCount == 0U) {
+        throw std::invalid_argument("The Vulkan compute queue count must be positive.");
+    }
+    if (requestedQueueCount > physical.queueCount) {
+        throw std::invalid_argument(
+            "Requested " + std::to_string(requestedQueueCount) +
+            " Vulkan compute queues, but queue family " +
+            std::to_string(physical.queueFamily) + " exposes only " +
+            std::to_string(physical.queueCount) + '.');
+    }
+    const std::vector<float> queuePriorities(requestedQueueCount, 1.0F);
     const VkDeviceQueueCreateInfo queueCreateInfo{
         VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         nullptr,
         0U,
         physical.queueFamily,
-        1U,
-        &kQueuePriority,
+        requestedQueueCount,
+        queuePriorities.data(),
     };
     VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
@@ -547,7 +599,19 @@ LogicalDevice createLogicalDevice(const PhysicalDeviceSelection& physical) {
         "vkCreateDevice");
     LogicalDevice result;
     result.owner.reset(device, [](VkDevice value) { vkDestroyDevice(value, nullptr); });
-    vkGetDeviceQueue(device, physical.queueFamily, 0U, &result.queue);
+    result.queues.resize(requestedQueueCount, VK_NULL_HANDLE);
+    for (std::uint32_t queueIndex = 0U;
+         queueIndex < requestedQueueCount;
+         ++queueIndex) {
+        vkGetDeviceQueue(
+            device,
+            physical.queueFamily,
+            queueIndex,
+            &result.queues[queueIndex]);
+        if (result.queues[queueIndex] == VK_NULL_HANDLE) {
+            throw std::runtime_error("vkGetDeviceQueue returned a null compute queue.");
+        }
+    }
     result.acceleration.create =
         loadDeviceFunction<PFN_vkCreateAccelerationStructureKHR>(
             device, "vkCreateAccelerationStructureKHR");
@@ -597,6 +661,7 @@ public:
     [[nodiscard]] VkDevice device() const noexcept;
     [[nodiscard]] const VkPhysicalDeviceProperties& physicalProperties() const noexcept;
     [[nodiscard]] const VkPhysicalDeviceMemoryProperties& memoryProperties() const noexcept;
+    [[nodiscard]] std::uint32_t computeQueueCount() const noexcept;
     [[nodiscard]] std::uint32_t timestampValidBits() const noexcept;
     [[nodiscard]] VkAccelerationStructureKHR topLevelAccelerationStructure() const noexcept;
     [[nodiscard]] const VulkanBuffer& vertexBuffer() const noexcept;
@@ -606,13 +671,18 @@ public:
     [[nodiscard]] const VulkanBuffer& textureDescriptorBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& textureMipBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& textureTexelBuffer() const noexcept;
+    [[nodiscard]] bool primitiveRemapRequired() const noexcept;
+    [[nodiscard]] const VulkanBuffer& primitiveRemapBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& areaLightBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& areaLightTriangleBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& environmentRowBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& environmentTexelBuffer() const noexcept;
     [[nodiscard]] std::mutex& operationMutex() noexcept;
-    [[nodiscard]] VkCommandBuffer beginCommands();
-    void submitAndWait(const char* description);
+    [[nodiscard]] VkCommandBuffer beginCommands(std::uint32_t queueIndex = 0U);
+    void submitAndWait(
+        const char* description,
+        std::uint32_t queueIndex = 0U,
+        bool publishToSecondaryQueues = false);
 
 private:
     struct State;
@@ -936,6 +1006,132 @@ bool hasReferencedCutout(const PackedSceneData& scene) noexcept {
         });
 }
 
+bool hasReferencedOpaque(const PackedSceneData& scene) noexcept {
+    return std::any_of(
+        scene.triangleMaterialIds.begin(),
+        scene.triangleMaterialIds.end(),
+        [&scene](std::uint32_t materialId) {
+            return (scene.materials[materialId].flagsAndReserved[0] &
+                    kPackedMaterialCutout) == 0U;
+        });
+}
+
+bool needsSplitAccelerationGeometry(
+    const PackedSceneData& scene, const VulkanRayQueryOptions& options) noexcept {
+    if (options.forceUnifiedCandidateGeometry) {
+        return false;
+    }
+    return hasReferencedOpaque(scene) && hasReferencedCutout(scene);
+}
+
+struct AccelerationGeometryPartition {
+    std::vector<std::uint32_t> triangleIndices;
+    std::vector<std::uint32_t> primitiveIds;
+    std::uint32_t opaquePrimitiveCount{0U};
+    std::uint32_t cutoutPrimitiveCount{0U};
+};
+
+AccelerationGeometryPartition partitionAccelerationGeometry(
+    const PackedSceneData& scene, bool primitiveRemapRequired) {
+    AccelerationGeometryPartition result;
+    if (!primitiveRemapRequired) {
+        if (hasReferencedCutout(scene)) {
+            result.cutoutPrimitiveCount =
+                static_cast<std::uint32_t>(scene.triangleCount());
+        } else {
+            result.opaquePrimitiveCount =
+                static_cast<std::uint32_t>(scene.triangleCount());
+        }
+        return result;
+    }
+
+    result.triangleIndices.reserve(scene.triangleIndices.size());
+    result.primitiveIds.reserve(scene.triangleCount());
+    const auto appendCategory = [&](bool cutout) {
+        for (std::size_t primitiveIndex = 0U;
+             primitiveIndex < scene.triangleCount();
+             ++primitiveIndex) {
+            const std::uint32_t materialId = scene.triangleMaterialIds[primitiveIndex];
+            const bool primitiveIsCutout =
+                (scene.materials[materialId].flagsAndReserved[0] &
+                 kPackedMaterialCutout) != 0U;
+            if (primitiveIsCutout != cutout) {
+                continue;
+            }
+            const std::size_t firstIndex = primitiveIndex * 3U;
+            result.triangleIndices.insert(
+                result.triangleIndices.end(),
+                scene.triangleIndices.begin() +
+                    static_cast<std::ptrdiff_t>(firstIndex),
+                scene.triangleIndices.begin() +
+                    static_cast<std::ptrdiff_t>(firstIndex + 3U));
+            result.primitiveIds.push_back(
+                static_cast<std::uint32_t>(primitiveIndex));
+        }
+    };
+
+    appendCategory(false);
+    result.opaquePrimitiveCount =
+        static_cast<std::uint32_t>(result.primitiveIds.size());
+    appendCategory(true);
+    result.cutoutPrimitiveCount =
+        static_cast<std::uint32_t>(result.primitiveIds.size()) -
+        result.opaquePrimitiveCount;
+    return result;
+}
+
+struct AccelerationGeometryRange {
+    std::uint32_t firstPrimitive{0U};
+    std::uint32_t primitiveCount{0U};
+    bool opaque{false};
+};
+
+std::vector<AccelerationGeometryRange> accelerationGeometryRanges(
+    const AccelerationGeometryPartition& partition) {
+    std::vector<AccelerationGeometryRange> result;
+    result.reserve(2U);
+    if (partition.opaquePrimitiveCount != 0U) {
+        result.push_back(
+            AccelerationGeometryRange{0U, partition.opaquePrimitiveCount, true});
+    }
+    if (partition.cutoutPrimitiveCount != 0U) {
+        result.push_back(AccelerationGeometryRange{
+            partition.opaquePrimitiveCount,
+            partition.cutoutPrimitiveCount,
+            false});
+    }
+    return result;
+}
+
+std::vector<std::uint32_t> makePrimitiveRemapWords(
+    const AccelerationGeometryPartition& partition,
+    const std::vector<AccelerationGeometryRange>& ranges) {
+    std::vector<std::uint32_t> result(4U + partition.primitiveIds.size());
+    result[0] = ranges[0].firstPrimitive;
+    result[1] = ranges[0].primitiveCount;
+    result[2] = ranges.size() == 2U ? ranges[1].firstPrimitive : 0U;
+    result[3] = ranges.size() == 2U ? ranges[1].primitiveCount : 0U;
+    std::copy(
+        partition.primitiveIds.begin(),
+        partition.primitiveIds.end(),
+        result.begin() + 4);
+    return result;
+}
+
+std::size_t primitiveRemapWordCount(
+    std::size_t triangleCount, bool primitiveRemapRequired) {
+    constexpr std::size_t kHeaderWordCount = 4U;
+    if (!primitiveRemapRequired) {
+        return kHeaderWordCount;
+    }
+    if (triangleCount >
+        std::numeric_limits<std::size_t>::max() - kHeaderWordCount) {
+        throw std::overflow_error(
+            "Acceleration primitive remap word count overflow.");
+    }
+    return kHeaderWordCount + triangleCount;
+}
+
 template <typename Element>
 VkDeviceSize packedArrayBufferByteSize(
     const std::vector<Element>& elements, const char* description) {
@@ -965,7 +1161,8 @@ struct TextureTexelPagingPlan {
 TextureTexelPagingPlan makeTextureTexelPagingPlan(
     const PackedSceneData& scene,
     const PhysicalDeviceSelection& physical,
-    std::uint64_t preferredPageBytes) {
+    const std::uint64_t preferredPageBytes,
+    const std::uint32_t computeQueueCount) {
     if (scene.textureTexelsRgba8.size() >
         std::numeric_limits<std::uint32_t>::max()) {
         throw std::invalid_argument(
@@ -1018,10 +1215,12 @@ TextureTexelPagingPlan makeTextureTexelPagingPlan(
             "The packed texture texel page table exceeds maxStorageBufferRange.");
     }
 
-    // Runtime resources plus a renderer's output/readback buffers consume at most seventeen
-    // additional VkDeviceMemory allocations while the paged texels remain alive.
-    constexpr std::uint64_t kPeakNonTexelPageAllocationCount = 17U;
-    if (pageCount64 + kPeakNonTexelPageAllocationCount >
+    // Persistent runtime resources consume at most seventeen allocations. A path renderer adds
+    // one device output and one host readback allocation for each concurrently driven queue.
+    constexpr std::uint64_t kRuntimeAllocationCount = 17U;
+    const std::uint64_t peakNonTexelPageAllocationCount =
+        kRuntimeAllocationCount + 2U * static_cast<std::uint64_t>(computeQueueCount);
+    if (pageCount64 + peakNonTexelPageAllocationCount >
         physical.properties.limits.maxMemoryAllocationCount) {
         throw std::invalid_argument(
             "The packed texture texel pages exceed maxMemoryAllocationCount.");
@@ -1049,6 +1248,11 @@ void validatePackedSceneForGpu(
         throw std::invalid_argument(
             "The packed scene exceeds this device's acceleration-structure limits.");
     }
+    if (needsSplitAccelerationGeometry(scene, options)) {
+        if (physical.accelerationProperties.maxGeometryCount == 1U) {
+            throw std::invalid_argument("The device cannot build two scene geometries.");
+        }
+    }
     for (std::uint32_t materialId : scene.triangleMaterialIds) {
         const PackedMaterial& material = scene.materials[materialId];
         if ((material.flagsAndReserved[0] & kPackedMaterialCutout) != 0U &&
@@ -1069,6 +1273,13 @@ void validatePackedSceneForGpu(
         scene.triangleMaterialIds.size(),
         sizeof(std::uint32_t),
         "Packed triangle material ID buffer");
+    const bool primitiveRemapRequired =
+        needsSplitAccelerationGeometry(scene, options);
+    const VkDeviceSize primitiveRemapBytes = checkedVulkanByteSize(
+        primitiveRemapWordCount(
+            scene.triangleCount(), primitiveRemapRequired),
+        sizeof(std::uint32_t),
+        "Acceleration primitive remap buffer");
     const VkDeviceSize materialBytes = checkedVulkanByteSize(
         scene.materials.size(), sizeof(PackedMaterial), "Packed material buffer");
 
@@ -1077,7 +1288,10 @@ void validatePackedSceneForGpu(
     const VkDeviceSize textureMipBytes = packedArrayBufferByteSize(
         scene.textureMipLevels, "Packed texture mip buffer");
     static_cast<void>(makeTextureTexelPagingPlan(
-        scene, physical, options.textureTexelPageBytes));
+        scene,
+        physical,
+        options.textureTexelPageBytes,
+        options.computeQueueCount));
     const VkDeviceSize areaLightBytes = packedArrayBufferByteSize(
         scene.areaLights, "Packed area light buffer");
     const VkDeviceSize areaLightTriangleBytes = packedArrayBufferByteSize(
@@ -1099,6 +1313,8 @@ void validatePackedSceneForGpu(
     requireStorageBufferRange(indexBytes, "Packed index buffer");
     requireStorageBufferRange(
         triangleMaterialIdBytes, "Packed triangle material ID buffer");
+    requireStorageBufferRange(
+        primitiveRemapBytes, "Acceleration primitive remap buffer");
     requireStorageBufferRange(materialBytes, "Packed material buffer");
     requireStorageBufferRange(
         textureDescriptorBytes, "Packed texture descriptor buffer");
@@ -1117,11 +1333,13 @@ struct VulkanRuntime::Implementation::State {
     State(const PackedSceneData& scene, VulkanRayQueryOptions runtimeOptions)
         : validation(runtimeOptions.requestValidation),
           instance(runtimeOptions.requestValidation, validation),
-          physical(selectAmdDevice(instance.get())),
-          logical(createLogicalDevice(physical)),
+          physical(selectAmdDevice(
+              instance.get(), runtimeOptions.computeQueueCount)),
+          logical(createLogicalDevice(physical, runtimeOptions.computeQueueCount)),
           options(runtimeOptions),
           triangleCount(scene.triangleCount()),
-          hasAlphaCutout(hasReferencedCutout(scene)) {}
+          primitiveRemapRequired(
+              needsSplitAccelerationGeometry(scene, runtimeOptions)) {}
 
     ValidationState validation;
     VulkanInstance instance;
@@ -1130,12 +1348,26 @@ struct VulkanRuntime::Implementation::State {
     VulkanRayQueryOptions options;
     VulkanRayQuerySetupTimings timings;
     std::size_t triangleCount{0U};
-    bool hasAlphaCutout{false};
+    bool primitiveRemapRequired{false};
     std::mutex operationMutex;
+    // Vulkan requires device-wide idle waits to be externally synchronized against host access
+    // to every queue. This lock covers only queue host calls, never fence waits or GPU work.
+    std::mutex queueHostAccessMutex;
+    bool queueSubmissionPoisoned{false};
+
+    struct QueueCommandResources {
+        UniqueVulkanHandle<VkCommandPool> commandPool;
+        VkCommandBuffer commandBuffer{VK_NULL_HANDLE};
+        UniqueVulkanHandle<VkFence> fence;
+        UniqueVulkanHandle<VkSemaphore> initializationSemaphore;
+        bool waitsForInitialization{false};
+    };
 
     std::unique_ptr<VulkanBuffer> vertexBuffer;
     std::unique_ptr<VulkanBuffer> indexBuffer;
+    std::unique_ptr<VulkanBuffer> accelerationIndexBuffer;
     std::unique_ptr<VulkanBuffer> triangleMaterialIdBuffer;
+    std::unique_ptr<VulkanBuffer> primitiveRemapBuffer;
     std::unique_ptr<VulkanBuffer> materialBuffer;
     std::unique_ptr<VulkanBuffer> textureDescriptorBuffer;
     std::unique_ptr<VulkanBuffer> textureMipBuffer;
@@ -1150,9 +1382,7 @@ struct VulkanRuntime::Implementation::State {
     std::unique_ptr<AccelerationStructure> bottomLevel;
     std::unique_ptr<AccelerationStructure> topLevel;
 
-    UniqueVulkanHandle<VkCommandPool> commandPool;
-    VkCommandBuffer commandBuffer{VK_NULL_HANDLE};
-    UniqueVulkanHandle<VkFence> fence;
+    std::vector<QueueCommandResources> queueCommands;
 };
 
 VulkanRuntime::Implementation::Implementation(
@@ -1174,6 +1404,7 @@ VulkanRuntime::Implementation::~Implementation() {
     if (state_->logical.owner.get() != VK_NULL_HANDLE) {
         // Public operations are synchronous. This is a final defensive quiescence before
         // dependent resources begin their reverse-order destruction.
+        std::lock_guard<std::mutex> queueHostLock{state_->queueHostAccessMutex};
         (void)vkDeviceWaitIdle(state_->logical.owner.get());
     }
 }
@@ -1207,6 +1438,10 @@ VulkanRuntime::Implementation::physicalProperties() const noexcept {
 const VkPhysicalDeviceMemoryProperties&
 VulkanRuntime::Implementation::memoryProperties() const noexcept {
     return state_->physical.memoryProperties;
+}
+
+std::uint32_t VulkanRuntime::Implementation::computeQueueCount() const noexcept {
+    return static_cast<std::uint32_t>(state_->logical.queues.size());
 }
 
 std::uint32_t VulkanRuntime::Implementation::timestampValidBits() const noexcept {
@@ -1248,6 +1483,14 @@ const VulkanBuffer& VulkanRuntime::Implementation::textureTexelBuffer() const no
     return *state_->textureTexelPageTableBuffer;
 }
 
+bool VulkanRuntime::Implementation::primitiveRemapRequired() const noexcept {
+    return state_->primitiveRemapRequired;
+}
+
+const VulkanBuffer& VulkanRuntime::Implementation::primitiveRemapBuffer() const noexcept {
+    return *state_->primitiveRemapBuffer;
+}
+
 const VulkanBuffer& VulkanRuntime::Implementation::areaLightBuffer() const noexcept {
     return *state_->areaLightBuffer;
 }
@@ -1271,10 +1514,22 @@ std::mutex& VulkanRuntime::Implementation::operationMutex() noexcept {
     return state_->operationMutex;
 }
 
-VkCommandBuffer VulkanRuntime::Implementation::beginCommands() {
+VkCommandBuffer VulkanRuntime::Implementation::beginCommands(
+    const std::uint32_t queueIndex) {
+    if (queueIndex >= state_->queueCommands.size()) {
+        throw std::out_of_range("The Vulkan compute queue index is out of range.");
+    }
+    {
+        std::lock_guard<std::mutex> queueHostLock{state_->queueHostAccessMutex};
+        if (state_->queueSubmissionPoisoned) {
+            throw std::runtime_error(
+                "Vulkan queue submissions are unavailable after a prior failure.");
+        }
+    }
+    State::QueueCommandResources& resources = state_->queueCommands[queueIndex];
     const VkDevice logicalDevice = device();
     requireVulkanSuccess(
-        vkResetCommandPool(logicalDevice, state_->commandPool.get(), 0U),
+        vkResetCommandPool(logicalDevice, resources.commandPool.get(), 0U),
         "vkResetCommandPool");
     const VkCommandBufferBeginInfo beginInfo{
         VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1283,33 +1538,83 @@ VkCommandBuffer VulkanRuntime::Implementation::beginCommands() {
         nullptr,
     };
     requireVulkanSuccess(
-        vkBeginCommandBuffer(state_->commandBuffer, &beginInfo),
+        vkBeginCommandBuffer(resources.commandBuffer, &beginInfo),
         "vkBeginCommandBuffer");
-    return state_->commandBuffer;
+    return resources.commandBuffer;
 }
 
-void VulkanRuntime::Implementation::submitAndWait(const char* description) {
+void VulkanRuntime::Implementation::submitAndWait(
+    const char* description,
+    const std::uint32_t queueIndex,
+    const bool publishToSecondaryQueues) {
+    if (queueIndex >= state_->queueCommands.size()) {
+        throw std::out_of_range("The Vulkan compute queue index is out of range.");
+    }
+    if (publishToSecondaryQueues && queueIndex != 0U) {
+        throw std::logic_error(
+            "Only the primary Vulkan queue can publish immutable runtime resources.");
+    }
+    State::QueueCommandResources& resources = state_->queueCommands[queueIndex];
+    const VkQueue queue = state_->logical.queues[queueIndex];
     const VkDevice logicalDevice = device();
     requireVulkanSuccess(
-        vkEndCommandBuffer(state_->commandBuffer), "vkEndCommandBuffer");
-    const VkFence fence = state_->fence.get();
+        vkEndCommandBuffer(resources.commandBuffer), "vkEndCommandBuffer");
+    const VkFence fence = resources.fence.get();
     requireVulkanSuccess(
         vkResetFences(logicalDevice, 1U, &fence), "vkResetFences");
+
+    VkSemaphore initializationWait = VK_NULL_HANDLE;
+    VkPipelineStageFlags initializationWaitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    if (resources.waitsForInitialization) {
+        initializationWait = resources.initializationSemaphore.get();
+        if (initializationWait == VK_NULL_HANDLE) {
+            throw std::logic_error(
+                "A secondary Vulkan queue is missing its initialization semaphore.");
+        }
+    }
+    std::vector<VkSemaphore> initializationSignals;
+    if (publishToSecondaryQueues) {
+        initializationSignals.reserve(state_->queueCommands.size() - 1U);
+        for (std::size_t index = 1U; index < state_->queueCommands.size(); ++index) {
+            const VkSemaphore semaphore =
+                state_->queueCommands[index].initializationSemaphore.get();
+            if (semaphore == VK_NULL_HANDLE) {
+                throw std::logic_error(
+                    "A secondary Vulkan queue is missing its initialization semaphore.");
+            }
+            initializationSignals.push_back(semaphore);
+        }
+    }
     const VkSubmitInfo submitInfo{
         VK_STRUCTURE_TYPE_SUBMIT_INFO,
         nullptr,
-        0U,
-        nullptr,
-        nullptr,
+        resources.waitsForInitialization ? 1U : 0U,
+        resources.waitsForInitialization ? &initializationWait : nullptr,
+        resources.waitsForInitialization ? &initializationWaitStage : nullptr,
         1U,
-        &state_->commandBuffer,
-        0U,
-        nullptr,
+        &resources.commandBuffer,
+        static_cast<std::uint32_t>(initializationSignals.size()),
+        initializationSignals.empty() ? nullptr : initializationSignals.data(),
     };
-    requireVulkanSuccess(
-        vkQueueSubmit(
-            state_->logical.queue, 1U, &submitInfo, state_->fence.get()),
-        "vkQueueSubmit");
+    {
+        std::lock_guard<std::mutex> queueHostLock{state_->queueHostAccessMutex};
+        if (state_->queueSubmissionPoisoned) {
+            throw std::runtime_error(
+                "Vulkan queue submissions are unavailable after a prior failure.");
+        }
+        const VkResult submitResult =
+            vkQueueSubmit(queue, 1U, &submitInfo, resources.fence.get());
+        if (submitResult != VK_SUCCESS) {
+            state_->queueSubmissionPoisoned = true;
+            requireVulkanSuccess(submitResult, "vkQueueSubmit");
+        }
+    }
+    resources.waitsForInitialization = false;
+    if (publishToSecondaryQueues) {
+        for (std::size_t index = 1U; index < state_->queueCommands.size(); ++index) {
+            state_->queueCommands[index].waitsForInitialization = true;
+        }
+    }
     const VkResult waitResult = vkWaitForFences(
         logicalDevice,
         1U,
@@ -1318,13 +1623,19 @@ void VulkanRuntime::Implementation::submitAndWait(const char* description) {
         state_->options.fenceTimeoutNanoseconds);
     if (waitResult != VK_SUCCESS) {
         // Once submitted, no dependent resource may unwind while the queue can still use it.
-        const VkResult queueIdle = vkQueueWaitIdle(state_->logical.queue);
-        if (queueIdle != VK_SUCCESS && queueIdle != VK_ERROR_DEVICE_LOST) {
-            const VkResult deviceIdle = vkDeviceWaitIdle(logicalDevice);
-            if (deviceIdle != VK_SUCCESS && deviceIdle != VK_ERROR_DEVICE_LOST) {
-                throw std::runtime_error(
-                    std::string{description} +
-                    " could not quiesce the Vulkan device after a fence failure.");
+        {
+            std::lock_guard<std::mutex> queueHostLock{state_->queueHostAccessMutex};
+            // Prevent a worker that already recorded its next tile from submitting after this
+            // quiescence step and before the failing worker publishes its stop request.
+            state_->queueSubmissionPoisoned = true;
+            const VkResult queueIdle = vkQueueWaitIdle(queue);
+            if (queueIdle != VK_SUCCESS && queueIdle != VK_ERROR_DEVICE_LOST) {
+                const VkResult deviceIdle = vkDeviceWaitIdle(logicalDevice);
+                if (deviceIdle != VK_SUCCESS && deviceIdle != VK_ERROR_DEVICE_LOST) {
+                    throw std::runtime_error(
+                        std::string{description} +
+                        " could not quiesce the Vulkan device after a fence failure.");
+                }
             }
         }
         if (waitResult == VK_TIMEOUT) {
@@ -1337,59 +1648,98 @@ void VulkanRuntime::Implementation::submitAndWait(const char* description) {
 
 void VulkanRuntime::Implementation::createCommandResources() {
     const VkDevice logicalDevice = device();
-    const VkCommandPoolCreateInfo poolInfo{
-        VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        nullptr,
-        VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
-            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        state_->physical.queueFamily,
-    };
-    VkCommandPool commandPool = VK_NULL_HANDLE;
-    requireVulkanSuccess(
-        vkCreateCommandPool(logicalDevice, &poolInfo, nullptr, &commandPool),
-        "vkCreateCommandPool");
-    state_->commandPool.reset(
-        commandPool,
-        [logicalDevice](VkCommandPool value) {
-            vkDestroyCommandPool(logicalDevice, value, nullptr);
-        });
-    const VkCommandBufferAllocateInfo allocateInfo{
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        nullptr,
-        commandPool,
-        VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        1U,
-    };
-    requireVulkanSuccess(
-        vkAllocateCommandBuffers(
-            logicalDevice, &allocateInfo, &state_->commandBuffer),
-        "vkAllocateCommandBuffers");
+    state_->queueCommands.reserve(state_->logical.queues.size());
+    for (std::size_t queueIndex = 0U;
+         queueIndex < state_->logical.queues.size();
+         ++queueIndex) {
+        State::QueueCommandResources resources;
+        const VkCommandPoolCreateInfo poolInfo{
+            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            nullptr,
+            VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
+                VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            state_->physical.queueFamily,
+        };
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+        requireVulkanSuccess(
+            vkCreateCommandPool(logicalDevice, &poolInfo, nullptr, &commandPool),
+            "vkCreateCommandPool");
+        resources.commandPool.reset(
+            commandPool,
+            [logicalDevice](VkCommandPool value) {
+                vkDestroyCommandPool(logicalDevice, value, nullptr);
+            });
+        const VkCommandBufferAllocateInfo allocateInfo{
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            nullptr,
+            commandPool,
+            VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            1U,
+        };
+        requireVulkanSuccess(
+            vkAllocateCommandBuffers(
+                logicalDevice, &allocateInfo, &resources.commandBuffer),
+            "vkAllocateCommandBuffers");
 
-    const VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    VkFence fence = VK_NULL_HANDLE;
-    requireVulkanSuccess(
-        vkCreateFence(logicalDevice, &fenceInfo, nullptr, &fence),
-        "vkCreateFence");
-    state_->fence.reset(
-        fence,
-        [logicalDevice](VkFence value) {
-            vkDestroyFence(logicalDevice, value, nullptr);
-        });
+        const VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        VkFence fence = VK_NULL_HANDLE;
+        requireVulkanSuccess(
+            vkCreateFence(logicalDevice, &fenceInfo, nullptr, &fence),
+            "vkCreateFence");
+        resources.fence.reset(
+            fence,
+            [logicalDevice](VkFence value) {
+                vkDestroyFence(logicalDevice, value, nullptr);
+            });
+        if (queueIndex != 0U) {
+            const VkSemaphoreCreateInfo semaphoreInfo{
+                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            VkSemaphore semaphore = VK_NULL_HANDLE;
+            requireVulkanSuccess(
+                vkCreateSemaphore(
+                    logicalDevice, &semaphoreInfo, nullptr, &semaphore),
+                "vkCreateSemaphore");
+            resources.initializationSemaphore.reset(
+                semaphore,
+                [logicalDevice](VkSemaphore value) {
+                    vkDestroySemaphore(logicalDevice, value, nullptr);
+                });
+        }
+        state_->queueCommands.push_back(std::move(resources));
+    }
 }
 
 void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene) {
     const VulkanClock::time_point uploadBegin = VulkanClock::now();
     const VkDevice logicalDevice = device();
+    const AccelerationGeometryPartition accelerationPartition =
+        partitionAccelerationGeometry(
+            scene, state_->primitiveRemapRequired);
+    const std::vector<AccelerationGeometryRange> geometryRanges =
+        accelerationGeometryRanges(accelerationPartition);
+    const bool usesPartitionedIndexBuffer = state_->primitiveRemapRequired;
+    const std::vector<std::uint32_t> primitiveRemapWords =
+        makePrimitiveRemapWords(accelerationPartition, geometryRanges);
     const VkDeviceSize vertexBytes = checkedVulkanByteSize(
         scene.vertices.size(), sizeof(PackedVertex), "Packed vertex buffer");
     const VkDeviceSize indexBytes = checkedVulkanByteSize(
         scene.triangleIndices.size(),
         sizeof(std::uint32_t),
         "Packed index buffer");
+    const VkDeviceSize accelerationIndexBytes = checkedVulkanByteSize(
+        usesPartitionedIndexBuffer
+            ? accelerationPartition.triangleIndices.size()
+            : scene.triangleIndices.size(),
+        sizeof(std::uint32_t),
+        "Acceleration index buffer");
     const VkDeviceSize triangleMaterialIdBytes = checkedVulkanByteSize(
         scene.triangleMaterialIds.size(),
         sizeof(std::uint32_t),
         "Packed triangle material ID buffer");
+    const VkDeviceSize primitiveRemapBytes = checkedVulkanByteSize(
+        primitiveRemapWords.size(),
+        sizeof(std::uint32_t),
+        "Acceleration primitive remap buffer");
     const VkDeviceSize materialBytes = checkedVulkanByteSize(
         scene.materials.size(), sizeof(PackedMaterial), "Packed material buffer");
     const VkDeviceSize textureDescriptorBytes = packedArrayBufferByteSize(
@@ -1400,7 +1750,8 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         makeTextureTexelPagingPlan(
             scene,
             state_->physical,
-            state_->options.textureTexelPageBytes);
+            state_->options.textureTexelPageBytes,
+            state_->options.computeQueueCount);
     std::vector<TextureTexelPageTableRecord> textureTexelPageTable(
         static_cast<std::size_t>(textureTexelPlan.pageCount) + 1U);
     textureTexelPageTable[0].values = {
@@ -1447,10 +1798,26 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         kGeometryUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         true);
+    if (usesPartitionedIndexBuffer) {
+        state_->accelerationIndexBuffer = std::make_unique<VulkanBuffer>(
+            logicalDevice,
+            state_->physical.memoryProperties,
+            accelerationIndexBytes,
+            kGeometryUsage,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            true);
+    }
     state_->triangleMaterialIdBuffer = std::make_unique<VulkanBuffer>(
         logicalDevice,
         state_->physical.memoryProperties,
         triangleMaterialIdBytes,
+        kShadingDataUsage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        false);
+    state_->primitiveRemapBuffer = std::make_unique<VulkanBuffer>(
+        logicalDevice,
+        state_->physical.memoryProperties,
+        primitiveRemapBytes,
         kShadingDataUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         false);
@@ -1552,31 +1919,56 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         false);
 
-    VkAccelerationStructureGeometryKHR bottomGeometry{
-        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-    bottomGeometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-    bottomGeometry.flags =
-        state_->hasAlphaCutout
-            ? VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR
-            : VK_GEOMETRY_OPAQUE_BIT_KHR;
-    bottomGeometry.geometry.triangles.sType =
-        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-    bottomGeometry.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-    bottomGeometry.geometry.triangles.vertexData.deviceAddress =
-        state_->vertexBuffer->deviceAddress();
-    if (bottomGeometry.geometry.triangles.vertexData.deviceAddress % sizeof(float) != 0U) {
+    const VkDeviceAddress vertexAddress = state_->vertexBuffer->deviceAddress();
+    if (vertexAddress % sizeof(float) != 0U) {
         throw std::runtime_error("The Vulkan vertex buffer address is misaligned.");
     }
-    bottomGeometry.geometry.triangles.vertexStride = sizeof(PackedVertex);
-    bottomGeometry.geometry.triangles.maxVertex =
-        static_cast<std::uint32_t>(scene.vertices.size() - 1U);
-    bottomGeometry.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
-    bottomGeometry.geometry.triangles.indexData.deviceAddress =
-        state_->indexBuffer->deviceAddress();
-    if (bottomGeometry.geometry.triangles.indexData.deviceAddress %
-            sizeof(std::uint32_t) !=
-        0U) {
+    const VulkanBuffer& accelerationIndexBuffer =
+        state_->accelerationIndexBuffer
+            ? *state_->accelerationIndexBuffer
+            : *state_->indexBuffer;
+    const VkDeviceAddress accelerationIndexAddress =
+        accelerationIndexBuffer.deviceAddress();
+    if (accelerationIndexAddress % sizeof(std::uint32_t) != 0U) {
         throw std::runtime_error("The Vulkan index buffer address is misaligned.");
+    }
+
+    std::vector<VkAccelerationStructureGeometryKHR> bottomGeometries;
+    std::vector<std::uint32_t> maximumPrimitiveCounts;
+    std::vector<VkAccelerationStructureBuildRangeInfoKHR> bottomRanges;
+    bottomGeometries.reserve(geometryRanges.size());
+    maximumPrimitiveCounts.reserve(geometryRanges.size());
+    bottomRanges.reserve(geometryRanges.size());
+    for (const AccelerationGeometryRange& range : geometryRanges) {
+        const VkDeviceSize indexByteOffset =
+            static_cast<VkDeviceSize>(range.firstPrimitive) * 3U *
+            sizeof(std::uint32_t);
+        if (accelerationIndexAddress >
+            std::numeric_limits<VkDeviceAddress>::max() - indexByteOffset) {
+            throw std::overflow_error("Acceleration index address overflow.");
+        }
+        VkAccelerationStructureGeometryKHR geometry{
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+        geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        geometry.flags = range.opaque
+                             ? VK_GEOMETRY_OPAQUE_BIT_KHR
+                             : VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
+        geometry.geometry.triangles.sType =
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        geometry.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        geometry.geometry.triangles.vertexData.deviceAddress = vertexAddress;
+        geometry.geometry.triangles.vertexStride = sizeof(PackedVertex);
+        geometry.geometry.triangles.maxVertex =
+            static_cast<std::uint32_t>(scene.vertices.size() - 1U);
+        geometry.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
+        geometry.geometry.triangles.indexData.deviceAddress =
+            accelerationIndexAddress + indexByteOffset;
+        bottomGeometries.push_back(geometry);
+        maximumPrimitiveCounts.push_back(range.primitiveCount);
+        // The per-geometry address already starts at a complete index triplet. A zero
+        // primitiveOffset therefore preserves uint32 index alignment for every range.
+        bottomRanges.push_back(VkAccelerationStructureBuildRangeInfoKHR{
+            range.primitiveCount, 0U, 0U, 0U});
     }
 
     VkAccelerationStructureBuildGeometryInfoKHR bottomBuildInfo{
@@ -1584,17 +1976,16 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
     bottomBuildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
     bottomBuildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
     bottomBuildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    bottomBuildInfo.geometryCount = 1U;
-    bottomBuildInfo.pGeometries = &bottomGeometry;
-    const std::uint32_t primitiveCount =
-        static_cast<std::uint32_t>(state_->triangleCount);
+    bottomBuildInfo.geometryCount =
+        static_cast<std::uint32_t>(bottomGeometries.size());
+    bottomBuildInfo.pGeometries = bottomGeometries.data();
     VkAccelerationStructureBuildSizesInfoKHR bottomSizes{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
     state_->logical.acceleration.getBuildSizes(
         logicalDevice,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &bottomBuildInfo,
-        &primitiveCount,
+        maximumPrimitiveCounts.data(),
         &bottomSizes);
     state_->bottomLevel = std::make_unique<AccelerationStructure>(
         logicalDevice,
@@ -1665,7 +2056,9 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         std::max(
             {vertexBytes,
              indexBytes,
+             accelerationIndexBytes,
              triangleMaterialIdBytes,
+             primitiveRemapBytes,
              materialBytes,
              instanceBytes,
              textureDescriptorBytes,
@@ -1749,6 +2142,15 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         kGeometryDestinationAccess,
         kGeometryDestinationStages,
         "packed index upload");
+    if (state_->accelerationIndexBuffer) {
+        uploadPackedBuffer(
+            *state_->accelerationIndexBuffer,
+            accelerationPartition.triangleIndices.data(),
+            accelerationIndexBytes,
+            VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            "acceleration index upload");
+    }
     uploadPackedBuffer(
         *state_->triangleMaterialIdBuffer,
         scene.triangleMaterialIds.data(),
@@ -1756,6 +2158,13 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         kShaderDestinationAccess,
         kShaderDestinationStage,
         "packed triangle material ID upload");
+    uploadPackedBuffer(
+        *state_->primitiveRemapBuffer,
+        primitiveRemapWords.data(),
+        primitiveRemapBytes,
+        kShaderDestinationAccess,
+        kShaderDestinationStage,
+        "acceleration primitive remap upload");
     uploadPackedBuffer(
         *state_->materialBuffer,
         scene.materials.data(),
@@ -1895,13 +2304,8 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
 
     const VulkanClock::time_point buildBegin = VulkanClock::now();
     const VkCommandBuffer buildCommands = beginCommands();
-    const VkAccelerationStructureBuildRangeInfoKHR bottomRange{
-        primitiveCount,
-        0U,
-        0U,
-        0U,
-    };
-    const VkAccelerationStructureBuildRangeInfoKHR* bottomRangePointer = &bottomRange;
+    const VkAccelerationStructureBuildRangeInfoKHR* bottomRangePointer =
+        bottomRanges.data();
     state_->logical.acceleration.cmdBuild(
         buildCommands, 1U, &bottomBuildInfo, &bottomRangePointer);
     const VkMemoryBarrier bottomToTopBarrier{
@@ -1949,7 +2353,10 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         nullptr,
         0U,
         nullptr);
-    submitAndWait("acceleration-structure build");
+    // The binary semaphores make the immutable upload and AS-build writes visible to the first
+    // submission on every secondary queue. A host fence wait alone is not an inter-queue memory
+    // dependency under Vulkan's synchronization model.
+    submitAndWait("acceleration-structure build", 0U, true);
     state_->timings.accelerationStructureBuildMilliseconds =
         elapsedMilliseconds(buildBegin);
     // This immutable runtime never updates or rebuilds its acceleration structures.
@@ -1996,6 +2403,10 @@ VulkanRuntime::memoryProperties() const noexcept {
     return implementation_->memoryProperties();
 }
 
+std::uint32_t VulkanRuntime::computeQueueCount() const noexcept {
+    return implementation_->computeQueueCount();
+}
+
 std::uint32_t VulkanRuntime::timestampValidBits() const noexcept {
     return implementation_->timestampValidBits();
 }
@@ -2033,6 +2444,14 @@ const VulkanBuffer& VulkanRuntime::textureTexelBuffer() const noexcept {
     return implementation_->textureTexelBuffer();
 }
 
+bool VulkanRuntime::primitiveRemapRequired() const noexcept {
+    return implementation_->primitiveRemapRequired();
+}
+
+const VulkanBuffer& VulkanRuntime::primitiveRemapBuffer() const noexcept {
+    return implementation_->primitiveRemapBuffer();
+}
+
 const VulkanBuffer& VulkanRuntime::areaLightBuffer() const noexcept {
     return implementation_->areaLightBuffer();
 }
@@ -2053,12 +2472,14 @@ std::mutex& VulkanRuntime::operationMutex() noexcept {
     return implementation_->operationMutex();
 }
 
-VkCommandBuffer VulkanRuntime::beginCommands() {
-    return implementation_->beginCommands();
+VkCommandBuffer VulkanRuntime::beginCommands(const std::uint32_t queueIndex) {
+    return implementation_->beginCommands(queueIndex);
 }
 
-void VulkanRuntime::submitAndWait(const char* description) {
-    implementation_->submitAndWait(description);
+void VulkanRuntime::submitAndWait(
+    const char* description,
+    const std::uint32_t queueIndex) {
+    implementation_->submitAndWait(description, queueIndex);
 }
 
 }  // namespace raym0nade::gpu::detail

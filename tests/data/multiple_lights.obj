@@ -1,0 +1,25 @@
+mtllib multiple_lights.mtl
+
+o RedLight
+v -2.8 -0.4 3.0
+v -2.0 0.4 3.0
+v -1.2 -0.4 3.0
+vn 0.0 0.0 -1.0
+usemtl RedLight
+f 1//1 2//1 3//1
+
+o GreenLight
+v -0.6 -0.6 2.5
+v 0.0 0.6 2.5
+v 0.6 -0.6 2.5
+vn 0.0 0.0 -1.0
+usemtl GreenLight
+f 4//2 5//2 6//2
+
+o BlueLight
+v 1.3 -0.5 4.0
+v 2.0 0.5 4.0
+v 2.7 -0.5 4.0
+vn 0.0 0.0 -1.0
+usemtl BlueLight
+f 7//3 8//3 9//3

@@ -6,6 +6,19 @@
 #include <vector>
 
 namespace raym0nade {
+
+namespace sampling_detail {
+
+std::size_t firstCumulativeWeightAbove(
+    const std::vector<double>& cumulativeWeights, double target) noexcept {
+    return static_cast<std::size_t>(
+        std::upper_bound(
+            cumulativeWeights.begin(), cumulativeWeights.end(), target) -
+        cumulativeWeights.begin());
+}
+
+}  // namespace sampling_detail
+
 namespace {
 
 constexpr int kMaximumSamplingAttempts = 1;
@@ -195,15 +208,94 @@ int sampleLightObject(
     return lastValid;
 }
 
+struct AreaLightWeightCache {
+    std::vector<double>& weights;
+    std::vector<double>& cumulativeWeights;
+    std::uint64_t& modelIdentity;
+    vec3& position;
+    std::size_t& lightCount;
+    double& totalWeight;
+    int& lastValidIndex;
+    bool& initialized;
+};
+
+bool exactlyEqualPosition(const vec3& left, const vec3& right) noexcept {
+    return left.x == right.x && left.y == right.y && left.z == right.z;
+}
+
+int sampleLightObjectCached(
+    const vec3& position,
+    const Model& model,
+    Generator& generator,
+    AreaLightWeightCache& cache,
+    float& objectProbability) {
+    const std::vector<LightObject>& lights = model.lights();
+    if (!cache.initialized ||
+        cache.modelIdentity != model.instanceIdentity() ||
+        cache.lightCount != lights.size() ||
+        !exactlyEqualPosition(cache.position, position)) {
+        cache.weights.resize(lights.size());
+        cache.cumulativeWeights.resize(lights.size());
+        double totalWeight = 0.0;
+        int lastValidIndex = -1;
+        for (std::size_t index = 0; index < lights.size(); ++index) {
+            const double weight = lightObjectWeight(position, lights[index]);
+            cache.weights[index] = weight;
+            totalWeight += weight;
+            cache.cumulativeWeights[index] = totalWeight;
+            if (weight > 0.0) {
+                lastValidIndex = static_cast<int>(index);
+            }
+        }
+        cache.modelIdentity = model.instanceIdentity();
+        cache.position = position;
+        cache.lightCount = lights.size();
+        cache.totalWeight = totalWeight;
+        cache.lastValidIndex = lastValidIndex;
+        cache.initialized = true;
+    }
+
+    objectProbability = 0.0F;
+    if (!(cache.totalWeight > 0.0) ||
+        !std::isfinite(cache.totalWeight)) {
+        return -1;
+    }
+
+    const double target =
+        cache.totalWeight * static_cast<double>(generator());
+    std::size_t selectedIndex = sampling_detail::firstCumulativeWeightAbove(
+        cache.cumulativeWeights, target);
+    if (selectedIndex >= cache.weights.size()) {
+        if (cache.lastValidIndex < 0) {
+            return -1;
+        }
+        selectedIndex =
+            static_cast<std::size_t>(cache.lastValidIndex);
+    }
+    const double selectedWeight = cache.weights[selectedIndex];
+    objectProbability =
+        static_cast<float>(selectedWeight / cache.totalWeight);
+    return static_cast<int>(selectedIndex);
+}
+
 bool sampleAreaLight(
     const Bsdf& bsdf,
     const Model& model,
     Generator& generator,
     float categoryProbability,
+    AreaLightWeightCache* areaLightWeightCache,
     LightSample& result) {
     float objectProbability = 0.0F;
-    const int objectIndex = sampleLightObject(
-        bsdf.surface.position, model, generator, objectProbability);
+    const int objectIndex =
+        areaLightWeightCache == nullptr
+            ? sampleLightObject(
+                  bsdf.surface.position, model, generator, objectProbability)
+            : sampleLightObjectCached(
+                  bsdf.surface.position,
+                  model,
+                  generator,
+                  *areaLightWeightCache,
+                  objectProbability);
     if (objectIndex < 0) {
         return false;
     }
@@ -516,12 +608,15 @@ void Bsdf::sampleTransmission(
     throughput = vec3{0.0F};
 }
 
-void sampleDirectLight(
+namespace {
+
+void sampleDirectLightImpl(
     const Bsdf& bsdf,
     const Model& model,
     Generator& generator,
     int sampleCount,
-    std::vector<LightSample>& samples) {
+    std::vector<LightSample>& samples,
+    AreaLightWeightCache* areaLightWeightCache) {
     samples.clear();
     if (sampleCount <= 0) {
         return;
@@ -543,12 +638,55 @@ void sampleDirectLight(
                                        (!hasAreaLights || generator() < environmentProbability);
         const bool valid = chooseEnvironment
                                ? sampleEnvironment(bsdf, model, generator, environmentProbability, sample)
-                               : sampleAreaLight(bsdf, model, generator, areaProbability, sample);
+                               : sampleAreaLight(
+                                     bsdf,
+                                     model,
+                                     generator,
+                                     areaProbability,
+                                     areaLightWeightCache,
+                                     sample);
         if (valid) {
             limitThroughput(sample.throughput);
             samples.push_back(sample);
         }
     }
+}
+
+}  // namespace
+
+void sampleDirectLight(
+    const Bsdf& bsdf,
+    const Model& model,
+    Generator& generator,
+    int sampleCount,
+    std::vector<LightSample>& samples) {
+    sampleDirectLightImpl(
+        bsdf, model, generator, sampleCount, samples, nullptr);
+}
+
+void sampleDirectLight(
+    const Bsdf& bsdf,
+    const Model& model,
+    Generator& generator,
+    int sampleCount,
+    std::vector<LightSample>& samples,
+    DirectLightSamplingScratch& scratch) {
+    AreaLightWeightCache cache{
+        scratch.areaLightWeights_,
+        scratch.areaLightCumulativeWeights_,
+        scratch.areaLightModelIdentity_,
+        scratch.areaLightPosition_,
+        scratch.areaLightCount_,
+        scratch.areaLightTotalWeight_,
+        scratch.areaLightLastValidIndex_,
+        scratch.areaLightWeightsInitialized_};
+    sampleDirectLightImpl(
+        bsdf,
+        model,
+        generator,
+        sampleCount,
+        samples,
+        &cache);
 }
 
 }  // namespace raym0nade

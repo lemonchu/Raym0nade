@@ -388,7 +388,52 @@ void testTexturedBaseColor(
     compareRepeatedGpuRender(first.image, second.image, "Textured BaseColor");
     validateTimings(first.timings, "Textured BaseColor first render");
     validateTimings(second.timings, "Textured BaseColor repeated render");
+    VulkanRayQueryOptions crossPageOptions = options;
+    crossPageOptions.textureTexelPageBytes = sizeof(std::uint32_t);
+    VulkanPrimaryRenderer crossPageRenderer{scene, shaderPath, crossPageOptions};
+    const VulkanPrimaryRenderResult crossPage = crossPageRenderer.render(request);
+    compareRepeatedGpuRender(
+        first.image, crossPage.image, "Same-page and cross-page Textured BaseColor");
+    validateTimings(crossPage.timings, "Cross-page Textured BaseColor render");
+    expectCleanValidation(
+        crossPageRenderer.validationReport(),
+        "Cross-page Textured BaseColor renderer");
     expectCleanValidation(renderer.validationReport(), "Textured BaseColor renderer");
+}
+
+void testAllCutoutGeometry(
+    const std::filesystem::path& shaderPath,
+    const VulkanRayQueryOptions& options) {
+    PackedSceneData scene;
+    const vec3 diffuse{0.2F, 0.6F, 0.9F};
+    scene.materials.push_back(makePackedMaterial(diffuse));
+    appendTriangle(
+        scene,
+        {
+            vec3{-2.0F, -2.0F, 2.0F},
+            vec3{2.0F, -2.0F, 2.0F},
+            vec3{0.0F, 2.0F, 2.0F},
+        },
+        {vec2{0.0F}, vec2{0.0F}, vec2{0.0F}},
+        0U);
+    scene.textures.push_back(PackedTexture{0U, 1U, 1U, 1U});
+    scene.textureMipLevels.push_back(PackedTextureMip{0U, 1U, 1U, 1U});
+    scene.textureTexelsRgba8.push_back(packRgba8(255U, 255U, 255U, 255U));
+    bindDiffuseTexture(scene, 0U, 0U, true);
+    scene.validate();
+
+    VulkanPrimaryRenderer renderer{scene, shaderPath, options};
+    PrimaryRenderRequest request;
+    request.extent = ImageExtent{2U, 2U};
+    request.camera.pixelScale = 0.1F;
+    request.aov = PrimaryAov::BaseColor;
+    const VulkanPrimaryRenderResult result = renderer.render(request);
+    expectNear(
+        pixelAt(result.image, 1U, 1U),
+        diffuse,
+        kTexturePixelTolerance,
+        "An all-cutout BLAS must map geometry-zero primitive IDs correctly.");
+    expectCleanValidation(renderer.validationReport(), "All-cutout renderer");
 }
 
 void testPrimaryCutout(
@@ -472,6 +517,24 @@ void testPrimaryCutout(
     validateTimings(shapeNormalFirst.timings, "Cutout ShapeNormal first render");
     validateTimings(shapeNormalSecond.timings, "Cutout ShapeNormal repeated render");
     expectCleanValidation(renderer.validationReport(), "Primary-cutout renderer");
+
+    VulkanRayQueryOptions unifiedOptions = options;
+    unifiedOptions.forceUnifiedCandidateGeometry = true;
+    VulkanPrimaryRenderer unifiedRenderer{scene, shaderPath, unifiedOptions};
+    request.aov = PrimaryAov::BaseColor;
+    const VulkanPrimaryRenderResult unified = unifiedRenderer.render(request);
+    expectNear(
+        pixelAt(unified.image, 1U, 1U),
+        pixelAt(baseColorFirst.image, 1U, 1U),
+        kTexturePixelTolerance,
+        "Unified candidate geometry changed the transparent-candidate result.");
+    expectNear(
+        pixelAt(unified.image, 3U, 1U),
+        pixelAt(baseColorFirst.image, 3U, 1U),
+        kTexturePixelTolerance,
+        "Unified candidate geometry changed the committed-cutout result.");
+    expectCleanValidation(
+        unifiedRenderer.validationReport(), "Unified primary-cutout renderer");
 }
 
 void testDirectDiffuseCutoutShadow(
@@ -940,6 +1003,7 @@ int runTest() {
     expectCleanValidation(validation, "Primary-AOV renderer");
 
     testTexturedBaseColor(shaderPath, options);
+    testAllCutoutGeometry(shaderPath, options);
     testPrimaryCutout(shaderPath, options);
     testDirectDiffuseCutoutShadow(shaderPath, options);
     testDirectionalDirectDiffuse(sourceDirectory, shaderPath, options);

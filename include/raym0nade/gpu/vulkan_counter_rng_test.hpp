@@ -14,9 +14,11 @@ namespace raym0nade::gpu {
 inline constexpr std::size_t kVulkanCounterRngKatAddressCount = 12U;
 
 // Fixed std430 record written by counter_rng_compile_test.comp.
-struct alignas(8) VulkanCounterRngObservation {
+struct alignas(16) VulkanCounterRngObservation {
     std::uint32_t word{0U};
     std::uint32_t open01Bits{0U};
+    std::uint32_t blockWord{0U};
+    std::uint32_t blockOpen01Bits{0U};
 };
 
 struct VulkanCounterRngKatResult {
@@ -34,10 +36,12 @@ struct VulkanCounterRngKatResult {
     const std::filesystem::path& spirvPath,
     VulkanRayQueryOptions options = {});
 
-static_assert(sizeof(VulkanCounterRngObservation) == 8U);
-static_assert(alignof(VulkanCounterRngObservation) == 8U);
+static_assert(sizeof(VulkanCounterRngObservation) == 16U);
+static_assert(alignof(VulkanCounterRngObservation) == 16U);
 static_assert(offsetof(VulkanCounterRngObservation, word) == 0U);
 static_assert(offsetof(VulkanCounterRngObservation, open01Bits) == 4U);
+static_assert(offsetof(VulkanCounterRngObservation, blockWord) == 8U);
+static_assert(offsetof(VulkanCounterRngObservation, blockOpen01Bits) == 12U);
 static_assert(std::is_standard_layout_v<VulkanCounterRngObservation>);
 static_assert(std::is_trivially_copyable_v<VulkanCounterRngObservation>);
 

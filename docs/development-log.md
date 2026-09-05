@@ -759,6 +759,125 @@ non-blocking renderer risks are float-CDF plateaus for extremely small light pro
 host/device memory residency for encoded textures, the conservative submit/wait policy, and the
 absence of a wavefront queue or device-specific shader specialization.
 
+### Measured acceleration and queue-parameter closure
+
+The first measured specialization pass completed on 2026-09-05. It added a Release-oriented
+`raym0nade_gpu_path_benchmark` that imports one `Model`, measures the CPU reference, packs the
+same topology, releases the pointer-rich model, and reuses a persistent Vulkan renderer within each
+GPU arm. GPU-only A/B can retain one packed scene while running primary and comparison renderers
+sequentially. Reports contain external render-call wall clock, internal host and device timing,
+one-time setup buckets, topology and scene statistics, pre-display linear Film diagnostics, raw
+CSV rows, and each SPIR-V artifact's byte size plus labeled noncryptographic FNV-1a-64 identity.
+Fixed-order bias is handled by separate AB and BA processes; the harness does not retry an Assimp
+import.
+
+Accepted GPU changes are:
+
+- Philox4x32 blocks are cached per adjacent dimension group instead of regenerating a complete
+  block for every scalar random request. CPU and GLSL known-answer tests preserve exact integer and
+  open-(0,1) float bits.
+- Mixed opaque/cutout scenes use separate geometries in one BLAS. Opaque triangles carry the
+  Vulkan opaque flag, cutout triangles retain candidate confirmation, and a shader remap restores
+  original packed triangle IDs. All-opaque and all-cutout scenes retain an identity fast path.
+- The packed texture sampler reuses texture descriptors, wrapped coordinates, mip decisions, and
+  paging metadata. A zero mip blend skips its second sample; four same-page bilinear taps resolve
+  one page address, while cross-page taps preserve the exact fallback.
+- All SPP-batch dispatches, their intervening barriers, and the final copy for one tile are now
+  recorded in one command buffer and use one submission/fence wait. This supersedes the
+  per-batch-submission G3 checkpoint described above.
+- `VulkanPathRenderer` can schedule independent tiles over a positive configurable compute-queue
+  count. Immutable scene buffers, BLAS/TLAS, and the pipeline are shared; command, fence, timestamp,
+  descriptor, output, readback, and host-tile state are per queue. Queue host calls are externally
+  synchronized, Film regions are disjoint, and a poison state prevents new work after failure.
+
+The queue count is a retained runtime tuning parameter: `gpu_render --gpu-queues N` and the public
+`VulkanRayQueryOptions::computeQueueCount` default to one. The benchmark adds
+`--comparison-gpu-queues N` for same-shader comparisons. Selection first prefers a
+capacity-sufficient compute-only family, then a capacity-sufficient graphics-and-compute family,
+and never silently reduces the request. The local APU exposes four queues in its preferred
+compute-only family and eight in its maximum graphics-and-compute family.
+
+The formal queue AB/BA workload used Release, complete Bistro topology of 8,496,360 vertices and
+2,832,120 faces, 512 x 288, 64 SPP, seed 0, exposure 12, direct probability 0.7, 128 x 128 tiles,
+64-SPP batches, two warm-ups, and ten measurements. Both arms used the 187,532-byte shader with
+FNV-1a-64 `0xee5d07bd751dcbb5`; their linear Film values were bit-identical.
+
+- AB: one queue was 10,725.9332 ms and two queues were 10,874.76725 ms, a primary/comparison ratio
+  of 0.986314.
+- BA: one queue was 10,670.1712 ms and two queues were 10,951.4831 ms, a ratio of 0.974313.
+
+Two queues were therefore 1.4% and 2.6% slower in the two orders on this two-CU integrated device,
+so one remains the default. The parameter remains available because a queue count does not map
+directly to Windows Task Manager's Compute graphs or hardware compute-unit count, and a different
+GPU may schedule the same independent tiles differently. With multiple queues, device timestamps
+are aggregate queue-busy time rather than elapsed GPU wall clock; external render-call wall clock
+is the comparison metric.
+
+Geometry attribution used two independent same-import split-versus-unified comparisons. Split
+geometry was 5.7% faster at 2,800,258 faces in one process and 13.8% faster at 2,832,120 faces in
+the reverse-order process. Because their topologies differ, these are supporting observations and
+not one formally paired AB/BA range. Texture-only AB/BA retained 2,832,120 faces and found the
+optimized sampler 4.1% and 2.3% faster, respectively. The AB Film values were exact; the separate
+BA acceleration-structure build differed by five direct-light events and mean absolute linear
+error `7.7e-7`, which is recorded as a massive-scene cross-build traversal edge rather than a
+filtering change.
+
+An earlier combined-shader AB/BA attempt is excluded from all conclusions. A targeted shader build
+updated `generated/shaders` but not the executable-adjacent `bin` copy, so both arms accidentally
+loaded the same old SPIR-V. Artifact byte/FNV reporting was added specifically to make this class
+of stale-copy mistake visible.
+
+Two measured experiments were removed rather than retained as speculative optimization:
+
+- A GPU area-light total-weight cache was about 0.48% slower in its single-order area-only
+  attribution and introduced tiny massive-scene cross-build differences. No BA existed, so this is
+  negative/reverted evidence rather than a formal performance claim.
+- A binned-SAH CPU BVH build produced a non-formal Bistro render regression from about 8.39 seconds
+  to 55.08 seconds, roughly 6.57 times slower. It was reverted exactly; this result applies to that
+  implementation and does not establish that SAH is generally inferior.
+
+The accepted CPU light-selection change instead uses worker-local scratch. It caches raw
+distance-weighted area-light weights and an exact double cumulative distribution for a matching
+`Model` identity, light count, and surface position, then uses strict upper-bound selection.
+Separate first-hit and recursive scratches prevent recursive paths from evicting the repeatedly
+sampled primary distribution. Raw weights remain available for the exact PDF. A monotonically
+assigned process identity prevents stale cache hits if a later `Model` reuses an old object
+address. Tests preserve the old sample values and continuous RNG stream across repeated hits,
+position/model/count invalidation, mixed environment and area lighting, zero-width CDF plateaus,
+and exact-boundary fallback. The one-thread and four-thread smoke outputs remain byte-identical.
+
+One final non-retried same-import run used the complete accepted GPU shader and one queue but
+obtained the Assimp-varying topology of 8,490,753 vertices and 2,830,251 faces. At 512 x 288 and
+64 SPP, the 32-thread CPU median was 8,104.8214 ms and the GPU median was 10,351.23895 ms; the GPU
+used 1.277 times the CPU wall time on this APU. Their mean luminances were 0.7897958399 and
+0.7897082644, a GPU/CPU ratio of 0.9998891163. The pre-cache complete-topology CPU observation of
+8,531.1352 ms is only an indicative trend because the topologies differ and is not used as formal
+cache attribution.
+
+Final frozen-code validation completed after the cache-identity and namespace fixes:
+
+- CPU Debug and Release both configured and built without new warnings and passed 6/6 CTest
+  entries.
+- Vulkan Debug and Release both configured and built without new warnings and passed 16/16 CTest
+  entries, including one-queue/two-queue exact Film comparison and queue benchmark end-to-end
+  coverage.
+- Khronos validation and synchronization validation remained clean in the path tests.
+- The checked Bistro measurements used the actual topology once per process; the owner-deferred
+  Assimp mesh omission was not retried or changed.
+- `git diff --check` passed, authored files contained no Han characters, `scripts/` remained
+  limited to the two runtime decoder modules, and no `build/`, `model/`, or `output/` file was
+  tracked.
+
+The ordinary quality recipe is safe at 320 SPP with 64-SPP batches, but the legal extreme remains
+open: 1,000,000 SPP with one-sample batches can record about one million dispatch/barrier pairs in
+one tile command buffer and place the whole tile behind the 60-second fence timeout. A later
+bounded-submission chunk must close command-memory and Windows TDR risk without restoring one wait
+per normal batch. A nonconformant driver's disaster path also cannot guarantee safe resource
+destruction if both queue-idle and device-idle return outside Vulkan's conformant result set.
+Native Vulkan images remain the next major measured texture experiment; exact compatibility first
+requires handling the CPU's ceil-halved odd mip extents rather than blindly using Vulkan's
+floor-halved mip chain.
+
 ## Fixes completed before the modernization
 
 - Changed the GLM submodule URL from SSH to HTTPS.

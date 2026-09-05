@@ -257,6 +257,7 @@ if(RAYM0NADE_ENABLE_VULKAN)
         src/gpu/vulkan_counter_rng_test.cpp
         src/gpu/vulkan_path_renderer.cpp
         src/gpu/vulkan_primary_renderer.cpp
+        src/gpu/vulkan_queue_selection.hpp
         src/gpu/vulkan_ray_query.cpp
         src/gpu/vulkan_runtime.cpp
         src/gpu/vulkan_self_test.cpp
@@ -345,6 +346,26 @@ if(RAYM0NADE_ENABLE_VULKAN)
     )
     raym0nade_enable_warnings(raym0nade_gpu_render)
     raym0nade_set_runtime_directory(raym0nade_gpu_render)
+
+    add_executable(
+        raym0nade_gpu_path_benchmark
+        apps/gpu_path_benchmark.cpp
+    )
+    target_link_libraries(raym0nade_gpu_path_benchmark PRIVATE
+        Raym0nade::core
+        Raym0nade::vulkan
+    )
+    add_dependencies(
+        raym0nade_gpu_path_benchmark
+        raym0nade_gpu_render_shader_copy
+    )
+    target_compile_definitions(raym0nade_gpu_path_benchmark PRIVATE
+        "RAYM0NADE_PATH_TRACE_SHADER=\"${RAYM0NADE_PATH_TRACE_SHADER_BINARY_CMAKE_PATH}\""
+        "RAYM0NADE_PATH_TRACE_SHADER_NAME=\"${RAYM0NADE_PATH_TRACE_SHADER_FILENAME}\""
+        "RAYM0NADE_BENCHMARK_BUILD_TYPE=\"$<CONFIG>\""
+    )
+    raym0nade_enable_warnings(raym0nade_gpu_path_benchmark)
+    raym0nade_set_runtime_directory(raym0nade_gpu_path_benchmark)
 endif()
 
 if(BUILD_TESTING)
@@ -449,6 +470,9 @@ if(BUILD_TESTING)
             Raym0nade::core
             Raym0nade::vulkan
         )
+        target_include_directories(raym0nade_gpu_path_render_tests PRIVATE
+            "${PROJECT_SOURCE_DIR}/src/gpu"
+        )
         add_dependencies(raym0nade_gpu_path_render_tests raym0nade_gpu_shaders)
         target_compile_definitions(raym0nade_gpu_path_render_tests PRIVATE
             "RAYM0NADE_TEST_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
@@ -472,6 +496,10 @@ if(BUILD_TESTING)
         add_test(NAME gpu-path-render COMMAND raym0nade_gpu_path_render_tests)
         add_test(NAME gpu-render-cli-help COMMAND raym0nade_gpu_render --help)
         add_test(
+            NAME gpu-path-benchmark-help
+            COMMAND raym0nade_gpu_path_benchmark --help
+        )
+        add_test(
             NAME gpu-render-cli-e2e
             COMMAND raym0nade_gpu_render
                 --recipe tests/data/gpu_render_cli_args.txt
@@ -484,12 +512,70 @@ if(BUILD_TESTING)
                 --tile 4x4
                 --batch-spp 1
         )
+        add_test(
+            NAME gpu-path-benchmark-e2e
+            COMMAND raym0nade_gpu_path_benchmark
+                --recipe tests/data/gpu_render_cli_args.txt
+                --resolution 4x2
+                --spp 1
+                --cpu-threads 1
+                --seed 7
+                --warmups 0
+                --measurements 1
+                --expect-faces 2
+                --tile 4x2
+                --batch-spp 1
+                --shader
+                    "${RAYM0NADE_PATH_TRACE_SHADER_BINARY}"
+                --comparison-shader
+                    "${RAYM0NADE_PATH_TRACE_SHADER_BINARY}"
+                --comparison-unified-candidate-geometry
+                --comparison-first
+                --output-dir
+                    "${PROJECT_BINARY_DIR}/test-output/gpu-path-benchmark"
+        )
+        add_test(
+            NAME gpu-path-benchmark-queue-e2e
+            COMMAND raym0nade_gpu_path_benchmark
+                --recipe tests/data/gpu_render_cli_args.txt
+                --resolution 4x2
+                --spp 1
+                --seed 7
+                --warmups 0
+                --measurements 1
+                --expect-faces 2
+                --tile 4x2
+                --batch-spp 1
+                --gpu-only
+                --unified-candidate-geometry
+                --comparison-gpu-queues 1
+                --output-dir
+                    "${PROJECT_BINARY_DIR}/test-output/gpu-path-benchmark-queue"
+        )
         set_tests_properties(gpu-render-cli-help PROPERTIES
             PASS_REGULAR_EXPRESSION
                 "Run checked-in examples from the repository root"
         )
         set_tests_properties(gpu-render-cli-e2e PROPERTIES
             PASS_REGULAR_EXPRESSION "Beauty image:"
+            SKIP_RETURN_CODE 77
+            TIMEOUT 120
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        )
+        set_tests_properties(gpu-path-benchmark-help PROPERTIES
+            PASS_REGULAR_EXPRESSION
+                "PNG processing and export are outside"
+        )
+        set_tests_properties(gpu-path-benchmark-e2e PROPERTIES
+            PASS_REGULAR_EXPRESSION
+                "Benchmark verification: timing-rows=3 primary-layout=partitioned comparison-layout=unified linear-zero=yes order=comparison-primary primary-queues=1 comparison-queues=1 primary-shader-bytes=[1-9][0-9]* primary-shader-fnv1a64=[0-9a-f]+ comparison-shader-bytes=[1-9][0-9]* comparison-shader-fnv1a64=[0-9a-f]+"
+            SKIP_RETURN_CODE 77
+            TIMEOUT 120
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        )
+        set_tests_properties(gpu-path-benchmark-queue-e2e PROPERTIES
+            PASS_REGULAR_EXPRESSION
+                "Benchmark verification: timing-rows=2 primary-layout=unified comparison-layout=unified linear-zero=yes order=primary-comparison primary-queues=1 comparison-queues=1 primary-shader-bytes=[1-9][0-9]* primary-shader-fnv1a64=[0-9a-f]+ comparison-shader-bytes=[1-9][0-9]* comparison-shader-fnv1a64=[0-9a-f]+"
             SKIP_RETURN_CODE 77
             TIMEOUT 120
             WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
@@ -501,6 +587,8 @@ if(BUILD_TESTING)
             gpu-primary-render
             gpu-path-render
             gpu-render-cli-e2e
+            gpu-path-benchmark-e2e
+            gpu-path-benchmark-queue-e2e
             PROPERTIES
             SKIP_RETURN_CODE 77
         )
@@ -529,6 +617,9 @@ if(BUILD_TESTING)
                 gpu-path-render
                 gpu-render-cli-help
                 gpu-render-cli-e2e
+                gpu-path-benchmark-help
+                gpu-path-benchmark-e2e
+                gpu-path-benchmark-queue-e2e
             )
         endif()
         set_tests_properties(${RAYM0NADE_WINDOWS_RUNTIME_TESTS} PROPERTIES

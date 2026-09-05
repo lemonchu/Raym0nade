@@ -87,13 +87,21 @@ private:
 };
 
 struct RenderContext {
-    explicit RenderContext(std::uint32_t seed) : generator(seed) {
+    RenderContext(
+        std::uint32_t seed,
+        DirectLightSamplingScratch& primaryDirectLightSamplingScratch,
+        DirectLightSamplingScratch& pathDirectLightSamplingScratch)
+        : generator(seed),
+          primaryDirectLightSamplingScratch(primaryDirectLightSamplingScratch),
+          pathDirectLightSamplingScratch(pathDirectLightSamplingScratch) {
         lightSamples.reserve(6);
     }
 
     Generator generator;
     MediumStack media;
     std::vector<LightSample> lightSamples;
+    DirectLightSamplingScratch& primaryDirectLightSamplingScratch;
+    DirectLightSamplingScratch& pathDirectLightSamplingScratch;
     std::uint64_t directLightSamples{0};
 };
 
@@ -295,7 +303,8 @@ void traceRay(
                 model,
                 context.generator,
                 lightSampleCounts[static_cast<std::size_t>(depth)],
-                samples);
+                samples,
+                context.pathDirectLightSamplingScratch);
             float scale = 1.0F / std::max(reflectionProbability, 1.0e-6F);
             if (depth < kMaximumPathDepth) {
                 scale /= std::max(1.0F - rouletteProbability, 1.0e-6F);
@@ -325,7 +334,8 @@ void traceRay(
                 model,
                 context.generator,
                 lightSampleCounts[static_cast<std::size_t>(depth)],
-                samples);
+                samples,
+                context.pathDirectLightSamplingScratch);
             float scale = 1.0F / std::max(transmissionProbability, 1.0e-6F);
             if (depth < kMaximumPathDepth) {
                 scale /= std::max(1.0F - rouletteProbability, 1.0e-6F);
@@ -469,7 +479,12 @@ void sampleDirectFromFirstHit(
     }
     const Bsdf bsdf{-incoming, directHit};
     sampleDirectLight(
-        bsdf, model, context.generator, sampleCount, context.lightSamples);
+        bsdf,
+        model,
+        context.generator,
+        sampleCount,
+        context.lightSamples,
+        context.primaryDirectLightSamplingScratch);
     for (LightSample sample : context.lightSamples) {
         sample.throughput *= techniqueScale;
         sample.weight *= sampleWeight;
@@ -602,12 +617,17 @@ void renderRows(
         static_cast<std::uint32_t>(settings.width),
         static_cast<std::uint32_t>(settings.height),
     };
+    DirectLightSamplingScratch primaryDirectLightSamplingScratch;
+    DirectLightSamplingScratch pathDirectLightSamplingScratch;
     while (true) {
         const int row = nextRow.fetch_add(1, std::memory_order_relaxed);
         if (row >= settings.height) {
             return;
         }
-        RenderContext context{hashSeed(settings.seed, static_cast<std::uint32_t>(row))};
+        RenderContext context{
+            hashSeed(settings.seed, static_cast<std::uint32_t>(row)),
+            primaryDirectLightSamplingScratch,
+            pathDirectLightSamplingScratch};
         for (int x = 0; x < settings.width; ++x) {
             renderPixel(model, settings, camera, extent, context, film, x, row);
         }

@@ -61,6 +61,12 @@ struct VulkanValidationReport {
 
 struct VulkanRayQueryOptions {
     bool requestValidation{false};
+    // Diagnostic A/B mode: preserve the original single candidate geometry and primitive
+    // ordering. Default rendering partitions opaque and alpha-tested triangles for traversal.
+    bool forceUnifiedCandidateGeometry{false};
+    // Number of queues requested from the selected compute-capable queue family. One is the
+    // portable default; path rendering may use additional queues to process independent tiles.
+    std::uint32_t computeQueueCount{1U};
     std::uint64_t fenceTimeoutNanoseconds{60'000'000'000ULL};
     // Upper bound for one packed RGBA8 texel page. The runtime rounds down to a power of two
     // and also respects maxStorageBufferRange. Small values are useful for paging tests.

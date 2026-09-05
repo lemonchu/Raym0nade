@@ -68,6 +68,11 @@ layout(set = 0, binding = 8, std430) readonly buffer TextureTexelPageTableBuffer
     uvec4 paging;
     PackedTextureTexelPageRecord pages[];
 } textureTexelPageTable;
+layout(set = 0, binding = 13, std430) readonly buffer PrimitiveRemapBuffer {
+    // Base/count for geometry zero followed by base/count for geometry one.
+    uvec4 geometryRanges;
+    uint primitiveIds[];
+} primitiveRemapBuffer;
 
 const uint packedMaterialCutout = 1U << 0U;
 const uint packedMaterialHasDiffuseTexture = 1U << 1U;
@@ -76,6 +81,9 @@ const float minimumNormalFloat = 1.175494351e-38;
 const float cutoutAlphaThreshold = 1.0e-4;
 const float diffuseGamma = 2.2;
 const float pi = 3.14159265358979323846;
+const uint packedInvalidPrimitiveId = 0xffffffffU;
+
+bool packedPrimitiveRemapRequired();
 
 bool isFiniteScalar(float value) {
     return !isnan(value) && !isinf(value);
@@ -130,10 +138,13 @@ vec4 unpackRgba8(uint value) {
            255.0;
 }
 
-uint packedTextureTexel(uint texelIndex) {
-    const uvec4 paging = textureTexelPageTable.paging;
-    if (texelIndex >= paging.z || paging.x == 0U || paging.y == 0U ||
-        paging.w >= 32U || (1U << paging.w) != paging.x) {
+bool packedTexturePagingIsValid(uvec4 paging) {
+    return paging.x != 0U && paging.y != 0U && paging.w < 32U &&
+           (1U << paging.w) == paging.x;
+}
+
+uint packedTextureTexelWithPaging(uint texelIndex, uvec4 paging) {
+    if (texelIndex >= paging.z || !packedTexturePagingIsValid(paging)) {
         return 0U;
     }
     const uint pageIndex = texelIndex >> paging.w;
@@ -149,17 +160,54 @@ uint packedTextureTexel(uint texelIndex) {
     return page.page.texelsRgba8[pageOffset];
 }
 
-vec4 samplePackedMip(uint textureId, vec2 uv, uint relativeMipLevel) {
-    if (!isFiniteVector(uv)) {
-        return vec4(0.0);
+uint packedTextureTexel(uint texelIndex) {
+    return packedTextureTexelWithPaging(
+        texelIndex, textureTexelPageTable.paging);
+}
+
+uvec4 packedTextureBilinearTexels(uvec4 texelIndices, uvec4 paging) {
+    if (!packedTexturePagingIsValid(paging)) {
+        return uvec4(0U);
     }
-    const uvec4 texture =
-        packedTextureBuffer.textures[textureId].firstMipLevelCountAndExtent;
+
+    const uvec4 pageIndices = texelIndices >> paging.w;
+    if (!all(equal(pageIndices, uvec4(pageIndices.x)))) {
+        return uvec4(
+            packedTextureTexelWithPaging(texelIndices.x, paging),
+            packedTextureTexelWithPaging(texelIndices.y, paging),
+            packedTextureTexelWithPaging(texelIndices.z, paging),
+            packedTextureTexelWithPaging(texelIndices.w, paging));
+    }
+
+    const uint pageIndex = pageIndices.x;
+    if (pageIndex >= paging.y) {
+        return uvec4(0U);
+    }
+    PackedTextureTexelPageRecord page =
+        textureTexelPageTable.pages[pageIndex];
+    const uvec4 pageOffsets = texelIndices & uvec4(paging.x - 1U);
+    uvec4 texels = uvec4(0U);
+    if (texelIndices.x < paging.z && pageOffsets.x < page.texelCount) {
+        texels.x = page.page.texelsRgba8[pageOffsets.x];
+    }
+    if (texelIndices.y < paging.z && pageOffsets.y < page.texelCount) {
+        texels.y = page.page.texelsRgba8[pageOffsets.y];
+    }
+    if (texelIndices.z < paging.z && pageOffsets.z < page.texelCount) {
+        texels.z = page.page.texelsRgba8[pageOffsets.z];
+    }
+    if (texelIndices.w < paging.z && pageOffsets.w < page.texelCount) {
+        texels.w = page.page.texelsRgba8[pageOffsets.w];
+    }
+    return texels;
+}
+
+vec4 samplePackedMipResolved(
+    uvec4 texture, vec2 wrappedUv, uvec4 paging, uint relativeMipLevel) {
     const uint mipLevel = min(relativeMipLevel, texture.y - 1U);
     const uvec4 mip =
         textureMipBuffer.mipLevels[texture.x + mipLevel].texelRangeAndExtent;
     const uvec2 extent = mip.zw;
-    const vec2 wrappedUv = vec2(wrapUnit(uv.x), wrapUnit(1.0 - uv.y));
     const vec2 texelPosition = wrappedUv * vec2(extent);
     const vec2 flooredPosition = floor(texelPosition);
     const vec2 blend = texelPosition - flooredPosition;
@@ -170,18 +218,33 @@ vec4 samplePackedMip(uint textureId, vec2 uv, uint relativeMipLevel) {
     const uint i01 = mip.x + first.y * rowStride + second.x;
     const uint i10 = mip.x + second.y * rowStride + first.x;
     const uint i11 = mip.x + second.y * rowStride + second.x;
-    const vec4 c00 = unpackRgba8(packedTextureTexel(i00));
-    const vec4 c01 = unpackRgba8(packedTextureTexel(i01));
-    const vec4 c10 = unpackRgba8(packedTextureTexel(i10));
-    const vec4 c11 = unpackRgba8(packedTextureTexel(i11));
+    const uvec4 texels = packedTextureBilinearTexels(
+        uvec4(i00, i01, i10, i11), paging);
+    const vec4 c00 = unpackRgba8(texels.x);
+    const vec4 c01 = unpackRgba8(texels.y);
+    const vec4 c10 = unpackRgba8(texels.z);
+    const vec4 c11 = unpackRgba8(texels.w);
     const vec4 top = mix(c00, c01, blend.x);
     const vec4 bottom = mix(c10, c11, blend.x);
     return mix(top, bottom, blend.y);
 }
 
-vec4 samplePackedTexture(uint textureId, vec2 uv, float mipDepth) {
+vec4 samplePackedMip(uint textureId, vec2 uv, uint relativeMipLevel) {
+    if (!isFiniteVector(uv)) {
+        return vec4(0.0);
+    }
     const uvec4 texture =
         packedTextureBuffer.textures[textureId].firstMipLevelCountAndExtent;
+    const vec2 wrappedUv = vec2(wrapUnit(uv.x), wrapUnit(1.0 - uv.y));
+    return samplePackedMipResolved(
+        texture,
+        wrappedUv,
+        textureTexelPageTable.paging,
+        relativeMipLevel);
+}
+
+vec4 samplePackedTextureResolved(
+    uvec4 texture, vec2 wrappedUv, uvec4 paging, float mipDepth) {
     if (!isFiniteScalar(mipDepth)) {
         mipDepth = 0.0;
     }
@@ -189,10 +252,25 @@ vec4 samplePackedTexture(uint textureId, vec2 uv, float mipDepth) {
     const uint firstLevel = uint(mipDepth);
     const uint secondLevel = min(firstLevel + 1U, texture.y - 1U);
     const float blend = mipDepth - float(firstLevel);
-    return mix(
-        samplePackedMip(textureId, uv, firstLevel),
-        samplePackedMip(textureId, uv, secondLevel),
-        blend);
+    const vec4 firstSample =
+        samplePackedMipResolved(texture, wrappedUv, paging, firstLevel);
+    if (!(blend > 0.0) || secondLevel == firstLevel) {
+        return firstSample;
+    }
+    const vec4 secondSample =
+        samplePackedMipResolved(texture, wrappedUv, paging, secondLevel);
+    return mix(firstSample, secondSample, blend);
+}
+
+vec4 samplePackedTexture(uint textureId, vec2 uv, float mipDepth) {
+    if (!isFiniteVector(uv)) {
+        return vec4(0.0);
+    }
+    const uvec4 texture =
+        packedTextureBuffer.textures[textureId].firstMipLevelCountAndExtent;
+    const vec2 wrappedUv = vec2(wrapUnit(uv.x), wrapUnit(1.0 - uv.y));
+    return samplePackedTextureResolved(
+        texture, wrappedUv, textureTexelPageTable.paging, mipDepth);
 }
 
 uvec3 triangleVertexIds(uint primitiveId) {
@@ -237,6 +315,22 @@ bool candidateIsTransparentCutout(uint primitiveId, vec2 barycentrics) {
            cutoutAlphaThreshold;
 }
 
+uint remapRayQueryPrimitive(uint geometryIndex, uint localPrimitive) {
+    if (!packedPrimitiveRemapRequired()) {
+        return localPrimitive;
+    }
+    if (geometryIndex > 1U) {
+        return packedInvalidPrimitiveId;
+    }
+    const uvec4 ranges = primitiveRemapBuffer.geometryRanges;
+    const uint firstPrimitive = geometryIndex == 0U ? ranges.x : ranges.z;
+    const uint primitiveCount = geometryIndex == 0U ? ranges.y : ranges.w;
+    if (localPrimitive >= primitiveCount) {
+        return packedInvalidPrimitiveId;
+    }
+    return primitiveRemapBuffer.primitiveIds[firstPrimitive + localPrimitive];
+}
+
 PackedTraceHit tracePackedScene(
     vec3 origin, float tMinimum, vec3 direction, float tMaximum, uint rayFlags) {
     rayQueryEXT query;
@@ -257,11 +351,13 @@ PackedTraceHit tracePackedScene(
             gl_RayQueryCandidateIntersectionTriangleEXT) {
             continue;
         }
-        const uint primitiveId =
-            rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+        const uint primitiveId = remapRayQueryPrimitive(
+            rayQueryGetIntersectionGeometryIndexEXT(query, false),
+            rayQueryGetIntersectionPrimitiveIndexEXT(query, false));
         const vec2 barycentrics =
             rayQueryGetIntersectionBarycentricsEXT(query, false);
-        if (!candidateIsTransparentCutout(primitiveId, barycentrics)) {
+        if (primitiveId != packedInvalidPrimitiveId &&
+            !candidateIsTransparentCutout(primitiveId, barycentrics)) {
             rayQueryConfirmIntersectionEXT(query);
         }
     }
@@ -269,9 +365,15 @@ PackedTraceHit tracePackedScene(
         gl_RayQueryCommittedIntersectionNoneEXT) {
         return PackedTraceHit(false, 0U, 0.0, vec2(0.0));
     }
+    const uint primitiveId = remapRayQueryPrimitive(
+        rayQueryGetIntersectionGeometryIndexEXT(query, true),
+        rayQueryGetIntersectionPrimitiveIndexEXT(query, true));
+    if (primitiveId == packedInvalidPrimitiveId) {
+        return PackedTraceHit(false, 0U, 0.0, vec2(0.0));
+    }
     return PackedTraceHit(
         true,
-        rayQueryGetIntersectionPrimitiveIndexEXT(query, true),
+        primitiveId,
         rayQueryGetIntersectionTEXT(query, true),
         rayQueryGetIntersectionBarycentricsEXT(query, true));
 }
@@ -323,14 +425,31 @@ vec2 textureDerivative(uint primitiveId, vec3 positionDelta) {
            coordinates.z * vertexUv(vertexIds.z);
 }
 
-float diffuseMipDepth(uint textureId, float footprint) {
-    const uint textureWidth =
-        packedTextureBuffer.textures[textureId].firstMipLevelCountAndExtent.z;
+float packedTextureMipDepth(uint textureWidth, float footprint) {
     if (!isFiniteScalar(footprint) || !(footprint > 0.0) ||
         textureWidth == 0U) {
         return 0.0;
     }
     return max(0.0, log2(footprint * float(textureWidth)));
+}
+
+float diffuseMipDepth(uint textureId, float footprint) {
+    const uint textureWidth =
+        packedTextureBuffer.textures[textureId].firstMipLevelCountAndExtent.z;
+    return packedTextureMipDepth(textureWidth, footprint);
+}
+
+vec4 samplePackedTextureAtFootprint(
+    uint textureId, vec2 uv, float footprint) {
+    if (!isFiniteVector(uv)) {
+        return vec4(0.0);
+    }
+    const uvec4 texture =
+        packedTextureBuffer.textures[textureId].firstMipLevelCountAndExtent;
+    const float mipDepth = packedTextureMipDepth(texture.z, footprint);
+    const vec2 wrappedUv = vec2(wrapUnit(uv.x), wrapUnit(1.0 - uv.y));
+    return samplePackedTextureResolved(
+        texture, wrappedUv, textureTexelPageTable.paging, mipDepth);
 }
 
 vec3 evaluateBaseColor(
@@ -346,10 +465,8 @@ vec3 evaluateBaseColor(
     }
     const uint textureId = material.textureIds.x;
     const vec2 uv = interpolateUv(primitiveId, barycentrics);
-    const float mipDepth =
-        diffuseMipDepth(textureId, textureFootprint);
     const vec3 encoded =
-        samplePackedTexture(textureId, uv, mipDepth).rgb;
+        samplePackedTextureAtFootprint(textureId, uv, textureFootprint).rgb;
     const vec3 linear = pow(max(encoded, vec3(0.0)), vec3(diffuseGamma));
     return linear * material.diffuseAndOpacity.xyz;
 }

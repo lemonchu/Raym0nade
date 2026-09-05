@@ -19,6 +19,10 @@ layout(push_constant, std430) uniform RenderParameters {
     vec4 incidentRadianceAndUnused;
 } parameters;
 
+bool packedPrimitiveRemapRequired() {
+    return parameters.extentAovAndReserved.w != 0U;
+}
+
 const uint primaryAovBaseColor = 0U;
 const uint primaryAovShapeNormal = 1U;
 const uint primaryAovDirectDiffuse = 2U;

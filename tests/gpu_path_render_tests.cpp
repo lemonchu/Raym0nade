@@ -12,10 +12,12 @@
 #include <string_view>
 #include <vector>
 
+#include "raym0nade/gpu/vulkan_capabilities.hpp"
 #include "raym0nade/gpu/vulkan_path_renderer.hpp"
 #include "raym0nade/model.hpp"
 #include "raym0nade/render.hpp"
 #include "raym0nade/scene_data.hpp"
+#include "vulkan_queue_selection.hpp"
 
 #ifndef RAYM0NADE_PATH_TRACE_SHADER
 #error "RAYM0NADE_PATH_TRACE_SHADER must be defined by CMake."
@@ -36,6 +38,68 @@ constexpr float kComparisonAbsoluteTolerance = 2.0e-5F;
 constexpr float kComparisonRelativeTolerance = 5.0e-5F;
 constexpr vec3 kEnvironmentRadiance{0.25F, 0.5F, 1.0F};
 constexpr vec3 kEmitterRadiance{8.0F, 6.0F, 4.0F};
+
+void expect(bool condition, const std::string& message);
+
+std::uint32_t selectedDeviceMaximumComputeQueueCount() {
+    std::uint32_t result = 0U;
+    int selectedScore = -1;
+    for (const VulkanDeviceCapabilities& device : enumerateVulkanDevices()) {
+        if (!device.supportsRayQueryBackend()) {
+            continue;
+        }
+        const int score = device.integrated ? 1 : 2;
+        if (score > selectedScore) {
+            selectedScore = score;
+            result = device.maximumComputeQueueCount;
+        }
+    }
+    return result;
+}
+
+std::uint32_t maximumSupportedComputeQueueCount() {
+    std::uint32_t result = 0U;
+    for (const VulkanDeviceCapabilities& device : enumerateVulkanDevices()) {
+        if (device.supportsRayQueryBackend()) {
+            result = std::max(result, device.maximumComputeQueueCount);
+        }
+    }
+    return result;
+}
+
+void testComputeQueueSelectionPolicy() {
+    constexpr std::array<detail::ComputeQueueFamilyInfo, 3> families{{
+        {0U, 8U, true, true},
+        {1U, 1U, true, false},
+        {2U, 4U, true, false},
+    }};
+    constexpr detail::ComputeQueueFamilySelection oneQueue =
+        detail::selectComputeQueueFamily(families.data(), families.size(), 1U);
+    constexpr detail::ComputeQueueFamilySelection twoQueues =
+        detail::selectComputeQueueFamily(families.data(), families.size(), 2U);
+    constexpr detail::ComputeQueueFamilySelection fiveQueues =
+        detail::selectComputeQueueFamily(families.data(), families.size(), 5U);
+    constexpr detail::ComputeQueueFamilySelection largest =
+        detail::selectLargestComputeQueueFamily(families.data(), families.size());
+    constexpr detail::ComputeQueueFamilySelection unavailable =
+        detail::selectComputeQueueFamily(families.data(), families.size(), 9U);
+
+    expect(
+        oneQueue.available && oneQueue.family == 1U && oneQueue.queueCount == 1U,
+        "Queue selection did not prefer the first sufficient compute-only family.");
+    expect(
+        twoQueues.available && twoQueues.family == 2U && twoQueues.queueCount == 4U,
+        "Queue selection did not skip an undersized compute-only family.");
+    expect(
+        fiveQueues.available && fiveQueues.family == 0U && fiveQueues.queueCount == 8U,
+        "Queue selection did not fall back to a sufficient graphics/compute family.");
+    expect(
+        largest.available && largest.family == 0U && largest.queueCount == 8U,
+        "Maximum compute queue-family reporting is incorrect.");
+    expect(
+        !unavailable.available,
+        "Queue selection accepted a request above every family capacity.");
+}
 
 void expect(bool condition, const std::string& message) {
     if (!condition) {
@@ -438,7 +502,8 @@ void compareFilm(
 void validateTimings(
     const VulkanPathRenderTimings& timings,
     std::uint64_t expectedDispatches,
-    const std::string& description) {
+    const std::string& description,
+    const std::uint32_t expectedQueueCount = 1U) {
     expect(
         std::isfinite(timings.hostRenderMilliseconds) &&
             timings.hostRenderMilliseconds >= 0.0,
@@ -446,6 +511,9 @@ void validateTimings(
     expect(
         timings.dispatchCount == expectedDispatches,
         description + " dispatch count is incorrect.");
+    expect(
+        timings.computeQueueCount == expectedQueueCount,
+        description + " compute queue count is incorrect.");
     if (timings.gpuTimestampAvailable) {
         expect(
             std::isfinite(timings.gpuDispatchMilliseconds) &&
@@ -498,7 +566,11 @@ VulkanPathRenderResult renderOnce(
     const std::string& description) {
     VulkanPathRenderer renderer{scene, shaderPath, options};
     VulkanPathRenderResult result = renderer.render(settings);
-    validateTimings(result.timings, expectedDispatches, description);
+    validateTimings(
+        result.timings,
+        expectedDispatches,
+        description,
+        options.vulkan.computeQueueCount);
     validateStats(result.stats, description);
     expectCleanValidation(renderer.validationReport(), description);
     return result;
@@ -506,7 +578,9 @@ VulkanPathRenderResult renderOnce(
 
 void testDeterminismAndPartitionInvariance(
     const std::filesystem::path& shaderPath,
-    const VulkanRayQueryOptions& vulkanOptions) {
+    const VulkanRayQueryOptions& vulkanOptions,
+    const std::uint32_t selectedDeviceQueueCapacity,
+    const std::uint32_t overallQueueCapacity) {
     const PackedSceneData scene = makeAreaLightScene(false);
     const RenderSettings settings = makeSettings(5, 4, 7);
     constexpr std::uint64_t kExpectedDirectSamples = 5U * 4U * 7U;
@@ -560,6 +634,27 @@ void testDeterminismAndPartitionInvariance(
         tiled.stats.directLightSamples == kExpectedDirectSamples,
         "Tile partitioning changed the direct-light sample count.");
 
+    if (selectedDeviceQueueCapacity >= 2U) {
+        VulkanPathRenderOptions multiQueueOptions = tiledOptions;
+        multiQueueOptions.vulkan.computeQueueCount = 2U;
+        VulkanPathRenderResult multiQueue = renderOnce(
+            scene,
+            shaderPath,
+            settings,
+            multiQueueOptions,
+            6U,
+            "Two-queue path render");
+        validateFilm(multiQueue.film, true, "Two-queue path render");
+        compareFilm(
+            reference.film,
+            multiQueue.film,
+            true,
+            "Compute queue-count invariance");
+        expect(
+            multiQueue.stats.directLightSamples == kExpectedDirectSamples,
+            "Multi-queue scheduling changed the direct-light sample count.");
+    }
+
     VulkanPathRenderOptions batchedOptions = referenceOptions;
     batchedOptions.samplesPerBatch = 2U;
     VulkanPathRenderResult batched = renderOnce(
@@ -579,6 +674,33 @@ void testDeterminismAndPartitionInvariance(
         isFinite(batched.film.pixels[centerIndex]) &&
             sumComponents(batched.film.pixels[centerIndex]) > 1.0e-4F,
         "Film shading did not expose the positive area-light contribution.");
+
+    {
+        VulkanPathRenderOptions invalidOptions = referenceOptions;
+        invalidOptions.vulkan.computeQueueCount = 0U;
+        bool rejected = false;
+        try {
+            VulkanPathRenderer invalidRenderer{scene, shaderPath, invalidOptions};
+        } catch (const std::invalid_argument& error) {
+            rejected = std::string_view{error.what()}.find("must be positive") !=
+                       std::string_view::npos;
+        }
+        expect(rejected, "A zero Vulkan compute queue count was not clearly rejected.");
+    }
+    if (overallQueueCapacity < std::numeric_limits<std::uint32_t>::max()) {
+        VulkanPathRenderOptions invalidOptions = referenceOptions;
+        invalidOptions.vulkan.computeQueueCount = overallQueueCapacity + 1U;
+        bool rejected = false;
+        try {
+            VulkanPathRenderer invalidRenderer{scene, shaderPath, invalidOptions};
+        } catch (const std::invalid_argument& error) {
+            rejected = std::string_view{error.what()}.find("expose") !=
+                       std::string_view::npos;
+        }
+        expect(
+            rejected,
+            "A queue count above the selected family capacity was not clearly rejected.");
+    }
 }
 
 void testEnvironmentMissAndEmissiveHit(
@@ -655,6 +777,55 @@ void testEnvironmentMissAndEmissiveHit(
     expectCleanValidation(renderer.validationReport(), "Environment/emission path renderer");
 }
 
+void testAllCutoutIdentityGeometry(
+    const std::filesystem::path& shaderPath,
+    const VulkanRayQueryOptions& vulkanOptions) {
+    PackedSceneData scene;
+    const std::uint32_t textureId =
+        appendOnePixelTexture(scene, packRgba8(255U, 255U, 255U, 255U));
+    const vec3 emission{2.0F, 3.0F, 4.0F};
+    PackedMaterial material = makeMaterial(vec3{0.4F, 0.6F, 0.8F}, emission);
+    material.flagsAndReserved[0] =
+        kPackedMaterialHasDiffuseTexture | kPackedMaterialCutout;
+    material.textureIds[0] = textureId;
+    scene.materials.push_back(material);
+    appendTriangle(
+        scene,
+        {
+            vec3{-10.0F, -10.0F, 2.0F},
+            vec3{10.0F, -10.0F, 2.0F},
+            vec3{0.0F, 10.0F, 2.0F},
+        },
+        vec3{0.0F, 0.0F, -1.0F},
+        0U);
+    scene.validate();
+
+    VulkanPathRenderOptions options;
+    options.vulkan = vulkanOptions;
+    options.tileWidth = 2U;
+    options.tileHeight = 2U;
+    options.samplesPerBatch = 1U;
+    VulkanPathRenderer renderer{scene, shaderPath, options};
+    RenderSettings settings = makeSettings(2, 2, 1);
+    settings.directLightProbability = 0.0F;
+    const VulkanPathRenderResult result = renderer.render(settings);
+
+    validateFilm(result.film, true, "All-cutout identity path render");
+    validateTimings(result.timings, 1U, "All-cutout identity path render");
+    validateStats(result.stats, "All-cutout identity path render");
+    for (const HitInfo& hit : result.film.gBuffer) {
+        expect(
+            hit.materialId == 0,
+            "An all-cutout identity BLAS returned the wrong primitive material.");
+        expectNear(
+            hit.emission,
+            emission,
+            "An all-cutout identity BLAS returned the wrong emission.");
+    }
+    expectCleanValidation(
+        renderer.validationReport(), "All-cutout identity path renderer");
+}
+
 float decodeColor(std::uint32_t encoded) {
     return std::pow(static_cast<float>(encoded) / 255.0F, 2.2F);
 }
@@ -677,6 +848,19 @@ void testMaterialTexturesCutoutAndTransmission(
     validateFilm(textureResult.film, true, "Textured-cutout path render");
     validateTimings(textureResult.timings, 1U, "Textured-cutout path render");
     validateStats(textureResult.stats, "Textured-cutout path render");
+
+    VulkanPathRenderOptions unifiedOptions = options;
+    unifiedOptions.vulkan.forceUnifiedCandidateGeometry = true;
+    VulkanPathRenderer unifiedRenderer{scene, shaderPath, unifiedOptions};
+    const VulkanPathRenderResult unifiedTextureResult =
+        unifiedRenderer.render(textureSettings);
+    compareFilm(
+        textureResult.film,
+        unifiedTextureResult.film,
+        true,
+        "Split and unified mixed-geometry path renders");
+    expectCleanValidation(
+        unifiedRenderer.validationReport(), "Unified mixed-geometry path renderer");
 
     const vec3 expectedBaseColor{
         0.5F * decodeColor(128U),
@@ -863,12 +1047,22 @@ void testImportedCpuReference(
 }
 
 int runTest() {
+    testComputeQueueSelectionPolicy();
     const std::filesystem::path shaderPath{RAYM0NADE_PATH_TRACE_SHADER};
     VulkanRayQueryOptions vulkanOptions;
     vulkanOptions.requestValidation = true;
+    const std::uint32_t selectedDeviceQueueCapacity =
+        selectedDeviceMaximumComputeQueueCount();
+    const std::uint32_t overallQueueCapacity =
+        maximumSupportedComputeQueueCount();
 
-    testDeterminismAndPartitionInvariance(shaderPath, vulkanOptions);
+    testDeterminismAndPartitionInvariance(
+        shaderPath,
+        vulkanOptions,
+        selectedDeviceQueueCapacity,
+        overallQueueCapacity);
     testEnvironmentMissAndEmissiveHit(shaderPath, vulkanOptions);
+    testAllCutoutIdentityGeometry(shaderPath, vulkanOptions);
     testMaterialTexturesCutoutAndTransmission(shaderPath, vulkanOptions);
     testImportedCpuReference(shaderPath, vulkanOptions);
     std::cout << std::fixed << std::setprecision(3)

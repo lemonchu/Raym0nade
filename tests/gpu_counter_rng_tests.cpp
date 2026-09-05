@@ -67,6 +67,15 @@ void validateDispatch(
             observations[index].open01Bits == expectedOpen01Bits,
             description + " open-(0,1) float bits differ from the CPU contract at address " +
                 std::to_string(index) + '.');
+        expect(
+            observations[index].blockWord == expectedWord,
+            description + " cached-block word differs from the scalar/CPU contract at address " +
+                std::to_string(index) + '.');
+        expect(
+            observations[index].blockOpen01Bits == expectedOpen01Bits,
+            description +
+                " cached-block open-(0,1) float bits differ from the scalar/CPU contract at address " +
+                std::to_string(index) + '.');
     }
 }
 
@@ -83,7 +92,11 @@ int runTest() {
         expect(
             result.firstDispatch[index].word == result.repeatedDispatch[index].word &&
                 result.firstDispatch[index].open01Bits ==
-                    result.repeatedDispatch[index].open01Bits,
+                    result.repeatedDispatch[index].open01Bits &&
+                result.firstDispatch[index].blockWord ==
+                    result.repeatedDispatch[index].blockWord &&
+                result.firstDispatch[index].blockOpen01Bits ==
+                    result.repeatedDispatch[index].blockOpen01Bits,
             "Repeated GPU dispatch changed address " + std::to_string(index) + '.');
     }
 
@@ -102,7 +115,8 @@ int runTest() {
                                                                       : "unavailable")
               << " (" << result.validation.errorCount << " error(s), "
               << result.validation.warningCount << " warning(s))\n"
-              << "All 12 CPU/GLSL counter RNG addresses matched across two dispatches.\n";
+              << "All 12 scalar and cached-block CPU/GLSL counter RNG addresses matched "
+                 "across two dispatches.\n";
     return 0;
 }
 

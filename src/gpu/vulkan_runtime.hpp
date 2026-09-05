@@ -104,9 +104,10 @@ private:
 };
 
 // Owns one Vulkan device, one immutable packed-geometry upload, and its persistent BLAS/TLAS.
-// Operations share one command buffer and queue, so callers must hold operationMutex() from
-// beginCommands() through submitAndWait(). This private boundary is reusable by later renderers
-// without exposing Vulkan types through the public include tree.
+// Each requested compute queue has an independent command buffer and fence. Callers must hold
+// operationMutex() around a complete public operation; distinct queue indices may then be driven
+// concurrently by that operation. This private boundary is reusable by later renderers without
+// exposing Vulkan types through the public include tree.
 class VulkanRuntime {
 public:
     VulkanRuntime(const PackedSceneData& scene, VulkanRayQueryOptions options);
@@ -125,6 +126,7 @@ public:
     [[nodiscard]] VkDevice device() const noexcept;
     [[nodiscard]] const VkPhysicalDeviceProperties& physicalProperties() const noexcept;
     [[nodiscard]] const VkPhysicalDeviceMemoryProperties& memoryProperties() const noexcept;
+    [[nodiscard]] std::uint32_t computeQueueCount() const noexcept;
     [[nodiscard]] std::uint32_t timestampValidBits() const noexcept;
     [[nodiscard]] VkAccelerationStructureKHR topLevelAccelerationStructure() const noexcept;
     [[nodiscard]] const VulkanBuffer& vertexBuffer() const noexcept;
@@ -136,14 +138,16 @@ public:
     // Binding 8 contains a compact page table. Its entries address the separately owned
     // texture-texel pages through Vulkan buffer device addresses.
     [[nodiscard]] const VulkanBuffer& textureTexelBuffer() const noexcept;
+    [[nodiscard]] bool primitiveRemapRequired() const noexcept;
+    [[nodiscard]] const VulkanBuffer& primitiveRemapBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& areaLightBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& areaLightTriangleBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& environmentRowBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& environmentTexelBuffer() const noexcept;
 
     [[nodiscard]] std::mutex& operationMutex() noexcept;
-    [[nodiscard]] VkCommandBuffer beginCommands();
-    void submitAndWait(const char* description);
+    [[nodiscard]] VkCommandBuffer beginCommands(std::uint32_t queueIndex = 0U);
+    void submitAndWait(const char* description, std::uint32_t queueIndex = 0U);
 
 private:
     class Implementation;

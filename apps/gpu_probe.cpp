@@ -85,7 +85,15 @@ int main(int argc, char** argv) {
                       << gibibytes(device.deviceLocalMemoryBytes) << " GiB\n"
                       << "  Compute queue: " << (device.hasComputeQueue ? "yes" : "no");
             if (device.hasComputeQueue) {
-                std::cout << " (family " << device.computeQueueFamily << ')';
+                std::cout << " (preferred family " << device.computeQueueFamily
+                          << ", " << device.computeQueueCount << " queues";
+                if (device.maximumComputeQueueFamily != device.computeQueueFamily ||
+                    device.maximumComputeQueueCount != device.computeQueueCount) {
+                    std::cout << "; maximum family "
+                              << device.maximumComputeQueueFamily << ", "
+                              << device.maximumComputeQueueCount << " queues";
+                }
+                std::cout << ')';
             }
             std::cout << '\n'
                       << "  Subgroup size: " << device.subgroupSize << '\n'

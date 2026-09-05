@@ -23,7 +23,12 @@ struct VulkanDeviceCapabilities {
     std::uint32_t vendorId{0};
     std::uint32_t deviceId{0};
     std::uint32_t subgroupSize{0};
+    // The default renderer preference: a compute-only family when one is available.
     std::uint32_t computeQueueFamily{0};
+    std::uint32_t computeQueueCount{0};
+    // The largest single compute-capable family, which may also support graphics.
+    std::uint32_t maximumComputeQueueFamily{0};
+    std::uint32_t maximumComputeQueueCount{0};
     bool hasComputeQueue{false};
     bool integrated{false};
     bool bufferDeviceAddress{false};

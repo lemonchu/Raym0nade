@@ -63,13 +63,19 @@ iterative 16-bounce loop, and configurable SPP batches. Each invocation is the o
 tile pixel, avoiding floating-point atomics. The first batch initializes the G-buffer and
 accumulators; later batches resume them, and only the completed tile is copied to the host Film.
 
-Each sample batch is its own queue submission and fence wait. A shader-write to
-shader-read/write dependency precedes resumed accumulation, and a separate final transfer
-submission reads back the tile. The default batch contains eight samples and the public limit is
-64. This synchronization is intentionally coarser than a ray or bounce but finer than a complete
-high-SPP tile, bounding individual kernel duration on Windows. A wavefront pipeline is introduced
-only after profiles show that megakernel divergence or register pressure justifies its additional
-queues, storage, and synchronization.
+One command buffer records every sample batch for a tile, with shader-write to
+shader-read/write barriers between resumed accumulations and a final transfer copy. The tile uses
+one queue submission and fence wait. The default batch contains eight samples and the public limit
+is 64. This removes ordinary per-batch host waits; it does not yet bound an extreme high-SPP tile
+submission. A wavefront pipeline is introduced only after profiles show that megakernel divergence
+or register pressure justifies its additional queues, storage, and synchronization.
+
+Path rendering accepts a positive compute-queue count, with one as the portable default. The
+runtime first prefers a capacity-sufficient compute-only family, then a graphics-and-compute
+family, and never silently lowers the request. Selected queues share the immutable scene, BLAS/TLAS,
+and pipeline. Each queue owns its command, synchronization, descriptor, output, readback, and host
+tile state; an atomic counter assigns independent tiles. Queue count changes scheduling, not Philox
+addresses or Film values.
 
 ## Backend-neutral scene contract
 
@@ -127,6 +133,17 @@ address alignment, page ranges, total `uint32_t` indexability, and
 `maxMemoryAllocationCount`. All other storage buffers remain individually checked against
 `maxStorageBufferRange`.
 
+The path and primary shaders reuse texture descriptors, wrapped UVs, mip decisions, and paging
+metadata within each lookup. A zero mip blend skips the second bilinear sample. Four same-page
+bilinear texels share one resolved page address, while cross-page taps keep the exact per-texel
+fallback.
+
+Mixed opaque/cutout scenes build two geometries in one BLAS. Opaque triangles use
+`VK_GEOMETRY_OPAQUE_BIT_KHR`; cutout triangles retain candidate confirmation with
+`VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR`. Geometry-local primitive IDs are remapped
+to original packed triangle IDs in the shader. All-opaque and all-cutout scenes use one geometry;
+the old unified candidate layout is retained only for explicit benchmark A/B.
+
 The CPU BVH will eventually reorder a primitive-ID array instead of geometry. The Vulkan backend
 builds its own hardware acceleration structures from the same stable vertex and index arrays; the
 current median-split CPU BVH is not uploaded.
@@ -135,9 +152,12 @@ Texture deduplication remains a first-order requirement. Buffer-device-address p
 per-storage-buffer barrier that previously prevented a multi-gigabyte decoded Bistro texture set
 from reaching the shader. They do not solve total residency: complete RGBA8 mip chains still exist
 in host packed data during setup and in device-local pages afterward, and there is no texture
-streaming, eviction, native compressed `VkImage` storage, or proactive heap-budget policy.
-Because a Vulkan BLAS is marked candidate geometry when any scene material uses a cutout, an
-all-cutout or mixed large scene also remains a traversal-performance risk.
+streaming, eviction, native compressed `VkImage` storage, or proactive heap-budget policy. Native
+image sampling is not a mechanical replacement: the CPU mip chain ceil-halves odd dimensions,
+whereas Vulkan image mip extents floor-halve them. An exact first experiment therefore needs
+single-level integer images per packed mip (optionally array-grouped by equal extent), descriptor
+indexing and buffer-device-address fallback variants, suballocated memory, capability gates, and
+measured exact-output A/B.
 
 ## Integrator migration
 
@@ -339,6 +359,11 @@ The foundations after G3b are now consumed by `VulkanPathRenderer`:
   and accumulation rules as the CPU renderer.
 - Philox addresses are invariant under tile and batch partition changes. Each output pixel stores a
   first-hit G-buffer plus direct/indirect diffuse/specular RGB sums and their second moments.
+- Philox blocks are generated once and consumed from a cached four-word block where adjacent
+  dimensions share the same counter. Texture lookup reuses descriptor, mip, UV, and page
+  calculations, and opaque/cutout triangles use separate BLAS geometries.
+- All batches and the readback copy for one ordinary tile use one command buffer submission.
+  Optional additional compute queues take independent tiles without changing random addresses.
 - Host readback assembles a common `Film`; `finalizeRadianceData` and the existing export path
   provide the same exposure, variance, filtering, display, bloom, depth-of-field, FXAA, and PNG
   behavior as CPU output.
@@ -379,11 +404,17 @@ the experimental backend can be treated as production-ready.
 
 ### G5: Performance specialization
 
-- Compare the per-pixel megakernel, a measured wavefront implementation, and an iterative Vulkan
+- Continue comparing the per-pixel megakernel, a measured wavefront implementation, and an iterative Vulkan
   Ray Tracing Pipeline using the same packed scene and ray workload.
 - Use Radeon GPU Profiler for occupancy and stalls, Radeon Raytracing Analyzer for AS/traversal,
   Radeon Memory Visualizer for budgets, and Radeon GPU Analyzer for shader ISA/register pressure.
 - Move post-processing to GPU only after path tracing no longer dominates end-to-end time.
+
+Initial accepted specialization now includes Philox block reuse, split opaque/cutout BLAS
+geometries, exact paged-texture lookup reuse, one submission per tile, and configurable
+multi-queue scheduling. A GPU area-light total-weight cache and a CPU binned-SAH experiment were
+reverted after negative measurements. Native Vulkan image sampling and a wavefront path remain
+future measured candidates.
 
 ## Measurement policy
 
@@ -430,6 +461,39 @@ wall-clock. It intentionally performs one requested render rather than the repea
 distribution measurements required by the formal benchmark policy. Default export writes the
 filtered/FXAA beauty image; `--all-passes` uses the complete shared Film exporter.
 
+The optional `raym0nade_gpu_path_benchmark` executable supplies a controlled beauty benchmark
+harness, but it does not yet implement every item in the formal policy above. It imports one
+`Model`, performs fixed-seed CPU warm-ups and repeated renders, packs exactly that topology,
+releases the `Model`, and reuses a persistent `VulkanPathRenderer` within each GPU arm. Its report
+separates external render-call wall clock, internal host time, GPU timestamps, import, packing,
+upload, acceleration-structure construction, and PNG export; it also compares composite
+floating-point linear radiance before display processing. The default one warm-up and three
+measurements are smoke settings, while performance runs require at least ten measurements.
+
+The current host interval includes command recording, submission, waits, readback, and Film
+assembly. Readback is not isolated, and the harness does not measure peak memory or rays per second.
+A comparison shader runs from the same packed scene without keeping two device scenes alive.
+Primary and comparison arms have independent unified-geometry switches, allowing a split-layout
+primary and legacy unified-layout comparison in one import. Because fixed A/B order can be biased
+by driver warm-up, DVFS, and thermal state, performance conclusions require both primary-comparison
+and `--comparison-first` runs with matching topology.
+
+`--comparison-gpu-queues N` also creates a same-shader comparison arm; unless explicitly
+overridden, it inherits the primary geometry layout. The report records each shader's byte size and
+a labeled noncryptographic FNV-1a-64 identity. For multiple queues, device timestamps are summed
+queue-busy intervals and are not elapsed GPU wall-clock time; external render-call wall clock is
+the comparison metric.
+
+On the development APU's complete-topology Bistro workload (512 x 288, 64 SPP, seed 0, exposure 12,
+128 x 128 tiles, 64-SPP batches, two warm-ups, ten measurements), matched AB and BA runs found two
+queues slower than one by 1.4% and 2.6%, respectively, with bit-identical Film values. The default
+therefore remains one, while the positive queue-count option remains available for measurement on
+other devices. Two separate same-import split-versus-unified observations found split geometry
+faster by 5.7% at 2,800,258 faces and 13.8% at 2,832,120 faces. Because those process topologies
+differed, they are supporting observations rather than one paired AB/BA range. Matched-topology
+texture AB/BA runs found the exact sampler common-expression changes faster by 2.3% and 4.1%.
+These observations are device-specific, not portable performance promises.
+
 The older recorded Full HD result is superseded for image comparison. That run cleared 13 cutout
 material flags only in the benchmark-local GPU scene while the CPU continued to see through alpha
 cards. CPU and GPU therefore shaded different surfaces around foliage, planters, and windows,
@@ -438,8 +502,9 @@ pixels outside tolerance. Its error PNG multiplied linear absolute error by 10,0
 so a linear difference of only `1e-4` appeared near full brightness. Those numbers diagnose the
 old semantic mismatch; they are not an accuracy result for the current candidate-cutout path.
 
-The `--gpu-only` mode keeps model import, packed-scene conversion, Vulkan setup, GPU warm-up, and
-GPU measurements, but it executes no CPU cold, warm-up, or measured render. It writes only
+The `raym0nade_gpu_primary_benchmark --gpu-only` mode keeps model import, packed-scene conversion,
+Vulkan setup, GPU warm-up, and GPU measurements, but it executes no CPU cold, warm-up, or measured
+render. It writes only
 `gpu-shape-normal.png`, a GPU-only `timings.csv`, and a summary that contains no CPU comparison or
 ratio. This mode is intended for local manual rendering and profiling automation; it does not
 change the primary benchmark's `ShapeNormal` scope. Beauty rendering belongs to

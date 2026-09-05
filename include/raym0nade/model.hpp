@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <vector>
@@ -59,12 +60,15 @@ public:
     [[nodiscard]] const std::vector<LightObject>& lights() const noexcept;
     [[nodiscard]] const SkyBox& sky() const noexcept;
     [[nodiscard]] const std::filesystem::path& modelPath() const noexcept;
+    // Process-unique for transient cache keys.
+    [[nodiscard]] std::uint64_t instanceIdentity() const noexcept;
     [[nodiscard]] std::size_t faceCount() const noexcept;
     [[nodiscard]] PackedSceneData packScene() const;
 
 private:
     friend class ModelBuilder;
 
+    std::uint64_t instanceIdentity_{0U};
     std::vector<Material> materials_;
     std::vector<Face> faces_;
     std::vector<VertexData> vertexData_;

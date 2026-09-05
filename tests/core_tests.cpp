@@ -197,6 +197,27 @@ void testRandomGeneratorAndDistribution() {
     }
 }
 
+void testCumulativeWeightSelection() {
+    const std::vector<double> cumulativeWeights{
+        0.0, 1.0, 1.0, 3.0, 3.0};
+    expect(
+        sampling_detail::firstCumulativeWeightAbove(cumulativeWeights, 0.0) == 1U,
+        "CDF selection must skip a leading zero-width bin.");
+    expect(
+        sampling_detail::firstCumulativeWeightAbove(cumulativeWeights, 0.5) == 1U,
+        "CDF selection must choose the first cumulative value above the target.");
+    expect(
+        sampling_detail::firstCumulativeWeightAbove(cumulativeWeights, 1.0) == 3U,
+        "CDF selection at a boundary must skip equal values and zero-width bins.");
+    expect(
+        sampling_detail::firstCumulativeWeightAbove(cumulativeWeights, 3.0) ==
+            cumulativeWeights.size(),
+        "CDF selection at the total weight must request the legacy fallback.");
+    expect(
+        sampling_detail::firstCumulativeWeightAbove({}, 0.0) == 0U,
+        "CDF selection must safely report the end of an empty distribution.");
+}
+
 void testImageData() {
     ImageData image;
     expect(image.empty(), "A default image must be empty.");
@@ -544,6 +565,7 @@ int main() {
     testGeometryIntersections();
     testTangentSpaces();
     testRandomGeneratorAndDistribution();
+    testCumulativeWeightSelection();
     testImageData();
     testMaterialConstants();
     testPackedSceneValidation();

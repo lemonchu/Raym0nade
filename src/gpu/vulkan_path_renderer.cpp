@@ -4,14 +4,17 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -26,7 +29,7 @@ namespace {
 constexpr std::uint32_t kLocalSizeX = 8U;
 constexpr std::uint32_t kLocalSizeY = 8U;
 constexpr std::uint32_t kTimestampQueryCount = 2U;
-constexpr std::uint32_t kStorageBufferBindingCount = 12U;
+constexpr std::uint32_t kStorageBufferBindingCount = 13U;
 constexpr std::uint32_t kMaximumSamplesPerBatch = 64U;
 
 struct alignas(16) PathRenderPushConstants {
@@ -168,7 +171,8 @@ public:
           environmentWidth_(scene.environment.width),
           environmentHeight_(scene.environment.height),
           environmentFlags_(scene.environment.flags),
-          sceneVersion_(scene.formatVersion) {
+          sceneVersion_(scene.formatVersion),
+          queueStates_(runtime_.computeQueueCount()) {
         validateDeviceLimits();
         createPipeline(detail::readSpirvFile(spirvPath));
         createTimestampQueries();
@@ -176,6 +180,10 @@ public:
 
     [[nodiscard]] const std::string& deviceName() const noexcept {
         return runtime_.deviceName();
+    }
+
+    [[nodiscard]] std::uint32_t computeQueueCount() const noexcept {
+        return runtime_.computeQueueCount();
     }
 
     [[nodiscard]] const VulkanRayQuerySetupTimings& setupTimings() const noexcept {
@@ -204,30 +212,115 @@ public:
 
         VulkanPathRenderTimings timings;
         timings.gpuTimestampAvailable = timestampQueriesAvailable_;
-        std::uint64_t directLightSamples = 0U;
+        timings.computeQueueCount = runtime_.computeQueueCount();
 
         std::lock_guard<std::mutex> lock{runtime_.operationMutex()};
-        for (std::uint32_t tileY = 0U; tileY < imageHeight;) {
-            const std::uint32_t tileHeight =
-                std::min(options_.tileHeight, imageHeight - tileY);
-            for (std::uint32_t tileX = 0U; tileX < imageWidth;) {
-                const std::uint32_t tileWidth =
-                    std::min(options_.tileWidth, imageWidth - tileX);
-                renderTile(
-                    settings,
-                    imageWidth,
-                    imageHeight,
-                    tileX,
-                    tileY,
-                    tileWidth,
-                    tileHeight,
-                    totalSamples,
-                    film,
-                    directLightSamples,
-                    timings);
-                tileX += tileWidth;
+        const std::uint32_t maximumTileWidth =
+            std::min(options_.tileWidth, imageWidth);
+        const std::uint32_t maximumTileHeight =
+            std::min(options_.tileHeight, imageHeight);
+        const std::size_t maximumTilePixels =
+            static_cast<std::size_t>(maximumTileWidth) * maximumTileHeight;
+        const VkDeviceSize maximumOutputBytes = detail::checkedVulkanByteSize(
+            maximumTilePixels,
+            sizeof(PathOutputPixel),
+            "Vulkan path-render tile output");
+        for (QueueState& queueState : queueStates_) {
+            ensureOutputCapacity(
+                queueState, maximumTilePixels, maximumOutputBytes);
+            queueState.hostPixels.resize(maximumTilePixels);
+        }
+
+        const std::size_t tileColumns =
+            (static_cast<std::size_t>(imageWidth) - 1U) / options_.tileWidth + 1U;
+        const std::size_t tileRows =
+            (static_cast<std::size_t>(imageHeight) - 1U) / options_.tileHeight + 1U;
+        if (tileRows > std::numeric_limits<std::size_t>::max() / tileColumns) {
+            throw std::overflow_error("The Vulkan path-render tile count overflowed.");
+        }
+        const std::size_t tileCount = tileColumns * tileRows;
+        std::atomic<std::size_t> nextTile{0U};
+        std::atomic<bool> stopWorkers{false};
+        std::vector<WorkerResult> workerResults(queueStates_.size());
+
+        const auto renderWorker = [&](const std::uint32_t queueIndex) noexcept {
+            WorkerResult& worker = workerResults[queueIndex];
+            try {
+                while (!stopWorkers.load(std::memory_order_relaxed)) {
+                    const std::size_t tileIndex =
+                        nextTile.fetch_add(1U, std::memory_order_relaxed);
+                    if (tileIndex >= tileCount) {
+                        break;
+                    }
+                    const std::size_t tileColumn = tileIndex % tileColumns;
+                    const std::size_t tileRow = tileIndex / tileColumns;
+                    const auto tileX = static_cast<std::uint32_t>(
+                        tileColumn * options_.tileWidth);
+                    const auto tileY = static_cast<std::uint32_t>(
+                        tileRow * options_.tileHeight);
+                    const std::uint32_t tileWidth =
+                        std::min(options_.tileWidth, imageWidth - tileX);
+                    const std::uint32_t tileHeight =
+                        std::min(options_.tileHeight, imageHeight - tileY);
+                    renderTile(
+                        queueIndex,
+                        queueStates_[queueIndex],
+                        settings,
+                        imageWidth,
+                        imageHeight,
+                        tileX,
+                        tileY,
+                        tileWidth,
+                        tileHeight,
+                        totalSamples,
+                        film,
+                        worker.directLightSamples,
+                        worker.gpuDispatchMilliseconds,
+                        worker.dispatchCount);
+                }
+            } catch (...) {
+                worker.exception = std::current_exception();
+                stopWorkers.store(true, std::memory_order_relaxed);
             }
-            tileY += tileHeight;
+        };
+
+        std::vector<std::thread> workers;
+        workers.reserve(queueStates_.size() - 1U);
+        try {
+            for (std::uint32_t queueIndex = 1U;
+                 queueIndex < queueStates_.size();
+                 ++queueIndex) {
+                workers.emplace_back(renderWorker, queueIndex);
+            }
+        } catch (...) {
+            stopWorkers.store(true, std::memory_order_relaxed);
+            for (std::thread& worker : workers) {
+                worker.join();
+            }
+            throw;
+        }
+        renderWorker(0U);
+        for (std::thread& worker : workers) {
+            worker.join();
+        }
+
+        std::uint64_t directLightSamples = 0U;
+        for (const WorkerResult& worker : workerResults) {
+            if (worker.exception != nullptr) {
+                std::rethrow_exception(worker.exception);
+            }
+            if (worker.directLightSamples >
+                std::numeric_limits<std::uint64_t>::max() - directLightSamples) {
+                throw std::overflow_error(
+                    "The GPU direct-light sample count overflowed.");
+            }
+            directLightSamples += worker.directLightSamples;
+            timings.gpuDispatchMilliseconds += worker.gpuDispatchMilliseconds;
+            if (worker.dispatchCount >
+                std::numeric_limits<std::uint64_t>::max() - timings.dispatchCount) {
+                throw std::overflow_error("The GPU dispatch count overflowed.");
+            }
+            timings.dispatchCount += worker.dispatchCount;
         }
 
         timings.hostRenderMilliseconds = detail::elapsedMilliseconds(renderBegin);
@@ -239,6 +332,22 @@ public:
     }
 
 private:
+    struct QueueState {
+        std::size_t outputCapacity{0U};
+        std::vector<PathOutputPixel> hostPixels;
+        std::unique_ptr<detail::VulkanBuffer> outputBuffer;
+        std::unique_ptr<detail::VulkanBuffer> readbackBuffer;
+        VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+        detail::UniqueVulkanHandle<VkQueryPool> timestampQueryPool;
+    };
+
+    struct WorkerResult {
+        std::uint64_t directLightSamples{0U};
+        double gpuDispatchMilliseconds{0.0};
+        std::uint64_t dispatchCount{0U};
+        std::exception_ptr exception;
+    };
+
     void validateDeviceLimits() const {
         const VkPhysicalDeviceLimits& limits = runtime_.physicalProperties().limits;
         if (limits.maxComputeWorkGroupSize[0] < kLocalSizeX ||
@@ -259,14 +368,14 @@ private:
         if (limits.maxPerStageDescriptorStorageBuffers < kStorageBufferBindingCount ||
             limits.maxDescriptorSetStorageBuffers < kStorageBufferBindingCount) {
             throw std::runtime_error(
-                "The Vulkan device does not provide twelve storage-buffer descriptors.");
+                "The Vulkan device does not provide thirteen storage-buffer descriptors.");
         }
         if (limits.maxPerStageResources < kStorageBufferBindingCount + 1U) {
             throw std::runtime_error(
-                "The Vulkan device does not provide thirteen per-stage resources.");
+                "The Vulkan device does not provide fourteen per-stage resources.");
         }
 
-        const std::array<const detail::VulkanBuffer*, 11> sceneBuffers{{
+        const std::array<const detail::VulkanBuffer*, 12> sceneBuffers{{
             &runtime_.vertexBuffer(),
             &runtime_.indexBuffer(),
             &runtime_.triangleMaterialIdBuffer(),
@@ -278,6 +387,7 @@ private:
             &runtime_.areaLightTriangleBuffer(),
             &runtime_.environmentRowBuffer(),
             &runtime_.environmentTexelBuffer(),
+            &runtime_.primitiveRemapBuffer(),
         }};
         for (const detail::VulkanBuffer* buffer : sceneBuffers) {
             if (buffer->size() > limits.maxStorageBufferRange) {
@@ -394,12 +504,14 @@ private:
             environmentFlags_,
             totalSamples,
             sceneVersion_,
-            0U,
+            runtime_.primitiveRemapRequired() ? 1U : 0U,
         };
         return result;
     }
 
     void renderTile(
+        const std::uint32_t queueIndex,
+        QueueState& queueState,
         const RenderSettings& settings,
         std::uint32_t imageWidth,
         std::uint32_t imageHeight,
@@ -410,15 +522,19 @@ private:
         std::uint32_t totalSamples,
         Film& film,
         std::uint64_t& directLightSamples,
-        VulkanPathRenderTimings& timings) {
+        double& gpuDispatchMilliseconds,
+        std::uint64_t& dispatchCount) {
         const std::size_t tilePixelCount =
             static_cast<std::size_t>(tileWidth) * static_cast<std::size_t>(tileHeight);
         const VkDeviceSize outputBytes = detail::checkedVulkanByteSize(
             tilePixelCount,
             sizeof(PathOutputPixel),
             "Vulkan path-render tile output");
-        ensureOutputCapacity(tilePixelCount, outputBytes);
-        hostPixels_.resize(tilePixelCount);
+        if (tilePixelCount > queueState.outputCapacity ||
+            !queueState.outputBuffer || !queueState.readbackBuffer) {
+            throw std::logic_error(
+                "A Vulkan path-render queue has insufficient output capacity.");
+        }
 
         const VkPhysicalDeviceLimits& limits = runtime_.physicalProperties().limits;
         const std::uint32_t groupCountX = checkedGroupCount(
@@ -432,28 +548,36 @@ private:
             limits.maxComputeWorkGroupCount[1],
             "Y");
 
+        VkCommandBuffer commandBuffer = runtime_.beginCommands(queueIndex);
+        if (timestampQueriesAvailable_) {
+            vkCmdResetQueryPool(
+                commandBuffer,
+                queueState.timestampQueryPool.get(),
+                0U,
+                kTimestampQueryCount);
+        }
+        vkCmdBindPipeline(
+            commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_.get());
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipelineLayout_.get(),
+            0U,
+            1U,
+            &queueState.descriptorSet,
+            0U,
+            nullptr);
+        if (timestampQueriesAvailable_) {
+            vkCmdWriteTimestamp(
+                commandBuffer,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                queueState.timestampQueryPool.get(),
+                0U);
+        }
+
         for (std::uint32_t sampleBase = 0U; sampleBase < totalSamples;) {
             const std::uint32_t batchCount =
                 std::min(options_.samplesPerBatch, totalSamples - sampleBase);
-            VkCommandBuffer commandBuffer = runtime_.beginCommands();
-            if (timestampQueriesAvailable_) {
-                vkCmdResetQueryPool(
-                    commandBuffer,
-                    timestampQueryPool_.get(),
-                    0U,
-                    kTimestampQueryCount);
-            }
-            vkCmdBindPipeline(
-                commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_.get());
-            vkCmdBindDescriptorSets(
-                commandBuffer,
-                VK_PIPELINE_BIND_POINT_COMPUTE,
-                pipelineLayout_.get(),
-                0U,
-                1U,
-                &descriptorSet_,
-                0U,
-                nullptr);
             if (sampleBase > 0U) {
                 const VkMemoryBarrier previousBatchBarrier{
                     VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -472,13 +596,6 @@ private:
                     nullptr,
                     0U,
                     nullptr);
-            }
-            if (timestampQueriesAvailable_) {
-                vkCmdWriteTimestamp(
-                    commandBuffer,
-                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                    timestampQueryPool_.get(),
-                    0U);
             }
             const PathRenderPushConstants pushConstants = makePushConstants(
                 settings,
@@ -499,22 +616,17 @@ private:
                 sizeof(pushConstants),
                 &pushConstants);
             vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1U);
-            ++timings.dispatchCount;
+            ++dispatchCount;
             sampleBase += batchCount;
-            if (timestampQueriesAvailable_) {
-                vkCmdWriteTimestamp(
-                    commandBuffer,
-                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                    timestampQueryPool_.get(),
-                    1U);
-            }
-            runtime_.submitAndWait("Vulkan path-render sample batch");
-            if (timestampQueriesAvailable_) {
-                timings.gpuDispatchMilliseconds += readGpuTimestampMilliseconds();
-            }
         }
 
-        VkCommandBuffer commandBuffer = runtime_.beginCommands();
+        if (timestampQueriesAvailable_) {
+            vkCmdWriteTimestamp(
+                commandBuffer,
+                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                queueState.timestampQueryPool.get(),
+                1U);
+        }
         const VkBufferMemoryBarrier computeToCopyBarrier{
             VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
             nullptr,
@@ -522,7 +634,7 @@ private:
             VK_ACCESS_TRANSFER_READ_BIT,
             VK_QUEUE_FAMILY_IGNORED,
             VK_QUEUE_FAMILY_IGNORED,
-            outputBuffer_->get(),
+            queueState.outputBuffer->get(),
             0U,
             outputBytes,
         };
@@ -540,8 +652,8 @@ private:
         const VkBufferCopy copyRegion{0U, 0U, outputBytes};
         vkCmdCopyBuffer(
             commandBuffer,
-            outputBuffer_->get(),
-            readbackBuffer_->get(),
+            queueState.outputBuffer->get(),
+            queueState.readbackBuffer->get(),
             1U,
             &copyRegion);
         const VkBufferMemoryBarrier copyToHostBarrier{
@@ -551,7 +663,7 @@ private:
             VK_ACCESS_HOST_READ_BIT,
             VK_QUEUE_FAMILY_IGNORED,
             VK_QUEUE_FAMILY_IGNORED,
-            readbackBuffer_->get(),
+            queueState.readbackBuffer->get(),
             0U,
             outputBytes,
         };
@@ -566,9 +678,13 @@ private:
             &copyToHostBarrier,
             0U,
             nullptr);
-        runtime_.submitAndWait("Vulkan path-render tile readback");
-        readbackBuffer_->read(hostPixels_.data(), outputBytes);
+        runtime_.submitAndWait("Vulkan path-render tile", queueIndex);
+        if (timestampQueriesAvailable_) {
+            gpuDispatchMilliseconds += readGpuTimestampMilliseconds(queueState);
+        }
+        queueState.readbackBuffer->read(queueState.hostPixels.data(), outputBytes);
         copyTileToFilm(
+            queueState.hostPixels,
             tileX,
             tileY,
             tileWidth,
@@ -580,6 +696,7 @@ private:
     }
 
     void copyTileToFilm(
+        const std::vector<PathOutputPixel>& hostPixels,
         std::uint32_t tileX,
         std::uint32_t tileY,
         std::uint32_t tileWidth,
@@ -595,7 +712,7 @@ private:
                 const std::size_t imageIndex =
                     static_cast<std::size_t>(tileY + localY) * imageWidth +
                     (tileX + localX);
-                const PathOutputPixel& source = hostPixels_[localIndex];
+                const PathOutputPixel& source = hostPixels[localIndex];
                 const std::uint32_t entering =
                     source.materialEnteringHitAndDirectSampleCount[1];
                 const std::uint32_t hit =
@@ -658,7 +775,8 @@ private:
 
     void createPipeline(const std::vector<std::uint32_t>& shaderCode) {
         const VkDevice device = runtime_.device();
-        std::array<VkDescriptorSetLayoutBinding, 13> bindings{};
+        std::array<VkDescriptorSetLayoutBinding, kStorageBufferBindingCount + 1U>
+            bindings{};
         bindings[0] = VkDescriptorSetLayoutBinding{
             0U,
             VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
@@ -765,15 +883,23 @@ private:
                 vkDestroyPipeline(device, value, nullptr);
             });
 
+        const std::uint32_t queueCount = runtime_.computeQueueCount();
+        if (queueCount >
+            std::numeric_limits<std::uint32_t>::max() /
+                kStorageBufferBindingCount) {
+            throw std::overflow_error(
+                "The Vulkan path-render descriptor count overflowed.");
+        }
         const std::array<VkDescriptorPoolSize, 2> poolSizes{{
-            {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kStorageBufferBindingCount},
+            {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, queueCount},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+             queueCount * kStorageBufferBindingCount},
         }};
         const VkDescriptorPoolCreateInfo descriptorPoolInfo{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             nullptr,
             0U,
-            1U,
+            queueCount,
             static_cast<std::uint32_t>(poolSizes.size()),
             poolSizes.data(),
         };
@@ -786,16 +912,24 @@ private:
             [device](VkDescriptorPool value) {
                 vkDestroyDescriptorPool(device, value, nullptr);
             });
+        const std::vector<VkDescriptorSetLayout> descriptorLayouts(
+            queueCount, descriptorLayoutHandle);
+        std::vector<VkDescriptorSet> descriptorSets(queueCount, VK_NULL_HANDLE);
         const VkDescriptorSetAllocateInfo allocateInfo{
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             nullptr,
             descriptorPool_.get(),
-            1U,
-            &descriptorLayoutHandle,
+            queueCount,
+            descriptorLayouts.data(),
         };
         detail::requireVulkanSuccess(
-            vkAllocateDescriptorSets(device, &allocateInfo, &descriptorSet_),
+            vkAllocateDescriptorSets(device, &allocateInfo, descriptorSets.data()),
             "vkAllocateDescriptorSets(path render)");
+        for (std::uint32_t queueIndex = 0U;
+             queueIndex < queueCount;
+             ++queueIndex) {
+            queueStates_[queueIndex].descriptorSet = descriptorSets[queueIndex];
+        }
     }
 
     void createTimestampQueries() {
@@ -815,20 +949,25 @@ private:
             kTimestampQueryCount,
             0U,
         };
-        VkQueryPool queryPool = VK_NULL_HANDLE;
         const VkDevice device = runtime_.device();
-        detail::requireVulkanSuccess(
-            vkCreateQueryPool(device, &queryPoolInfo, nullptr, &queryPool),
-            "vkCreateQueryPool(path timestamp)");
-        timestampQueryPool_.reset(
-            queryPool,
-            [device](VkQueryPool value) {
-                vkDestroyQueryPool(device, value, nullptr);
-            });
+        for (QueueState& queueState : queueStates_) {
+            VkQueryPool queryPool = VK_NULL_HANDLE;
+            detail::requireVulkanSuccess(
+                vkCreateQueryPool(device, &queryPoolInfo, nullptr, &queryPool),
+                "vkCreateQueryPool(path timestamp)");
+            queueState.timestampQueryPool.reset(
+                queryPool,
+                [device](VkQueryPool value) {
+                    vkDestroyQueryPool(device, value, nullptr);
+                });
+        }
     }
 
-    void ensureOutputCapacity(std::size_t pixelCount, VkDeviceSize outputBytes) {
-        if (pixelCount <= outputCapacity_) {
+    void ensureOutputCapacity(
+        QueueState& queueState,
+        const std::size_t pixelCount,
+        const VkDeviceSize outputBytes) {
+        if (pixelCount <= queueState.outputCapacity) {
             return;
         }
 
@@ -850,13 +989,15 @@ private:
             kHostReadbackMemory,
             false);
 
-        updateDescriptorSet(*newOutputBuffer);
-        outputBuffer_ = std::move(newOutputBuffer);
-        readbackBuffer_ = std::move(newReadbackBuffer);
-        outputCapacity_ = pixelCount;
+        updateDescriptorSet(queueState, *newOutputBuffer);
+        queueState.outputBuffer = std::move(newOutputBuffer);
+        queueState.readbackBuffer = std::move(newReadbackBuffer);
+        queueState.outputCapacity = pixelCount;
     }
 
-    void updateDescriptorSet(const detail::VulkanBuffer& outputBuffer) {
+    void updateDescriptorSet(
+        const QueueState& queueState,
+        const detail::VulkanBuffer& outputBuffer) {
         const VkAccelerationStructureKHR topLevel =
             runtime_.topLevelAccelerationStructure();
         const VkWriteDescriptorSetAccelerationStructureKHR accelerationWrite{
@@ -895,19 +1036,22 @@ private:
                 {runtime_.environmentTexelBuffer().get(),
                  0U,
                  runtime_.environmentTexelBuffer().size()},
+                {runtime_.primitiveRemapBuffer().get(),
+                 0U,
+                 runtime_.primitiveRemapBuffer().size()},
             }};
 
-        std::array<VkWriteDescriptorSet, 13> writes{};
+        std::array<VkWriteDescriptorSet, kStorageBufferBindingCount + 1U> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].pNext = &accelerationWrite;
-        writes[0].dstSet = descriptorSet_;
+        writes[0].dstSet = queueState.descriptorSet;
         writes[0].dstBinding = 0U;
         writes[0].descriptorCount = 1U;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
         for (std::uint32_t binding = 1U; binding < writes.size(); ++binding) {
             VkWriteDescriptorSet& write = writes[binding];
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = descriptorSet_;
+            write.dstSet = queueState.descriptorSet;
             write.dstBinding = binding;
             write.descriptorCount = 1U;
             write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -921,12 +1065,13 @@ private:
             nullptr);
     }
 
-    [[nodiscard]] double readGpuTimestampMilliseconds() const {
+    [[nodiscard]] double readGpuTimestampMilliseconds(
+        const QueueState& queueState) const {
         std::array<std::uint64_t, kTimestampQueryCount> timestamps{};
         detail::requireVulkanSuccess(
             vkGetQueryPoolResults(
                 runtime_.device(),
-                timestampQueryPool_.get(),
+                queueState.timestampQueryPool.get(),
                 0U,
                 kTimestampQueryCount,
                 sizeof(timestamps),
@@ -952,17 +1097,12 @@ private:
     std::uint32_t environmentFlags_{0U};
     std::uint32_t sceneVersion_{0U};
     bool timestampQueriesAvailable_{false};
-    std::size_t outputCapacity_{0U};
-    std::vector<PathOutputPixel> hostPixels_;
-    std::unique_ptr<detail::VulkanBuffer> outputBuffer_;
-    std::unique_ptr<detail::VulkanBuffer> readbackBuffer_;
     detail::UniqueVulkanHandle<VkDescriptorSetLayout> descriptorLayout_;
     detail::UniqueVulkanHandle<VkPipelineLayout> pipelineLayout_;
     detail::UniqueVulkanHandle<VkShaderModule> shaderModule_;
     detail::UniqueVulkanHandle<VkPipeline> pipeline_;
     detail::UniqueVulkanHandle<VkDescriptorPool> descriptorPool_;
-    VkDescriptorSet descriptorSet_{VK_NULL_HANDLE};
-    detail::UniqueVulkanHandle<VkQueryPool> timestampQueryPool_;
+    std::vector<QueueState> queueStates_;
 };
 
 VulkanPathRenderer::VulkanPathRenderer(
@@ -976,6 +1116,10 @@ VulkanPathRenderer::~VulkanPathRenderer() = default;
 
 const std::string& VulkanPathRenderer::deviceName() const noexcept {
     return implementation_->deviceName();
+}
+
+std::uint32_t VulkanPathRenderer::computeQueueCount() const noexcept {
+    return implementation_->computeQueueCount();
 }
 
 const VulkanRayQuerySetupTimings& VulkanPathRenderer::setupTimings() const noexcept {

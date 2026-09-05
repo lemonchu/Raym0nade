@@ -42,6 +42,7 @@ The build creates these targets:
 - `raym0nade_gpu_path_render_tests`: the optional GPU path integration, determinism, partitioning,
   lighting, material, Film, and CPU-oracle regression executable
 - `raym0nade_gpu_render`: the optional general AMD Vulkan path-rendering command-line application
+- `raym0nade_gpu_path_benchmark`: the optional same-import CPU/GPU beauty path benchmark
 - `raym0nade_gpu_primary_benchmark`: the optional Bistro ShapeNormal comparison and GPU-only
   diagnostic utility
 
@@ -200,7 +201,10 @@ with Vulkan 1.2, a compute queue, buffer device address, acceleration structures
 `VK_KHR_ray_query`; ordinary CPU builds and runs do not require Vulkan.
 
 `VulkanPathRenderer` consumes the backend-neutral packed scene and performs tiled, deterministic
-SPP accumulation with the Philox counter RNG. The shader implements the current 16-bounce path
+SPP accumulation with the Philox counter RNG. Mixed opaque/alpha-tested scenes use separate BLAS
+geometries so opaque traversal can skip candidate-shader work; all-opaque and all-cutout scenes use
+one geometry, while an explicit unified compatibility mode remains available for controlled A/B
+measurements. The shader implements the current 16-bounce path
 estimator, including encoded diffuse, specular, emissive, and normal textures; alpha-tested primary,
 continuation, and shadow rays; HDR environments and emissive area lights; reflection,
 transmission, absorption, and nested media. It reads all G-buffer and radiance planes back into the
@@ -212,7 +216,29 @@ and ShapeNormal benchmark remain available as focused diagnostics.
 recipe plus command-line overrides and writes the usual FXAA beauty image by default. Pass
 `--all-passes` to export the full CPU-compatible Film pass set. Building the target also compiles
 and validates `path_trace.comp` and copies its SPIR-V file beside the executable; normal runs do not
-need a `--shader` argument.
+need a `--shader` argument. `--gpu-queues N` selects the number of concurrent compute queues used
+for independent tiles. The portable default is one; queue capacity is validated against the
+selected AMD device rather than clamped silently.
+
+`raym0nade_gpu_path_benchmark` is a controlled, Release-oriented beauty benchmark harness. It
+imports the model once, runs CPU warm-ups and repeated measurements, packs that same topology,
+releases the `Model`, and then reuses a persistent renderer within each GPU arm. It reports external
+render-call wall clock, renderer host time, GPU timestamps, setup stages, scene statistics, and
+pre-display linear-radiance error. PNG processing is outside all render measurements. The defaults
+of one warm-up and three measurements are only a quick smoke run; use at least ten measurements for
+performance work. GPU host time still includes synchronization, readback, and Film assembly, and
+the harness does not report separate readback time, peak memory, or rays per second, so it does not
+yet implement the complete benchmark policy in `docs/gpu-backend.md`.
+
+Use `--gpu-only` for repeated shader profiling and `--comparison-shader FILE` for sequential A/B
+measurement from the same retained packed scene. `--unified-candidate-geometry` affects the primary
+arm; `--comparison-unified-candidate-geometry` independently selects legacy ordering for the
+comparison arm. Fixed execution order can be biased by driver warm-up, DVFS, and thermal state, so
+serious A/B work requires matching AB and BA runs; add `--comparison-first` for the BA run.
+`--comparison-gpu-queues N` enables a same-shader queue-count A/B and inherits the primary
+geometry layout unless a comparison layout is selected explicitly. Reports include the SPIR-V
+byte size and a labeled noncryptographic FNV-1a-64 identity so a stale copied shader cannot be
+mistaken for the requested candidate.
 
 After activating the Conda environment, configure, build, and test the optional backend with:
 
@@ -230,6 +256,7 @@ Windows:
 build\gpu-release\bin\raym0nade_gpu_render.exe ^
     --recipe examples\bistro_daylight_appearance_1024.txt ^
     --batch-spp 64 ^
+    --gpu-queues 1 ^
     --output-prefix output\BistroGpuPathQuality1024
 ```
 
@@ -239,8 +266,22 @@ On Linux or macOS:
 ./build/gpu-release/bin/raym0nade_gpu_render \
     --recipe examples/bistro_daylight_appearance_1024.txt \
     --batch-spp 64 \
+    --gpu-queues 1 \
     --output-prefix output/BistroGpuPathQuality1024
 ```
+
+The benchmark executable uses the same platform-specific path convention. For example, from the
+repository root on Windows:
+
+```bat
+build\gpu-release\bin\raym0nade_gpu_path_benchmark.exe ^
+    --recipe examples\bistro_daylight_appearance_1024.txt ^
+    --resolution 512x288 --spp 8 --warmups 2 --measurements 10 ^
+    --output-dir output\benchmarks\bistro-path
+```
+
+On Linux or macOS, use `./build/gpu-release/bin/raym0nade_gpu_path_benchmark` and forward-slash
+paths. See `docs/render-examples.md` for the measurement policy and all important overrides.
 
 Building is portable, but rendering still requires a device that passes the AMD Vulkan feature
 gate above. See `docs/render-examples.md` for recipe overrides, output selection, and validation

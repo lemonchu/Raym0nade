@@ -105,6 +105,7 @@ The top-level CMake project exposes these targets:
 | `raym0nade_gpu_path_render_tests` | Optional Vulkan path-renderer regression executable covering deterministic partitioning, Film assembly, lighting, textures, cutouts, transmission, and a statistical CPU comparison. |
 | `raym0nade_gpu_primary_benchmark` | Optional Bistro ShapeNormal CPU/GPU wall-clock and GPU-only diagnostic utility; generated images and reports remain under ignored `output/`. |
 | `raym0nade_gpu_render` | Optional non-interactive Vulkan beauty-rendering CLI that reads one checked recipe, supports render overrides, and exports either the beauty image or all CPU-compatible Film passes. |
+| `raym0nade_gpu_path_benchmark` | Optional same-import beauty benchmark with CPU/GPU distributions, same-shader or alternate-shader A/B arms, queue/layout comparisons, and linear Film diagnostics. |
 
 `Raym0nade::core` exposes the C++17 headers under `include/raym0nade/` and GLM vector types through
 its build-tree interface; install/export packaging is not implemented yet.
@@ -287,6 +288,20 @@ staging allocation transfers large arrays in chunks no larger than 16 MiB. Accel
 scratch and instance-input buffers are released once the build submission completes. Vulkan
 handles and SDK types remain below the public include tree.
 
+Queue-family selection is capacity-aware. It first prefers a compute-only family that can satisfy
+the requested positive queue count, then a graphics-and-compute family with sufficient capacity.
+The default is one queue; the runtime never silently reduces an explicit request. Path rendering
+shares the immutable scene buffers, BLAS/TLAS, and pipeline across all selected queues. Each queue
+owns its command pool, command buffer, fence, timestamp pool, descriptor set, tile output,
+readback allocation, and host tile storage.
+
+Mixed opaque/cutout scenes use two geometries in one BLAS. The opaque geometry carries
+`VK_GEOMETRY_OPAQUE_BIT_KHR`; the cutout geometry carries
+`VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR`. A compact remap converts each
+geometry-local primitive ID back to the original packed triangle ID. All-opaque and all-cutout
+scenes use one identity-mapped geometry. Unified candidate geometry remains available only as an
+explicit diagnostic A/B mode.
+
 Encoded texture texels are not constrained to one storage-buffer descriptor. The runtime divides
 the logical `uint32_t` texel array into power-of-two pages, normally no larger than 256 MiB and
 always bounded by `maxStorageBufferRange`. A compact descriptor-visible table stores the page
@@ -294,6 +309,12 @@ size, shift, count, total texel count, and each page's 64-bit Vulkan buffer devi
 sampling resolves a logical texel ID to a page and offset, then reads that page through
 `GL_EXT_buffer_reference`. The runtime validates address alignment, page ranges, the table size,
 the `uint32_t` scene limit, and `maxMemoryAllocationCount` before publication.
+
+The shader sampler reuses each texture descriptor, wrapped UV, mip decision, and paging metadata
+within one material lookup. A zero mip blend skips the second bilinear sample. When all four
+bilinear texels occupy one page, its buffer address is resolved once; boundary cases retain the
+exact per-texel fallback. These are common-subexpression and address-resolution optimizations, not
+filtering changes.
 
 `VulkanRayQueryIntersector` reuses that runtime for complete ray batches and returns hit flag,
 primitive ID, parametric distance, and barycentrics through Vulkan-free public records.
@@ -343,10 +364,11 @@ specular radiance. Each radiance record carries its RGB sum and scalar second mo
 readback can construct the same `RadianceData` representation as the CPU renderer.
 
 SPP is divided into configurable batches of at most 64 samples. The output allocation remains
-resident for every batch of one tile. Each batch is submitted and fence-waited separately, with a
-shader-write to shader-read/write dependency before accumulation resumes; this bounds an individual
-Windows submission rather than placing all SPP in one watchdog-sensitive command buffer. After the
-last batch, a separate transfer submission copies the tile to host memory. Tile size and batch size
+resident for every batch of one tile. One command buffer records all batch dispatches for that
+tile, inserts shader-write to shader-read/write barriers between them, and finishes with the
+device-to-host copy. The tile uses one queue submission and fence wait. With multiple queues, an
+atomic counter assigns independent tiles dynamically; workers write disjoint Film regions and
+merge only local statistics after joining. Tile size, batch size, queue count, and assignment order
 change scheduling only: Philox addresses remain keyed by seed, image pixel, sample, bounce,
 replicate, and dimension.
 
@@ -368,6 +390,13 @@ sampling densities; they are variance choices rather than unaccounted estimator 
 sampling attempts are not appended, but the averaging denominator remains the requested sample
 count, so they are mathematically zero-contribution trials rather than a distribution conditioned
 by retrying until success.
+
+Each CPU render worker owns separate first-hit and recursive direct-light sampling scratch. The
+scratch caches the distance-weighted area-light distribution for an exactly matching model,
+surface position, and light count. Repeated direct trials at one first hit reuse that distribution
+without changing the random stream; a position or model change invalidates it. Keeping first-hit
+and recursive caches separate prevents a continued path from evicting the repeated primary
+distribution.
 
 `LightSample` keeps estimator terms explicit:
 
@@ -454,7 +483,7 @@ depends on the following invariants:
 | Object | Owns | Borrows / exposes | Required invariant |
 | --- | --- | --- | --- |
 | `ConsoleApplication` | `Model` instances and `RenderSettings` maps | Streams supplied to its constructor | Streams outlive the application. |
-| `Model` | materials, vertex data, faces, lights, skybox, and BVH object | Read-only access to lights and skybox | No scene mutation after construction. |
+| `Model` | process-unique cache identity, materials, vertex data, faces, lights, skybox, and BVH object | Read-only access to identity, lights, and skybox | No scene mutation after construction. |
 | `Face` | three positions | Three `VertexData` pointers and one `Material` pointer | Referenced model arrays must remain at stable addresses. |
 | `Bvh` | node vector | Pointer to `Model::faces_` storage | Face storage is not resized or moved after `build`. |
 | `LightObject` | copied `Face` values and its distribution | The copied faces retain vertex/material pointers | The parent `Model` remains alive. |
@@ -464,16 +493,20 @@ depends on the following invariants:
 | `LinearImage` | Row-major linear RGB pixels and their extent | Nothing | Validate extent and pixel count before publication. |
 | `PackedSceneData` | Indexed vertices, triangles, material IDs, materials, texture descriptors/mips/texels, area-light triangles, and HDR radiance/distributions | Nothing | Validate before publication; treat as immutable while any backend upload is derived from it. |
 | `FilmRenderResult` | One complete no-file CPU `Film` and its render-only statistics | Nothing | Export by moving or copying the result film; export processing intentionally mutates its private value. |
-| Private `VulkanRuntime` | Vulkan instance/device, queue synchronization, persistent device-local scene buffers, BLAS, and TLAS | Packed scene data only during synchronous construction | Serialize command-buffer use; submitted work must quiesce before owned resources are destroyed. |
+| Private `VulkanRuntime` | Vulkan instance/device, selected compute queues and host synchronization, persistent device-local scene buffers, BLAS, and TLAS | Packed scene data only during synchronous construction | Queue host calls are externally synchronized; submitted work must quiesce before owned resources are destroyed. |
 | `VulkanRayQueryIntersector` | One `VulkanRuntime`, batched-ray buffers, pipeline, and descriptor state | Nothing after construction | Do not call one intersector concurrently. |
 | `VulkanPrimaryRenderer` | One `VulkanRuntime`, reusable output/readback buffers, timestamp query pool, pipeline, and descriptor state | Nothing after construction | Do not call one renderer concurrently; the packed scene's supported-feature restrictions are checked per requested AOV. |
-| `VulkanPathRenderer` | One `VulkanRuntime`, reusable tile output/readback buffers, timestamp state, path pipeline, and descriptor state | Nothing after construction | Do not call one renderer concurrently; scene buffers persist across renders, while each render serializes tile batches and returns an independent Film. |
+| `VulkanPathRenderer` | One `VulkanRuntime`, one reusable command/synchronization/output/readback state per compute queue, and a shared path pipeline | Nothing after construction | Do not call one renderer concurrently; one render may process disjoint tiles concurrently, then returns one independent Film after all queues join. |
 
 Before mesh conversion, `Model` reserves the total Assimp-reported vertex and face counts. Material
 storage is sized once. These steps keep pointers embedded in `Face` stable. Both `Model` and `Bvh`
 are non-copyable and non-movable so an accidental container operation cannot silently violate the
 BVH's borrowed face pointer. Any future mutable-scene feature must replace these pointer contracts
 with stable indices or rebuild all dependent structures after mutation.
+
+Each successfully started `Model` construction receives a monotonically allocated process
+identity. Worker-local sampling scratch uses that value rather than an object address, preventing a
+stale cache hit if storage is later reused by another non-movable model.
 
 ## Render data flow
 
@@ -495,8 +528,9 @@ For each pixel, the CPU path performs these stages:
 The Vulkan path follows the same estimator stages within one compute invocation per tile pixel.
 It replaces CPU recursion with a bounded loop and replaces the row-local generator with addressed
 Philox samples. The first SPP batch writes the G-buffer and initializes four device accumulators;
-later batches resume those accumulators. Only a completed tile crosses back to the host, where its
-G-buffer and radiance planes are assembled into the common `Film`.
+later batches resume those accumulators. One or more compute queues process independent tiles from
+an atomic work counter. Only completed tiles cross back to the host, where disjoint G-buffer and
+radiance regions are assembled into the common `Film`.
 
 The renderer sanitizes invalid directions, PDFs, radiance, and throughput at several boundaries.
 Invalid samples contribute zero rather than contaminating an entire image with NaNs. This is a
@@ -512,7 +546,8 @@ Each row creates one `RenderContext` containing:
 
 - a `Generator` seeded by a stable hash of `RenderSettings::seed` and the row index;
 - a path-local `MediumStack`; and
-- a reserved `LightSample` scratch vector reused by direct and recursive sampling; and
+- a reserved `LightSample` vector reused by direct and recursive sampling;
+- separate worker-local first-hit and recursive area-light distribution scratch; and
 - a local direct-light sample counter.
 
 Because a row's seed and its left-to-right sequence do not depend on which worker claims it,
@@ -530,10 +565,12 @@ build configurations.
 Changes that add stochastic work must preserve the mapping from stable render coordinates to
 random streams. The Vulkan Philox contract uses
 `(seed, pixel, sample, bounce, replicate, dimension)` and is independent of tile size, SPP batch
-size, dispatch order, or worker scheduling. Its integer output and open-(0,1) float conversion have
-a shared CPU/GLSL known-answer contract. Never seed from a worker index, clock, or atomic work
-order. Floating-point path results are repeatable for a fixed device, driver, shader binary,
-settings, and seed; bit identity is not promised across different GPU implementations.
+size, compute-queue count, dispatch order, or worker scheduling. Queue workers write disjoint
+pixels, so one-queue and multi-queue Film values are bit-identical for fixed inputs. Its integer
+output and open-(0,1) float conversion have a shared CPU/GLSL known-answer contract. Never seed from
+a worker index, clock, or atomic work order. Floating-point path results are repeatable for a fixed
+device, driver, shader binary, settings, and seed; bit identity is not promised across different
+GPU implementations.
 
 The four-thread film filter is deterministic because each worker owns one complete radiance buffer.
 Other post-processing stages currently run after render workers have joined and are mostly
@@ -555,9 +592,13 @@ still occurs inside `Model::intersect` before the AOV-specific hit evaluation.
 - PNG and Python-decoded buffers are checked against dimensions and channel counts before copying.
 - Output directory creation and image writes propagate filesystem/libpng exceptions to the console.
 - Vulkan constructors reject unsupported devices, incompatible scene ABI, invalid buffer/address
-  ranges, and unsupported allocation counts before exposing a renderer.
+  ranges, unsupported allocation counts, zero queue requests, and queue counts that no compatible
+  family can provide before exposing a renderer.
 - GPU Film readback rejects invalid shader-produced material IDs and Boolean fields, then applies
   the common non-finite and overflow sanitization while finalizing radiance.
+- A failed queue operation poisons the path renderer before quiescence is attempted. The poison is
+  checked before a worker begins another command recording and again before submission; a worker
+  already recording may finish recording but cannot submit after observing the failure.
 
 Library callers should treat these exceptions as operation failures. Do not continue with a model
 whose construction failed, and do not suppress render validation errors inside worker threads.
@@ -654,13 +695,16 @@ document:
     out-of-core rendering, and the logical texel array remains limited to `uint32_t` indexing.
     Extremely small float probabilities can collapse adjacent CDF entries into plateaus; selection
     code tolerates zero-width bins, but their precision loss remains a packed-format limitation.
-    Making the complete BLAS candidate geometry whenever any cutout is present may also reduce
-    traversal performance.
-16. The per-pixel megakernel has no wavefront queues or compaction. Per-batch submission and fence
-    waiting bounds watchdog exposure but adds synchronization overhead, and each completed tile is
-    copied to the host before the next tile. The current integrated AMD functionality device has
-    not demonstrated a speedup over the CPU reference; performance work requires profiling on a
-    supported discrete AMD GPU rather than assuming feature parity implies acceleration.
+16. The per-pixel megakernel has no wavefront queues or compaction. One tile records every SPP batch
+    into one command buffer and waits on one fence. At the legal extreme of 1,000,000 SPP with
+    one-sample batches, this can create about one million dispatch/barrier pairs, excessive command
+    memory, a 60-second wait timeout, or a Windows TDR. A future bounded-submission chunk size must
+    close that extreme-input risk without restoring one wait per ordinary batch. Multiple queues
+    share immutable device data but duplicate per-queue tile buffers and descriptors. Their GPU
+    timestamp sum is aggregate queue-busy time, not GPU wall clock. The current integrated AMD
+    functionality device has not demonstrated a speedup over the CPU reference; performance work
+    requires profiling on a supported discrete AMD GPU rather than assuming feature parity implies
+    acceleration.
 
 ## GPU-backend roadmap
 
@@ -759,8 +803,11 @@ Status: implemented for the complete current CPU estimator on the Windows AMD de
 The focused G0 through G3b probes remain available, while `VulkanPathRenderer` adds tiled SPP
 accumulation, complete material textures, candidate alpha cutouts, environment and area-light
 sampling, emission, reflection, transmission, absorption, nested media, and a 16-bounce iterative
-path. It returns the common Film representation and the `raym0nade_gpu_render` application feeds
-that result into the existing host post-processing path. Cross-platform GPU validation,
+path. Opaque/cutout geometry partitioning, cached Philox blocks, texture-address common-expression
+elimination, one submission per ordinary tile, and a configurable compute-queue pool specialize
+that path without changing Film values. It returns the common Film representation and the
+`raym0nade_gpu_render` application feeds that result into the existing host post-processing path.
+Cross-platform GPU validation,
 stored-image acceptance thresholds, proactive memory-budget policy, and discrete-GPU performance
 remain open parts of the stage gate.
 
@@ -774,6 +821,12 @@ capability checks rather than silently changing appearance.
 - Add backend-specific caches keyed by packed scene version without changing application ownership.
 - Track image error, rays/s, build/upload time, memory, and energy use; do not accept performance
   changes based only on wall-clock anecdotes.
+
+Status: initial measured specialization is implemented. The current accepted slices are cached
+Philox blocks, opaque/cutout BLAS geometry partitioning, exact paged-texture common-expression
+elimination, one submission per tile, and an explicit multi-queue scheduler. Queue count remains a
+positive runtime tuning parameter with a portable default of one. Native Vulkan image sampling,
+wavefront compaction, bounded extreme-SPP submissions, and discrete-GPU profiling remain open.
 
 Gate: optimized backends remain within the documented reference tolerance and retain the CPU
 fallback on every supported host platform.

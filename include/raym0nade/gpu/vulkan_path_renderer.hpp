@@ -24,10 +24,12 @@ struct VulkanPathRenderOptions {
 struct VulkanPathRenderTimings {
     // Includes command recording, queue submission/wait, tile readback, and Film assembly.
     double hostRenderMilliseconds{0.0};
-    // Sum of device timestamps enclosing the compute work for every tile.
+    // Sum of per-queue device timestamps enclosing compute work for every tile. With multiple
+    // queues this is aggregate queue-busy time, not elapsed GPU wall-clock time.
     double gpuDispatchMilliseconds{0.0};
     bool gpuTimestampAvailable{false};
     std::uint64_t dispatchCount{0U};
+    std::uint32_t computeQueueCount{1U};
 };
 
 struct VulkanPathRenderResult {
@@ -53,6 +55,7 @@ public:
     VulkanPathRenderer& operator=(VulkanPathRenderer&&) = delete;
 
     [[nodiscard]] const std::string& deviceName() const noexcept;
+    [[nodiscard]] std::uint32_t computeQueueCount() const noexcept;
     [[nodiscard]] const VulkanRayQuerySetupTimings& setupTimings() const noexcept;
     [[nodiscard]] VulkanValidationReport validationReport() const;
     [[nodiscard]] VulkanPathRenderResult render(const RenderSettings& settings);

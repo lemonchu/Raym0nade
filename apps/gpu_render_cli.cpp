@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -21,6 +20,8 @@
 #include "raym0nade/render.hpp"
 #include "raym0nade/scene_data.hpp"
 
+#include "render_recipe.hpp"
+
 #ifndef RAYM0NADE_PATH_TRACE_SHADER
 #error "RAYM0NADE_PATH_TRACE_SHADER must be defined by CMake."
 #endif
@@ -33,16 +34,12 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using namespace raym0nade;
 using namespace raym0nade::gpu;
+using raym0nade::cli::SingleRenderRecipe;
+using raym0nade::cli::loadSingleRenderRecipe;
+using raym0nade::cli::resolveFromWorkingDirectory;
 
 constexpr std::string_view kUnsupportedDeviceMessage =
     "No AMD Vulkan device satisfies the Ray Query backend requirements.";
-
-struct Recipe {
-    std::filesystem::path modelDirectory;
-    std::filesystem::path modelFilename;
-    std::filesystem::path skyFilename;
-    RenderSettings settings;
-};
 
 struct Options {
     std::filesystem::path recipePath;
@@ -57,6 +54,7 @@ struct Options {
     std::uint32_t tileWidth{128U};
     std::uint32_t tileHeight{128U};
     std::uint32_t samplesPerBatch{8U};
+    std::uint32_t gpuQueueCount{1U};
     bool requestValidation{false};
     bool exportAllPasses{false};
 };
@@ -82,6 +80,7 @@ struct Options {
            "  --expect-faces N           Fail before packing if import topology differs.\n"
            "  --tile WIDTHxHEIGHT        GPU tile extent (default: 128x128).\n"
            "  --batch-spp N              Samples per GPU dispatch, 1..64 (default: 8).\n"
+           "  --gpu-queues N             Concurrent Vulkan compute queues (default: 1).\n"
            "  --shader FILE              Override the generated path-tracing SPIR-V.\n"
            "  --validation               Request Vulkan validation and synchronization checks.\n"
            "  --all-passes               Export the full CPU-compatible pass set.\n"
@@ -154,15 +153,6 @@ struct Options {
     };
 }
 
-[[nodiscard]] std::filesystem::path resolveFromWorkingDirectory(
-    const std::filesystem::path& path,
-    const std::filesystem::path& workingDirectory) {
-    if (path.is_absolute()) {
-        return path.lexically_normal();
-    }
-    return (workingDirectory / path).lexically_normal();
-}
-
 [[nodiscard]] std::filesystem::path defaultShaderPath(
     const char* program,
     const std::filesystem::path& workingDirectory) {
@@ -232,6 +222,11 @@ struct Options {
                 next("--batch-spp"),
                 "--batch-spp",
                 64U));
+        } else if (argument == "--gpu-queues") {
+            options.gpuQueueCount = static_cast<std::uint32_t>(parseUnsigned(
+                next("--gpu-queues"),
+                "--gpu-queues",
+                std::numeric_limits<std::uint32_t>::max()));
         } else if (argument == "--shader") {
             options.shaderPath =
                 resolveFromWorkingDirectory(next("--shader"), workingDirectory);
@@ -254,111 +249,10 @@ struct Options {
     if (options.samplesPerBatch == 0U) {
         throw std::invalid_argument("--batch-spp must be positive.");
     }
+    if (options.gpuQueueCount == 0U) {
+        throw std::invalid_argument("--gpu-queues must be positive.");
+    }
     return options;
-}
-
-void requireToken(std::istream& input, const std::string& expected, const char* context) {
-    std::string actual;
-    if (!(input >> actual) || actual != expected) {
-        throw std::runtime_error(
-            std::string{"Invalid recipe while reading "} + context +
-            ": expected '" + expected + "'.");
-    }
-}
-
-template <typename Value>
-void requireValue(std::istream& input, Value& value, const char* description) {
-    if (!(input >> value)) {
-        throw std::runtime_error(std::string{"Invalid recipe value for "} + description + '.');
-    }
-}
-
-void readVector(std::istream& input, vec3& value, const char* description) {
-    requireValue(input, value.x, description);
-    requireValue(input, value.y, description);
-    requireValue(input, value.z, description);
-}
-
-[[nodiscard]] Recipe loadRecipe(
-    const std::filesystem::path& filename,
-    const std::filesystem::path& workingDirectory) {
-    std::ifstream input{filename};
-    if (!input) {
-        throw std::runtime_error("Could not open render recipe: " + filename.string());
-    }
-
-    Recipe result;
-    std::string modelId;
-    std::string settingsId;
-    requireToken(input, "create", "model command");
-    requireToken(input, "model", "model command");
-    requireValue(input, modelId, "model identifier");
-    requireValue(input, result.modelDirectory, "model directory");
-    requireValue(input, result.modelFilename, "model filename");
-    requireValue(input, result.skyFilename, "sky filename");
-
-    requireToken(input, "create", "settings command");
-    std::string settingsCommand;
-    requireValue(input, settingsCommand, "settings command type");
-    if (settingsCommand != "settings" && settingsCommand != "args") {
-        throw std::runtime_error(
-            "Invalid recipe while reading settings command: expected 'settings' or 'args'.");
-    }
-    requireValue(input, settingsId, "settings identifier");
-    readVector(input, result.settings.direction, "camera direction");
-    readVector(input, result.settings.right, "camera right vector");
-    readVector(input, result.settings.up, "camera up vector");
-    float alongDirection = 0.0F;
-    float alongRight = 0.0F;
-    float alongUp = 0.0F;
-    requireValue(input, alongDirection, "camera position direction coefficient");
-    requireValue(input, alongRight, "camera position right coefficient");
-    requireValue(input, alongUp, "camera position up coefficient");
-    result.settings.position = alongDirection * result.settings.direction +
-                               alongRight * result.settings.right +
-                               alongUp * result.settings.up;
-    requireValue(input, result.settings.pixelScale, "pixel scale");
-    requireValue(input, result.settings.focusDistance, "focus distance");
-    requireValue(input, result.settings.circleOfConfusion, "circle of confusion");
-    requireValue(input, result.settings.exposure, "exposure");
-    requireValue(input, result.settings.width, "width");
-    requireValue(input, result.settings.height, "height");
-    requireValue(input, result.settings.samplesPerPixel, "samples per pixel");
-    requireValue(input, result.settings.threadCount, "CPU thread count");
-    requireValue(input, result.settings.directLightProbability, "direct-light probability");
-    requireValue(input, result.settings.outputPrefix, "output prefix");
-
-    requireToken(input, "render", "render command");
-    std::string renderedModelId;
-    std::string renderedSettingsId;
-    requireValue(input, renderedModelId, "render model identifier");
-    requireValue(input, renderedSettingsId, "render settings identifier");
-    if (renderedModelId != modelId || renderedSettingsId != settingsId) {
-        throw std::runtime_error("The recipe render command does not reference its created objects.");
-    }
-    std::string trailing;
-    if (input >> trailing) {
-        if (trailing != "exit") {
-            throw std::runtime_error("Unexpected trailing recipe token: " + trailing);
-        }
-        if (input >> trailing) {
-            throw std::runtime_error("Unexpected content after the recipe exit command.");
-        }
-    }
-    result.modelDirectory =
-        resolveFromWorkingDirectory(result.modelDirectory, workingDirectory);
-    result.modelFilename = result.modelFilename.is_absolute()
-                               ? result.modelFilename.lexically_normal()
-                               : (result.modelDirectory / result.modelFilename).lexically_normal();
-    if (!result.skyFilename.empty() && result.skyFilename != "null") {
-        result.skyFilename = result.skyFilename.is_absolute()
-                                 ? result.skyFilename.lexically_normal()
-                                 : (result.modelFilename.parent_path() / result.skyFilename)
-                                       .lexically_normal();
-    }
-    result.settings.outputPrefix =
-        resolveFromWorkingDirectory(result.settings.outputPrefix, workingDirectory);
-    return result;
 }
 
 void applyOverrides(
@@ -435,12 +329,14 @@ int main(const int argc, char** argv) {
     try {
         const std::filesystem::path workingDirectory = std::filesystem::current_path();
         const Options options = parseOptions(argc, argv, workingDirectory);
-        Recipe recipe = loadRecipe(options.recipePath, workingDirectory);
+        SingleRenderRecipe recipe =
+            loadSingleRenderRecipe(options.recipePath, workingDirectory);
         applyOverrides(options, workingDirectory, recipe.settings);
 
         const Clock::time_point totalBegin = Clock::now();
         VulkanPathRenderOptions renderOptions;
         renderOptions.vulkan.requestValidation = options.requestValidation;
+        renderOptions.vulkan.computeQueueCount = options.gpuQueueCount;
         renderOptions.tileWidth = options.tileWidth;
         renderOptions.tileHeight = options.tileHeight;
         renderOptions.samplesPerBatch = options.samplesPerBatch;
@@ -475,7 +371,8 @@ int main(const int argc, char** argv) {
             renderer = std::make_unique<VulkanPathRenderer>(
                 scene, options.shaderPath, renderOptions);
         }
-        std::cout << "GPU: " << renderer->deviceName() << '\n';
+        std::cout << "GPU: " << renderer->deviceName() << '\n'
+                  << "GPU compute queues: " << renderer->computeQueueCount() << '\n';
         const VulkanRayQuerySetupTimings& setup = renderer->setupTimings();
         std::cout << "GPU upload: " << setup.uploadMilliseconds << " ms; AS build: "
                   << setup.accelerationStructureBuildMilliseconds << " ms.\n";
@@ -484,7 +381,9 @@ int main(const int argc, char** argv) {
         std::cout << "GPU render host wall-clock: "
                   << result.timings.hostRenderMilliseconds << " ms.\n";
         if (result.timings.gpuTimestampAvailable) {
-            std::cout << "GPU dispatch timestamps: "
+            std::cout << (result.timings.computeQueueCount == 1U
+                              ? "GPU dispatch timestamps: "
+                              : "Aggregate GPU queue-busy timestamps: ")
                       << result.timings.gpuDispatchMilliseconds << " ms across "
                       << result.timings.dispatchCount << " dispatches.\n";
         }

@@ -344,20 +344,22 @@ bool pathSampleDirectLight(
         hasEnvironment && hasAreaLights ? 0.5 : (hasEnvironment ? 1.0 : 0.0);
     const float areaProbability = 1.0 - environmentProbability;
     const uint base = pathLightDimension(lightSampleIndex, 0U);
-    const float categoryRandom = pathRandom(
+    const uvec4 firstRandomBlock = pathRandomBlockForDimension(
         pixelIndex,
         sampleIndex,
         bounceIndex,
+        replicateIndex,
+        base);
+    const float categoryRandom = pathRandomFromBlock(
+        firstRandomBlock,
         replicateIndex,
         base + pathDimensionLightCategory);
     const bool chooseEnvironment = hasEnvironment &&
         (!hasAreaLights || categoryRandom < environmentProbability);
     bool valid = false;
     if (chooseEnvironment) {
-        const float selectionRandom = pathRandom(
-            pixelIndex,
-            sampleIndex,
-            bounceIndex,
+        const float selectionRandom = pathRandomFromBlock(
+            firstRandomBlock,
             replicateIndex,
             base + pathDimensionLightObject);
         valid = pathSampleEnvironment(
@@ -368,32 +370,30 @@ bool pathSampleDirectLight(
             throughput,
             radiance);
     } else {
+        const uvec4 secondRandomBlock = pathRandomBlockForDimension(
+            pixelIndex,
+            sampleIndex,
+            bounceIndex,
+            replicateIndex,
+            base + pathDimensionLightSecond);
         valid = pathSampleAreaLight(
             surface,
             incoming,
             areaProbability,
-            pathRandom(
-                pixelIndex,
-                sampleIndex,
-                bounceIndex,
+            pathRandomFromBlock(
+                firstRandomBlock,
                 replicateIndex,
                 base + pathDimensionLightObject),
-            pathRandom(
-                pixelIndex,
-                sampleIndex,
-                bounceIndex,
+            pathRandomFromBlock(
+                firstRandomBlock,
                 replicateIndex,
                 base + pathDimensionLightTriangle),
-            pathRandom(
-                pixelIndex,
-                sampleIndex,
-                bounceIndex,
+            pathRandomFromBlock(
+                firstRandomBlock,
                 replicateIndex,
                 base + pathDimensionLightFirst),
-            pathRandom(
-                pixelIndex,
-                sampleIndex,
-                bounceIndex,
+            pathRandomFromBlock(
+                secondRandomBlock,
                 replicateIndex,
                 base + pathDimensionLightSecond),
             throughput,

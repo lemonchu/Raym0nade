@@ -155,6 +155,7 @@ build\gpu-release\bin\raym0nade_gpu_render.exe ^
     --recipe examples\bistro_daylight_appearance_1024.txt ^
     --seed 0 ^
     --batch-spp 64 ^
+    --gpu-queues 1 ^
     --output-prefix output\BistroGpuPathQuality1024
 ```
 
@@ -166,6 +167,7 @@ the `cmd.exe` continuation characters above. On Linux or macOS:
     --recipe examples/bistro_daylight_appearance_1024.txt \
     --seed 0 \
     --batch-spp 64 \
+    --gpu-queues 1 \
     --output-prefix output/BistroGpuPathQuality1024
 ```
 
@@ -197,11 +199,111 @@ confusion from the recipe width. Other estimator overrides are `--direct-probabi
 `--seed`, and `--exposure`. `--output-prefix` changes only the output location. The recipe's
 worker count is accepted for compatibility but is not used by the GPU renderer.
 
-Execution controls are `--tile WIDTHxHEIGHT` and `--batch-spp N`, where `N` is from 1 through 64;
-the defaults are `128x128` and `8`. `--validation` requests the Vulkan validation layer and
-synchronization validation. `--expect-faces N` is an optional import-topology guard, and
-`--shader FILE` overrides the automatically located shader. Run
+Execution controls are `--tile WIDTHxHEIGHT`, `--batch-spp N`, and `--gpu-queues N`. Batch SPP
+is from 1 through 64; the defaults are `128x128`, `8`, and one compute queue. Queue count is a
+positive device-tuning parameter, not a quality parameter. The runtime first prefers a
+capacity-sufficient compute-only family, may fall back to a capacity-sufficient
+graphics-and-compute family, and fails clearly rather than reducing the requested count. One queue
+is intentionally the portable default; tune other devices with the same-shader AB/BA procedure
+below. `--validation` requests the Vulkan validation layer and synchronization validation.
+`--expect-faces N` is an optional import-topology guard, and `--shader FILE` overrides the
+automatically located shader. Run
 `raym0nade_gpu_render --help` for the authoritative option list.
+
+### CPU/GPU beauty benchmark
+
+Use `raym0nade_gpu_path_benchmark` when comparing CPU and GPU path-rendering time. A Release build
+is required for performance conclusions. The harness imports a recipe's model exactly once, runs
+the CPU warm-ups and measurements, packs the same imported topology, releases the pointer-rich
+`Model`, and reuses a persistent Vulkan renderer within each GPU arm. It does not retry an unstable
+Assimp import. The default one warm-up and three measurements are intended only for smoke testing;
+use at least ten measured iterations for a performance run.
+
+From the repository root on Windows:
+
+```bat
+build\gpu-release\bin\raym0nade_gpu_path_benchmark.exe ^
+    --recipe examples\bistro_daylight_appearance_1024.txt ^
+    --resolution 512x288 ^
+    --spp 8 ^
+    --cpu-threads 0 ^
+    --warmups 2 ^
+    --measurements 10 ^
+    --tile 128x128 ^
+    --batch-spp 8 ^
+    --gpu-queues 1 ^
+    --output-dir output\benchmarks\bistro-path
+```
+
+On Linux or macOS:
+
+```sh
+./build/gpu-release/bin/raym0nade_gpu_path_benchmark \
+    --recipe examples/bistro_daylight_appearance_1024.txt \
+    --resolution 512x288 \
+    --spp 8 \
+    --cpu-threads 0 \
+    --warmups 2 \
+    --measurements 10 \
+    --tile 128x128 \
+    --batch-spp 8 \
+    --gpu-queues 1 \
+    --output-dir output/benchmarks/bistro-path
+```
+
+The output directory contains `summary.txt`, raw per-iteration `timings.csv`, and the final
+`cpu-beauty.png` and `gpu-beauty.png`. Import, packed-scene conversion, Vulkan construction,
+upload, acceleration-structure build, and PNG export are reported separately from the measured
+render calls. Host median, nearest-rank p95, minimum, and maximum are reported for both backends;
+GPU timestamp distributions are also reported when supported. The summary records the shader path,
+byte size, labeled noncryptographic FNV-1a-64 identity, fixed settings, topology, area-light counts,
+cutout-triangle ratio, and encoded texture bytes.
+The GPU host interval includes command recording, submission, waits, tile readback, and Film
+assembly. With more than one queue, the timestamp total is aggregate queue-busy time and may exceed
+wall-clock time; external render-call wall clock remains the comparison metric. Readback is not yet
+isolated as its own timing bucket. The harness also lacks peak-memory and rays-per-second counters;
+pixel-samples per second cannot account for variable path work. It is therefore a useful controlled
+harness, but not a complete implementation of the formal policy in `gpu-backend.md`.
+
+Linear beauty MAE and RMSE are computed from the floating-point radiance planes before spatial
+clamping, filtering, gamma, and PNG encoding. CPU and GPU intentionally use different deterministic
+random streams, so a one-seed error result is a stochastic diagnostic, not a bias measurement or a
+golden-image tolerance.
+
+Use `--shader FILE` to measure a specific SPIR-V file. `--comparison-shader FILE` measures a second
+shader while retaining the same `PackedSceneData` through both arms; each renderer is destroyed
+before the next is created, so two device scenes are never resident simultaneously. This A/B mode
+takes approximately twice as many GPU setup and render passes. `--unified-candidate-geometry`
+selects legacy unified primitive ordering for the primary arm, while
+`--comparison-unified-candidate-geometry` changes only the comparison arm. The latter permits a
+current split-layout primary shader and an old unified-layout comparison shader in one import.
+
+The default A/B order is primary then comparison. Driver warm-up, GPU DVFS, and thermal state can
+favor one position, so a serious comparison requires a second process with the same settings and
+topology plus `--comparison-first`. Treat the two results as AB and BA observations rather than
+selecting the faster order. `--gpu-only` skips CPU rendering for repeated shader profiling. Tile,
+batch, and per-arm geometry layouts are printed in every report. Run
+`raym0nade_gpu_path_benchmark --help` for the authoritative option list.
+
+Use `--comparison-gpu-queues N` to create a comparison arm for queue tuning. It uses the primary
+shader when no comparison shader is supplied, and independently inherits the primary geometry
+layout unless a comparison geometry switch is supplied. For example, run the following once as
+written and once with `--comparison-first`, keeping every other argument and the imported
+topology equal:
+
+```sh
+./build/gpu-release/bin/raym0nade_gpu_path_benchmark \
+    --recipe examples/bistro_daylight_appearance_1024.txt \
+    --resolution 512x288 --spp 64 --seed 0 \
+    --warmups 2 --measurements 10 --gpu-only \
+    --tile 128x128 --batch-spp 64 \
+    --gpu-queues 1 --comparison-gpu-queues 2 \
+    --output-dir output/benchmarks/bistro-queues-ab
+```
+
+Queue count does not map directly to Windows Task Manager's `Compute 0` and `Compute 1` graphs,
+nor to the number of hardware compute units. It controls how many Vulkan queues feed independent
+tiles to the device; only measurement on the target GPU can identify a useful value.
 
 ## Daylight exposure derivation
 

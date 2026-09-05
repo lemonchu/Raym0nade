@@ -7,6 +7,7 @@
 #include <assimp/scene.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -20,6 +21,21 @@ namespace {
 constexpr int kEmissiveSampleGrid = 8;
 constexpr int kMaximumCutoutLayers = 32;
 constexpr float kMinimumEmitterImportance = 1.0e-6F;
+
+std::uint64_t nextModelInstanceIdentity() {
+    static std::atomic<std::uint64_t> nextIdentity{1U};
+    std::uint64_t current = nextIdentity.load(std::memory_order_relaxed);
+    while (current != std::numeric_limits<std::uint64_t>::max()) {
+        if (nextIdentity.compare_exchange_weak(
+                current,
+                current + 1U,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return current;
+        }
+    }
+    throw std::overflow_error(std::string{});
+}
 
 std::size_t countSceneVertices(const aiScene& scene) noexcept {
     std::size_t count = 0;
@@ -166,7 +182,8 @@ private:
 Model::Model(
     const std::filesystem::path& modelDirectory,
     const std::filesystem::path& modelFilename,
-    const std::filesystem::path& skyFilename) {
+    const std::filesystem::path& skyFilename)
+    : instanceIdentity_(nextModelInstanceIdentity()) {
     if (modelDirectory.empty() || modelFilename.empty()) {
         throw std::invalid_argument("Model directory and filename must not be empty.");
     }
@@ -538,6 +555,10 @@ const SkyBox& Model::sky() const noexcept {
 
 const std::filesystem::path& Model::modelPath() const noexcept {
     return modelPath_;
+}
+
+std::uint64_t Model::instanceIdentity() const noexcept {
+    return instanceIdentity_;
 }
 
 std::size_t Model::faceCount() const noexcept {

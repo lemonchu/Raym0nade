@@ -63,6 +63,10 @@ layout(push_constant, std430) uniform PathTraceParameters {
     uvec4 environmentFlagsTotalSppSceneVersionAndFlags;
 } pathParameters;
 
+bool packedPrimitiveRemapRequired() {
+    return pathParameters.environmentFlagsTotalSppSceneVersionAndFlags.w != 0U;
+}
+
 struct PathRayDifferential {
     vec3 positionDx;
     vec3 positionDy;
@@ -139,18 +143,39 @@ float pathSquare(float value) {
     return value * value;
 }
 
+uint pathRandomDimensionAddress(uint replicateIndex, uint dimension) {
+    return replicateIndex * pathReplicateDimensionStride + dimension;
+}
+
+uvec4 pathRandomBlockForDimension(
+    uint pixelIndex,
+    uint sampleIndex,
+    uint bounceIndex,
+    uint replicateIndex,
+    uint dimension) {
+    return raym0nadeCounterRandomBlockForDimension(
+        pathParameters.seedLightCountAndEnvironmentWidthHeight.x,
+        pixelIndex,
+        sampleIndex,
+        bounceIndex,
+        pathRandomDimensionAddress(replicateIndex, dimension));
+}
+
+float pathRandomFromBlock(
+    uvec4 block, uint replicateIndex, uint dimension) {
+    return raym0nadeCounterRandomBlockOpen01(
+        block, pathRandomDimensionAddress(replicateIndex, dimension));
+}
+
 float pathRandom(
     uint pixelIndex,
     uint sampleIndex,
     uint bounceIndex,
     uint replicateIndex,
     uint dimension) {
-    return raym0nadeCounterRandomOpen01(
-        pathParameters.seedLightCountAndEnvironmentWidthHeight.x,
-        pixelIndex,
-        sampleIndex,
-        bounceIndex,
-        replicateIndex * pathReplicateDimensionStride + dimension);
+    const uvec4 block = pathRandomBlockForDimension(
+        pixelIndex, sampleIndex, bounceIndex, replicateIndex, dimension);
+    return pathRandomFromBlock(block, replicateIndex, dimension);
 }
 
 uint pathLightDimension(uint lightSampleIndex, uint component) {
@@ -166,12 +191,12 @@ void pathLimitThroughput(inout vec3 throughput) {
 }
 
 void pathResetMediumStack(out PathMediumStack media) {
+    // Inactive slots are never read, and entering a medium initializes its slot
+    // before increasing the active count.
+    media.materialIds[0] = pathInvalidSceneId;
+    media.iors[0] = 1.0;
+    media.absorptions[0] = vec3(1.0);
     media.count = 1U;
-    for (uint index = 0U; index < pathMaximumMediumCount; ++index) {
-        media.materialIds[index] = pathInvalidSceneId;
-        media.iors[index] = 1.0;
-        media.absorptions[index] = vec3(1.0);
-    }
 }
 
 float pathCurrentIor(PathMediumStack media) {
