@@ -64,19 +64,19 @@ successfully in `gpu-debug`, then reported:
 The host is a Ryzen 9 9950X with 16 CPU cores and only two integrated GPU graphics cores. It is a
 valid functionality node but not a credible target for promising a large speedup over the current
 CPU renderer. Performance acceptance therefore separates this integrated-GPU compatibility gate
-from future RX 6000/7000/9000 discrete-GPU targets. A limited primary-AOV renderer now supports one
-deterministic directional-light diagnostic, diffuse textures, and candidate alpha cutouts. Packed
-lighting data is resident, but no complete GPU path renderer or speedup is claimed.
+from future RX 6000/7000/9000 discrete-GPU targets. The focused primary-AOV renderer remains
+available, and the later `VulkanPathRenderer` now executes the complete current 16-bounce estimator.
+The matched Bistro comparison below found no speedup on this integrated device.
 
 The G1 hardware-intersection self-test compiles a checked-in compute shader to generated SPIR-V,
 builds a one-triangle BLAS and identity TLAS, and executes deterministic hit and miss Ray Queries.
 The hit returns primitive 0, distance 1, and barycentrics `(0.25, 0.5)`; the miss returns the
-invalid primitive sentinel. G2 now also packs an imported scene and compares repeated Vulkan
+invalid primitive sentinel. G2 also packs an imported scene and compares repeated Vulkan
 primary-hit batches with the CPU BVH. G3a adds deterministic CPU/GPU `BaseColor` and `ShapeNormal`
 images with device-side primary-ray generation. G3b adds deterministic directional Lambert shading
-and conditional hard-shadow queries. The clean validation records below close the current Windows
-G1, G2, G3a, and G3b functionality slices. Full G3 lighting and path integration remain open. See
-`gpu-backend.md` for the durable design and measurement plan.
+and conditional hard-shadow queries. The later complete G3 path renderer adds general stochastic
+lighting, material shading, multi-bounce transport, SPP accumulation, Film readback, and shared
+post-processing. See `gpu-backend.md` for the durable design and measurement plan.
 
 ## Validation history
 
@@ -561,6 +561,7 @@ be translated to the G3b GPU backend: it had one deterministic primary sample pe
 lighting, textures, depth of field, path continuation, accumulation, or post-processing. The
 subsequent texture/cutout foundation does not change the one-primary-sample limitation, so a high-
 resolution `ShapeNormal` result remains a geometry diagnostic rather than a beauty render.
+The complete path renderer recorded later in this log supersedes that diagnostic-only limitation.
 
 The benchmark now accepts `--gpu-only`. It retains model import, scene packing, Vulkan setup,
 warm-up, measurement, PNG export, and reporting, but skips every CPU cold, warm-up, and measured
@@ -589,8 +590,8 @@ checks confirmed that negative warm-up and measurement values both exit with sta
 loading instead of entering an effectively unbounded loop.
 
 G3b is complete, and the foundation below subsequently adds GPU diffuse textures and alpha-tested
-traversal. Full G3 remains open until lighting and iterative path state execute under a CPU/GPU
-comparison.
+traversal. At that checkpoint, Full G3 remained open until lighting and iterative path state could
+execute under a CPU/GPU comparison.
 
 ### Device-ready render foundations and packed format version 4
 
@@ -657,12 +658,106 @@ cannot hold the full-quality Bistro asset. Texel paging, buffer device address s
 native compressed `VkImage` storage is required. This is a capacity calculation, not a successful
 full Bistro packing, upload, or render.
 
-Two further risks remain explicit: when any material has cutout geometry, the current implementation
-makes the complete BLAS candidate geometry, which can reduce traversal performance; and float CDFs
-can contain plateaus when probabilities are extremely small. This slice still does not claim GPU
-beauty rendering. The version-4 lighting buffers are uploaded but not consumed. Iterative
-multi-bounce transport, SPP accumulation, complete material shading, Film readback, general render
-CLI integration, and high-quality Bistro validation remain required.
+At that foundation checkpoint, two further risks were explicit: when any material had cutout
+geometry, the implementation made the complete BLAS candidate geometry, which could reduce
+traversal performance; and float CDFs could contain plateaus when probabilities were extremely
+small. That slice did not yet claim GPU beauty rendering. The version-4 lighting buffers were
+uploaded but not consumed. Iterative multi-bounce transport, SPP accumulation, complete material
+shading, Film readback, general render CLI integration, and high-quality Bistro validation remained
+required.
+
+### Complete AMD Vulkan path renderer and Bistro validation
+
+The G3 path-rendering slice completed on 2026-09-05. `VulkanPathRenderer` now consumes the immutable
+version-4 packed scene directly and implements the CPU estimator's 16-bounce transport structure in
+one compute shader. It covers first-hit GBuffer output, four radiance and second-moment planes,
+Philox-addressed SPP accumulation, Bernoulli direct/indirect allocation, emissive hits, area lights,
+HDR environment importance sampling, diffuse/GTR2 reflection, clearcoat evaluation, rough
+transmission, Fresnel branching, medium-stack absorption, texture LODs, normal maps, and
+alpha-tested primary, continuation, and shadow traversal. Host readback reconstructs a normal
+`Film`; the shared finalizer and exporter therefore apply the same exposure, variance, spatial
+filter, composition, bloom, depth of field, FXAA, and PNG policy as the CPU renderer.
+
+The large packed RGBA8 array is no longer one SSBO. The runtime splits it into power-of-two texel
+pages bounded by both the configured 256 MiB preference and `maxStorageBufferRange`, then exposes a
+compact storage-buffer page table whose entries contain buffer device addresses. Transfers remain
+bounded to 16 MiB staging chunks. A forced 16-byte page configuration in the material regression
+places its normal map in a later page and verifies real cross-page shader reads. The local Bistro
+pack contained 1,252,794,601 texels (about 5.01 GB) and uploaded successfully as 19 pages. The
+17-allocation non-page reserve was audited against simultaneous runtime, acceleration-structure,
+staging, and renderer resize ownership and remains exact for the current implementation.
+
+Each SPP batch is submitted and fence-waited independently. A shader write-to-read/write barrier
+connects accumulation across submissions, and a final compute-to-copy barrier precedes tile
+readback. This deliberately keeps a single fence wait bounded by at most 64 SPP rather than placing
+an arbitrarily long render behind the runtime's 60-second fence timeout. It is conservative and can
+cost queue-submission overhead; future performance work may group a bounded number of batches or
+use timeline semaphores without changing the counter-RNG addressing contract.
+
+`raym0nade_gpu_render` is the general headless entry point. It reads one model and one settings
+record from an existing console recipe, accepts validated resolution/SPP/seed/exposure/direct-
+probability/output/tile/batch/shader overrides, and exports either the default filtered FXAA beauty
+image or the complete CPU-compatible pass set. The generated SPIR-V is copied beside the executable
+while the configured build path remains a development fallback. The CLI releases the source
+`Model` before constructing the Vulkan renderer and releases the packed host scene before tracing,
+avoiding simultaneous source-model, packed-scene, and device-scene residency. A checked-in tiny
+recipe exercises parsing, overrides, rendering, and PNG export under CTest.
+
+The workstation-local, Git-excluded `run-gpu-bistro-4k.local.cmd` helper was updated from the
+obsolete G3b ShapeNormal diagnostic to the complete beauty renderer. It configures the Release GPU
+target and requests 4096 x 2304, 320 SPP, seed 0, exposure 12, and 64-SPP batches. A `--help`
+smoke run validated environment activation, configuration, build, adjacent shader discovery, and
+CLI syntax without starting the long render. The 4K workload itself was not executed during this
+phase and the helper remains deliberately outside repository commits.
+
+Final validation completed after the safe per-batch submission change:
+
+- CPU-only Debug and Release each configured, built without new warnings, and passed all six CTest
+  entries.
+- Vulkan Debug and Release each configured, built without new warnings, and passed all 13 CTest
+  entries.
+- The GPU path suite requested the Khronos validation layer and synchronization validation on
+  `AMD Radeon(TM) Graphics`; both were enabled and reported zero errors and zero warnings.
+- The path suite verifies repeated-render, tile-partition, and SPP-batch bit identity; forced
+  cross-page texture sampling; diffuse, emissive, environment, cutout, normal-map, mixed-technique,
+  rough-transmission, two-boundary IOR, medium, and Film contracts; and a 32,768-SPP imported
+  one-pixel CPU/GPU statistical estimator comparison.
+- CLI help and a real end-to-end tiny render passed in both GPU configurations.
+- Direct CLI checks confirmed that negative unsigned values, leading-plus integer spellings, and a
+  batch size above 64 all fail with status 1 before scene loading.
+
+An earlier matched one-shot 512 x 288, 64-SPP, seed-0 comparison used the same incomplete Assimp import
+in both processes: 8,420,181 vertices and 2,806,727 faces. The 32-thread CPU core took 8.194 seconds
+and its complete render plus post-processing took 10.592 seconds. The GPU core host wall-clock took
+12.806 seconds, with 12.666 seconds of device timestamps, 0.871 seconds of upload, 1.241 seconds of
+BLAS/TLAS construction, and 33.304 seconds total including loading, packing, setup, and export. On
+this integrated AMD device the GPU core was therefore 1.56 times slower than the CPU core, not a
+speedup. The CPU and GPU use different deterministic random streams, so per-pixel identity is not
+expected: their filtered-FXAA PNGs had mean absolute byte error 14.062/255, RMSE 25.522/255, and
+maximum error 255. Aggregate brightness agreed much more closely: mean luminance was 0.509705 for
+CPU and 0.508439 for GPU, a GPU/CPU ratio of 0.997516. Visual inspection found matching geometry,
+camera, materials, lighting balance, and highlight structure.
+
+The final safe-submission binary then completed one non-retried, complete-topology 512 x 288 render:
+8,496,360 vertices, 2,832,120 faces, 13.743 seconds import, 4.913 seconds packing, 1.122 seconds
+upload, 1.275 seconds acceleration build, 12.760 seconds GPU host render, 12.611 seconds device
+timestamps over 12 dispatches, and 36.334 seconds total. The final high-quality 1024 x 576,
+64-SPP, seed-0 run also obtained complete topology and recorded 13.235 seconds import, 4.048 seconds
+packing, 0.866 seconds upload, 1.247 seconds acceleration build, 49.534 seconds GPU host render,
+48.964 seconds device timestamps over 40 dispatches, and 76.839 seconds total. Its filtered-FXAA
+beauty output is `output/BistroGpuPathQuality1024(Filter_FXAA).png`; the image was visually
+inspected and retained as ignored working data.
+
+A manual shader experiment is also retained as negative evidence: adding `glslc -O` expanded the
+path shader from 179,060 to 569,964 bytes and increased the comparable 512 x 288, 64-SPP path timing
+from about 12.155 to 13.435 seconds on this driver. The optimization flag is therefore not enabled.
+
+The Assimp Bistro topology variation remains explicitly deferred by owner decision. No import
+retry, replacement, or workaround is part of G3; every benchmark records the topology actually
+observed, and only the earlier run with matching CPU/GPU counts is used for a speed ratio. Remaining
+non-blocking renderer risks are float-CDF plateaus for extremely small light probabilities, high
+host/device memory residency for encoded textures, the conservative submit/wait policy, and the
+absence of a wavefront queue or device-specific shader specialization.
 
 ## Fixes completed before the modernization
 
@@ -801,9 +896,8 @@ fixtures and a controlled benchmark harness remain open.
   and image I/O into stable interfaces.
 - Complete the NEE/continuation estimator design and validate BSDF/light PDFs and energy with
   analytic tests before treating appearance as a permanent contract.
-- Continue the versioned packed scene and optional GPU backend beyond the completed indexed
-  geometry, material-capability flags, shared primary-AOV contract, G3a primary renderer, and G3b
-  deterministic directional lighting and hard shadows.
+- Profile and specialize the completed version-4 Vulkan path renderer beyond G3/G4, while retaining
+  the focused G3a primary renderer and G3b deterministic directional-light diagnostics.
 
 ## Work in progress
 
@@ -828,7 +922,7 @@ fixtures and a controlled benchmark harness remain open.
 - [x] Upload and sample packed diffuse textures and implement candidate alpha testing for GPU
   primary and shadow rays.
 - [x] Pack and persistently upload indexed area lights and HDR environment importance data.
-- [ ] Complete G3 with GPU lighting and path integration under a CPU correctness comparison.
+- [x] Complete G3 with GPU lighting and path integration under a CPU correctness comparison.
 - [ ] Resolve or replace nondeterministic Bistro FBX import before treating its topology as a
   deterministic regression gate.
 - [ ] Add controlled before/after benchmarks, analytic estimator tests, and golden-image tolerances.

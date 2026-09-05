@@ -1,14 +1,15 @@
 # Raym0nade Architecture
 
-This document describes the architecture after the CPU renderer refactor merged to `main` and the
-experimental GPU work began on `dev-gpu`. It is a contract for future changes, not a description
-of the legacy source layout. Read it together with `development-log.md` for chronological
-decisions and validation results, and with `gpu-backend.md` for the detailed AMD GPU plan.
+This document describes the architecture after the CPU renderer refactor and the first complete
+Vulkan path-rendering implementation on `dev-gpu`. It is a contract for future changes, not a
+description of the legacy source layout. Read it together with `development-log.md` for
+chronological decisions and validation results, and with `gpu-backend.md` for the detailed AMD
+GPU design.
 
 ## Architectural goals
 
 The current design preserves a safe, portable CPU reference renderer while an optional Vulkan
-hardware-intersection path is developed behind explicit capability gates. Its most important
+Ray Query renderer is developed behind explicit capability gates. Its most important
 properties are:
 
 - one reusable C++17 core target with platform dependencies hidden behind implementation files;
@@ -18,12 +19,13 @@ properties are:
 - reproducible sampling when the CPU worker count changes; and
 - the same CMake presets and dependency manifest on Windows, Linux, and macOS.
 
-The architecture is intentionally transitional. Indexed packed geometry, encoded texture storage,
-and a deterministic primary-AOV request now cross the experimental Vulkan path, including one
-request-local directional light, diffuse-texture evaluation, and alpha-tested primary and shadow
-traversal. Packed area lights and an HDR importance distribution are resident on the device, but
-general lighting, path integration, SPP accumulation, Film readback, and post-processing have not
-yet been ported to device-resident execution.
+The architecture remains transitional at its application and asset boundaries, but the first GPU
+beauty-rendering path is complete for the current CPU estimator. `VulkanPathRenderer` consumes
+immutable indexed packed data and runs the 16-bounce estimator as a per-pixel Vulkan compute
+megakernel. Geometry, textures, area lights, the HDR environment, acceleration structures, and
+per-tile accumulators remain device-resident across sample batches. Completed Film tiles are read
+back and passed through the same host finalization and post-processing implementation as CPU
+results. The older primary-AOV and arbitrary-ray paths remain as focused diagnostic interfaces.
 
 ## System overview
 
@@ -53,21 +55,28 @@ ConsoleApplication ---- creates/owns ----> RenderSettings
 
 fxaa_cli ---- loads PNG directly into Film ---- FXAA ---- saves PNG
 
-Backend-neutral primary-AOV slice:
+Backend-neutral CPU/GPU slices:
 
 Model -----------------> CPU primary-AOV oracle(PrimaryRenderRequest) -> LinearImage
   |
   `-- packScene() -> immutable PackedSceneData -> private VulkanRuntime
                                                    |
-                                                   +-- persistent geometry/texture/light buffers
+                                                   +-- persistent geometry/light buffers
+                                                   +-- BDA-paged texture texels
                                                    +-- persistent BLAS/TLAS
                                                    +-- VulkanRayQueryIntersector
                                                    |      `-- batched hit records
-                                                   `-- VulkanPrimaryRenderer(PrimaryRenderRequest)
-                                                          +-- device-generated primary rays
-                                                          +-- optional same-invocation shadow query
-                                                          +-- one 2D dispatch, 8 x 8 workgroups
-                                                          `-- one readback -> LinearImage
+                                                   +-- VulkanPrimaryRenderer(PrimaryRenderRequest)
+                                                   |      `-- one dispatch/readback -> LinearImage
+                                                   `-- VulkanPathRenderer(RenderSettings)
+                                                          +-- tiled 8 x 8 compute workgroups
+                                                          +-- bounded SPP batches
+                                                          +-- iterative 16-bounce transport
+                                                          +-- four radiance planes + G-buffer
+                                                          `-- tile readback -> Film
+                                                                      |
+                                                                      v
+                                                            exportFilmToFiles
 ```
 
 Scene construction is single-threaded. Once its constructor finishes, a `Model` is treated as an
@@ -87,13 +96,15 @@ The top-level CMake project exposes these targets:
 | `raym0nade_render_tests` | Tiny checked-in lit-scene import/render test that compares all output passes across worker counts. |
 | `raym0nade_primary_render_tests` | Deterministic no-file CPU `BaseColor`, `ShapeNormal`, and `DirectDiffuse` primary-AOV regression executable. |
 | `raym0nade_console_tests` | Stream-driven command-loop regression executable, built with the console implementation and linked to the core. |
-| `Raym0nade::vulkan` | Optional static library containing AMD capability discovery, a shared private Vulkan scene runtime, the Ray Query intersector, and the primary-AOV renderer. |
-| `raym0nade_gpu_shaders` | Optional build target that compiles the Ray Query, primary-AOV, and contract-test compute shaders and validates their generated SPIR-V. |
+| `Raym0nade::vulkan` | Optional static library containing AMD capability discovery, a shared private Vulkan scene runtime, the Ray Query intersector, the primary-AOV renderer, and the Film-producing path renderer. |
+| `raym0nade_gpu_shaders` | Optional build target that compiles the Ray Query, primary-AOV, Philox contract-test, and path-tracing compute shaders and validates their generated SPIR-V. |
 | `raym0nade_gpu_probe` | Optional capability and deterministic one-triangle hardware-intersection executable. |
 | `raym0nade_gpu_scene_tests` | Optional imported packed-scene CPU/GPU primary-hit comparison registered with CTest. |
 | `raym0nade_gpu_primary_render_tests` | Optional deterministic CPU/GPU primary-AOV and directional-light comparison registered with CTest. |
 | `raym0nade_gpu_counter_rng_tests` | Optional device-dispatch known-answer test that compares Philox integer and open-(0,1) float bits with the CPU contract. |
+| `raym0nade_gpu_path_render_tests` | Optional Vulkan path-renderer regression executable covering deterministic partitioning, Film assembly, lighting, textures, cutouts, transmission, and a statistical CPU comparison. |
 | `raym0nade_gpu_primary_benchmark` | Optional Bistro ShapeNormal CPU/GPU wall-clock and GPU-only diagnostic utility; generated images and reports remain under ignored `output/`. |
+| `raym0nade_gpu_render` | Optional non-interactive Vulkan beauty-rendering CLI that reads one checked recipe, supports render overrides, and exports either the beauty image or all CPU-compatible Film passes. |
 
 `Raym0nade::core` exposes the C++17 headers under `include/raym0nade/` and GLM vector types through
 its build-tree interface; install/export packaging is not implemented yet.
@@ -105,8 +116,8 @@ remain private under `src/`.
 
 The console implementation is deliberately outside the core library even though its interface is
 under the public include tree. This prevents an application-specific command loop from becoming a
-core renderer dependency. A future non-interactive frontend should call the scene and rendering
-APIs directly and should not depend on `ConsoleApplication`.
+core renderer dependency. Non-interactive frontends, including `raym0nade_gpu_render`, call scene
+and rendering APIs directly and do not depend on `ConsoleApplication`.
 
 `CMakePresets.json` uses Ninja and creates isolated `build/debug` and `build/release` trees. The
 same CPU presets apply on Windows, Linux, and macOS. Separate `gpu-debug` and `gpu-release`
@@ -250,7 +261,7 @@ positive count selects that many workers, zero selects hardware concurrency, and
 is clamped to the image height. Every worker claims complete rows from a relaxed atomic counter, so
 one-worker and multi-worker images are component-exact for the current primary AOVs.
 
-### Packed scene and Vulkan primary execution (`scene_data.hpp`, `gpu/`)
+### Packed scene and Vulkan execution (`scene_data.hpp`, `gpu/`)
 
 `Model::packScene` derives a backend-neutral value representation without changing the immutable
 CPU model. `PackedSceneData` owns 32-byte aligned vertex records, tightly packed 32-bit triangle
@@ -268,15 +279,21 @@ conditional per-row texel CDF. Packing and validation reproduce the CPU importan
 luminance multiplied by exact solid angle, verify emissive geometry against packed positions, and
 reject malformed ABI metadata or distributions.
 
-The private `VulkanRuntime` is shared implementation infrastructure for G2, G3a, and G3b. Each
-owning backend object selects a compatible AMD compute device, uploads immutable vertex, index,
-triangle-material, material, texture-descriptor, texture-mip, encoded-texel, area-light,
-area-light-triangle, environment-row, and environment-texel arrays to persistent device-local
-buffers, and builds a persistent BLAS plus identity TLAS. A reusable staging allocation transfers
-large arrays in chunks no larger than 16 MiB, while every storage buffer is checked against
-`maxStorageBufferRange`. Acceleration-structure scratch and instance-input buffers are released
-once the build submission completes. Vulkan handles and SDK types remain below the public include
-tree.
+The private `VulkanRuntime` is shared implementation infrastructure for the arbitrary-ray,
+primary-AOV, and path-rendering APIs. Each owning backend object selects a compatible AMD compute
+device, uploads immutable geometry, material, texture metadata, area-light, and environment arrays
+to persistent device-local buffers, and builds a persistent BLAS plus identity TLAS. A reusable
+staging allocation transfers large arrays in chunks no larger than 16 MiB. Acceleration-structure
+scratch and instance-input buffers are released once the build submission completes. Vulkan
+handles and SDK types remain below the public include tree.
+
+Encoded texture texels are not constrained to one storage-buffer descriptor. The runtime divides
+the logical `uint32_t` texel array into power-of-two pages, normally no larger than 256 MiB and
+always bounded by `maxStorageBufferRange`. A compact descriptor-visible table stores the page
+size, shift, count, total texel count, and each page's 64-bit Vulkan buffer device address. Shader
+sampling resolves a logical texel ID to a page and offset, then reads that page through
+`GL_EXT_buffer_reference`. The runtime validates address alignment, page ranges, the table size,
+the `uint32_t` scene limit, and `maxMemoryAllocationCount` before publication.
 
 `VulkanRayQueryIntersector` reuses that runtime for complete ray batches and returns hit flag,
 primitive ID, parametric distance, and barycentrics through Vulkan-free public records.
@@ -311,10 +328,32 @@ avoids false misses caused by an arbitrary 32-candidate limit. It intentionally 
 pathological ray crossing more than 32 distance-ordered transparent layers: the CPU's defensive cap
 returns a miss, while the GPU continues traversal.
 
-The current primary renderer remains a deterministic diagnostic rather than a complete second
-renderer. Packed lighting buffers are uploaded but not consumed by it; environment and area-light
-transport, emission, full material shading, random path continuation, SPP accumulation, Film
-readback, and post-processing remain open.
+The primary renderer remains a deterministic diagnostic. `VulkanPathRenderer` is the complete
+beauty-rendering path for the current CPU estimator. It accepts the existing `RenderSettings`,
+uses one invocation per pixel within each tile, and runs an iterative transport loop capped at 16
+bounces. It reproduces the direct/indirect Bernoulli estimator, sixteen-replicate rule for a
+transparent first hit, roughness continuation rule, throughput clamp, reflection and transmission
+branches, nested-medium IOR and absorption state, emissive endpoints, and environment/area-light
+next-event estimation.
+
+The path shader evaluates diffuse, specular, emissive, and normal textures using the packed
+material convention; diffuse alpha drives candidate-confirm cutout traversal. It reconstructs the
+first-hit G-buffer and accumulates direct diffuse, direct specular, indirect diffuse, and indirect
+specular radiance. Each radiance record carries its RGB sum and scalar second moment so host
+readback can construct the same `RadianceData` representation as the CPU renderer.
+
+SPP is divided into configurable batches of at most 64 samples. The output allocation remains
+resident for every batch of one tile. Each batch is submitted and fence-waited separately, with a
+shader-write to shader-read/write dependency before accumulation resumes; this bounds an individual
+Windows submission rather than placing all SPP in one watchdog-sensitive command buffer. After the
+last batch, a separate transfer submission copies the tile to host memory. Tile size and batch size
+change scheduling only: Philox addresses remain keyed by seed, image pixel, sample, bounce,
+replicate, and dimension.
+
+The host assembles readback tiles into a `Film`, validates shader-produced IDs and Boolean fields,
+and calls `finalizeRadianceData` for each of the four accumulated planes. The returned
+`VulkanPathRenderResult` is therefore compatible with `exportFilmToFiles` and with the same
+spatial clamp, filtering, shading, bloom, depth of field, FXAA, and PNG code used for CPU results.
 
 ### Sampling (`sampling.hpp`, `sampling.cpp`)
 
@@ -384,9 +423,9 @@ radiance buffers uses four independent threads; each thread mutates a different 
 the shared G-buffer.
 
 `finalizeRadianceData` centralizes the exposure and variance finishing rule for one
-`RadianceData` sample accumulator. The CPU integrator uses this public host-side helper, and a GPU
-Film readback must call the same helper rather than duplicate subtly different exposure, second-
-moment, overflow, or non-finite behavior.
+`RadianceData` sample accumulator. Both the CPU integrator and Vulkan Film readback use this
+public host-side helper, avoiding separate exposure, second-moment, overflow, or non-finite
+behavior.
 
 `saveLinearImagePng` is the narrow display/export path for a validated `LinearImage`. It applies an
 optional nonnegative linear scale, then the same highlight shoulder and gamma transform as `Film`,
@@ -400,8 +439,12 @@ injects input/output streams, which keeps parsing separate from process-global s
 makes command behavior testable. A newly constructed model is inserted only after its constructor
 succeeds.
 
-The renderer and FXAA `main` functions contain no renderer policy. They translate process-level
-input and failures into the corresponding application object and exit code.
+The interactive renderer and FXAA `main` functions contain no renderer policy. The GPU rendering
+CLI is intentionally non-interactive: it reads one single-model/single-settings console recipe,
+applies validated resolution, SPP, seed, exposure, probability, output, tile, and batch overrides,
+constructs one packed scene and `VulkanPathRenderer`, and exports a beauty image by default or all
+Film passes on request. CMake copies the generated path-tracing SPIR-V beside the executable; an
+explicit shader override and a build-tree fallback remain available.
 
 ## Ownership and lifetime contracts
 
@@ -424,6 +467,7 @@ depends on the following invariants:
 | Private `VulkanRuntime` | Vulkan instance/device, queue synchronization, persistent device-local scene buffers, BLAS, and TLAS | Packed scene data only during synchronous construction | Serialize command-buffer use; submitted work must quiesce before owned resources are destroyed. |
 | `VulkanRayQueryIntersector` | One `VulkanRuntime`, batched-ray buffers, pipeline, and descriptor state | Nothing after construction | Do not call one intersector concurrently. |
 | `VulkanPrimaryRenderer` | One `VulkanRuntime`, reusable output/readback buffers, timestamp query pool, pipeline, and descriptor state | Nothing after construction | Do not call one renderer concurrently; the packed scene's supported-feature restrictions are checked per requested AOV. |
+| `VulkanPathRenderer` | One `VulkanRuntime`, reusable tile output/readback buffers, timestamp state, path pipeline, and descriptor state | Nothing after construction | Do not call one renderer concurrently; scene buffers persist across renders, while each render serializes tile batches and returns an independent Film. |
 
 Before mesh conversion, `Model` reserves the total Assimp-reported vertex and face counts. Material
 storage is sized once. These steps keep pointers embedded in `Face` stable. Both `Model` and `Bvh`
@@ -447,6 +491,12 @@ For each pixel, the CPU path performs these stages:
 7. Store radiance components in the pixel's four film buffers.
 8. After all rows join, derive and save the requested diagnostic and beauty outputs from the same
    G-buffer and radiance data.
+
+The Vulkan path follows the same estimator stages within one compute invocation per tile pixel.
+It replaces CPU recursion with a bounded loop and replaces the row-local generator with addressed
+Philox samples. The first SPP batch writes the G-buffer and initializes four device accumulators;
+later batches resume those accumulators. Only a completed tile crosses back to the host, where its
+G-buffer and radiance planes are assembled into the common `Film`.
 
 The renderer sanitizes invalid directions, PDFs, radiance, and throughput at several boundaries.
 Invalid samples contribute zero rather than contaminating an entire image with NaNs. This is a
@@ -478,9 +528,12 @@ needed. Exact equality is not promised across compilers, architectures, math-lib
 build configurations.
 
 Changes that add stochastic work must preserve the mapping from stable render coordinates to
-random streams. The device-ready Philox contract uses
-`(seed, pixel, sample, bounce, dimension)` and is independent of execution order. Never seed from a
-worker index, clock, or atomic work order.
+random streams. The Vulkan Philox contract uses
+`(seed, pixel, sample, bounce, replicate, dimension)` and is independent of tile size, SPP batch
+size, dispatch order, or worker scheduling. Its integer output and open-(0,1) float conversion have
+a shared CPU/GLSL known-answer contract. Never seed from a worker index, clock, or atomic work
+order. Floating-point path results are repeatable for a fixed device, driver, shader binary,
+settings, and seed; bit identity is not promised across different GPU implementations.
 
 The four-thread film filter is deterministic because each worker owns one complete radiance buffer.
 Other post-processing stages currently run after render workers have joined and are mostly
@@ -501,6 +554,10 @@ still occurs inside `Model::intersect` before the AOV-specific hit evaluation.
 - Intersection functions are `noexcept`; malformed or degenerate inputs produce a miss.
 - PNG and Python-decoded buffers are checked against dimensions and channel counts before copying.
 - Output directory creation and image writes propagate filesystem/libpng exceptions to the console.
+- Vulkan constructors reject unsupported devices, incompatible scene ABI, invalid buffer/address
+  ranges, and unsupported allocation counts before exposing a renderer.
+- GPU Film readback rejects invalid shader-produced material IDs and Boolean fields, then applies
+  the common non-finite and overflow sanitization while finalizing radiance.
 
 Library callers should treat these exceptions as operation failures. Do not continue with a model
 whose construction failed, and do not suppress render validation errors inside worker threads.
@@ -510,21 +567,20 @@ whose construction failed, and do not suppress render validation errors inside w
 These are known boundaries of the current implementation, not accidental omissions from this
 document:
 
-1. The only complete renderer backend is CPU. The optional Vulkan module now provides AMD device
-   selection, packed scene upload, persistent BLAS/TLAS construction, batched opaque primary-hit
-   queries, and a limited primary-AOV renderer that produces `LinearImage`, including deterministic
-   request-local directional Lambert lighting, diffuse textures, and alpha-tested primary/shadow
-   traversal. It still has no general lighting or path integration, accumulation, Film readback, or
-   post-processing kernel.
+1. The CPU is the only portable renderer backend. The experimental Vulkan module is restricted to
+   compatible AMD devices, but its `VulkanPathRenderer` implements the complete current
+   16-bounce CPU estimator and returns a CPU-compatible `Film`. Post-processing and PNG export
+   remain on the CPU; there is no GPU post-processing kernel or common polymorphic backend
+   interface.
 2. The complete CPU integrator now returns a no-file `FilmRenderResult`, but its `RenderSettings`
    contract still includes an output prefix and the API does not yet expose cancellation,
    selectable AOV export policy, or a polymorphic backend interface.
 3. CPU traversal still consumes pointer-rich array-of-structures data: faces duplicate positions,
-   light objects copy faces, and the BVH points into host memory. `Model::packScene` now derives a
+   light objects copy faces, and the BVH points into host memory. `Model::packScene` derives a
    compact indexed version-4 upload representation with textures, area lights, and HDR environment
-   data, but the CPU renderer does not consume it directly. Vulkan uploads those arrays, while only
-   the primary-AOV path currently consumes diffuse textures and cutout alpha; the lighting arrays
-   await the path integrator.
+   data, and the Vulkan path consumes all of those arrays. The CPU renderer does not yet consume
+   the packed representation directly, so CPU/GPU parity is maintained across two implementations
+   rather than one shared shading kernel.
 4. BVH construction uses a median split rather than SAH and has no instancing, refit, parallel
    build, wide-node layout, or stackless/device traversal form. Assimp pre-transforms vertices, so
    source hierarchy and instances are flattened during import. The Bistro FBX topology has also
@@ -571,39 +627,40 @@ document:
     field-of-view API replaces it.
 11. The medium stack always starts empty and assumes the camera begins outside transmissive media.
     A camera placed inside a dielectric receives incorrect initial IOR and absorption state.
-12. A fixed world-space ray epsilon and the 32-layer alpha-cutout cap may fail on scenes with very
-    different scales or unusually deep foliage.
+12. A fixed world-space ray epsilon may fail on scenes with very different scales. CPU
+    alpha-cutout traversal also has a 32-layer defensive cap; Vulkan candidate traversal has no
+    ordering-dependent cap and therefore differs only for unusually deep transparent stacks.
 13. Film memory is several full-resolution buffers, and bloom/depth-of-field/FXAA allocate
     additional full-frame temporaries. Post-processing and writing many PNG variants can dominate
     small renders.
 14. Current tests cover numerical helpers, distributions, intersections, tangent bases, BVH
     behavior, texture and material invariants, selected dielectric behavior, render-setting
     validation, a tiny lit imported-scene direct-light render, and deterministic CPU/GPU primary
-    `BaseColor`, `ShapeNormal`, and directional `DirectDiffuse` AOVs. The Vulkan fixtures also cover
-    packed diffuse filtering, primary and shadow cutouts, and a bit-exact Philox CPU/GLSL
-    known-answer dispatch. The G3b fixture covers
-    analytic values, hard shadow, backlighting, two-sided viewing, direction scaling, non-multiple-
-    of-eight extents, render-target growth and shrinkage, repeatability, and unsupported materials.
-    The project still needs deterministic sky, textured, transmission, and indirect-path fixtures,
-    broader loader fixtures, analytic BSDF/PDF and energy tests, stored golden images with
+    `BaseColor`, `ShapeNormal`, and directional `DirectDiffuse` AOVs. Vulkan fixtures additionally
+    exercise Philox known answers, path-render tile and SPP-batch invariance, Film assembly,
+    environment misses, emissive hits, area-light transport, all four material texture slots,
+    cross-page texture reads, alpha cutouts, two-boundary transmission, mixed direct/indirect
+    transport, and a high-SPP statistical CPU comparison. The project still needs broader loader
+    fixtures, analytic BSDF/PDF and energy tests, stored beauty-image goldens with documented
     tolerances, sanitizer runs, and measured cross-platform performance gates.
-15. Vulkan G2/G3a/G3b and the device-ready foundation work are validated only on the current
-    Windows AMD integrated GPU. The imported fixture has two faces and does not exercise the CPU
-    BVH's greater-than-ten-face reorder path.
-    Proactive memory-budget enforcement and teardown-time validation capture remain open. G3b now
-    matches the CPU strict fixed lower bound, but G2 arbitrary `tMax` and general ray-interval
-    endpoint tests remain open. Fence timeout recovery may wait indefinitely while quiescing the
-    queue.
-    Local capability checks report a 31.82 GiB local/shared heap and a single-buffer
-    `maxStorageBufferRange` of 4 GiB minus one byte. A header-only audit of 622 local Bistro DDS
-    files computes 7,539,069,640 bytes (7.021 GiB) for their complete expanded RGBA8 mip chains,
-    already excluding 11 TGA files. The current single texel-buffer layout therefore cannot hold
-    the complete asset; paging, buffer device address segmentation, or native compressed
-    `VkImage` storage is required before a full-quality Bistro path render. This is a capacity
-    estimate, not a successful scene upload. The performance cost of making the whole BLAS
-    candidate geometry when any cutout exists also remains open. Float CDFs can plateau for
-    extremely small probabilities. The completed small diagnostics are not evidence of speedup on
-    the current two-compute-unit functionality device.
+15. Vulkan development and runtime coverage remain limited to the current Windows AMD integrated
+    GPU; macOS and Linux GPU builds and discrete AMD hardware remain unverified. The imported
+    intersection fixture has two faces and does not exercise the CPU BVH's greater-than-ten-face
+    reorder path. Proactive heap-budget enforcement, teardown-time validation capture, G2
+    arbitrary-`tMax` endpoint coverage, and bounded fence-timeout recovery remain open.
+    Texture texels now cross the single-buffer limit through buffer-device-address pages, but the
+    full decoded RGBA8 texel array still resides in host packed data during setup and in device
+    pages afterward. There is no native compressed image storage, streaming, eviction, or
+    out-of-core rendering, and the logical texel array remains limited to `uint32_t` indexing.
+    Extremely small float probabilities can collapse adjacent CDF entries into plateaus; selection
+    code tolerates zero-width bins, but their precision loss remains a packed-format limitation.
+    Making the complete BLAS candidate geometry whenever any cutout is present may also reduce
+    traversal performance.
+16. The per-pixel megakernel has no wavefront queues or compaction. Per-batch submission and fence
+    waiting bounds watchdog exposure but adds synchronization overhead, and each completed tile is
+    copied to the host before the next tile. The current integrated AMD functionality device has
+    not demonstrated a speedup over the CPU reference; performance work requires profiling on a
+    supported discrete AMD GPU rather than assuming feature parity implies acceleration.
 
 ## GPU-backend roadmap
 
@@ -635,11 +692,12 @@ CPU thread counts; benchmark inputs and measurements are reproducible.
   data rather than console behavior.
 - Keep all file I/O and interactive parsing above the backend boundary.
 
-Status: partially implemented. The backend-neutral extent, pinhole-camera, directional-light,
+Status: substantially implemented. The backend-neutral extent, pinhole-camera, directional-light,
 primary-AOV request, and linear-image contracts support deterministic no-file CPU and Vulkan
-primary rendering. Complete CPU integration now returns `FilmRenderResult`, and film export is a
-separate consuming operation. A complete backend-neutral path-tracing request/interface remains
-open.
+primary rendering. Complete CPU integration returns `FilmRenderResult`; `VulkanPathRenderer`
+accepts the same validated `RenderSettings` and returns a Film-bearing result; Film export is a
+separate consuming operation for both. Cancellation, explicit output-layer policy, and a common
+polymorphic backend interface remain open.
 
 Gate: the existing CLI and golden CPU images use the new interface without visual changes.
 
@@ -653,12 +711,13 @@ Gate: the existing CLI and golden CPU images use the new interface without visua
 - Replace Python DDS/HDR decoding with native asset decoding and define a consistent linear-color,
   alpha, mipmap, and environment convention.
 
-Status: partially implemented. Packed format version 4 supplies validated indexed geometry,
-triangle material IDs, fixed material records, deduplicated texture IDs, complete mip descriptors,
-encoded RGBA8 texel storage, indexed area lights, and HDR radiance with a hierarchical importance
-distribution. Vulkan uploads all of these arrays, and the primary-AOV shader consumes diffuse
-textures and cutout alpha. A packed-scene CPU shading path, native compressed-image storage, and
-device use of the lighting arrays remain open.
+Status: complete for the Vulkan path boundary. Packed format version 4 supplies validated indexed
+geometry, triangle material IDs, fixed material records, deduplicated texture IDs, complete mip
+descriptors, encoded RGBA8 texel storage, indexed area lights, and HDR radiance with a hierarchical
+importance distribution. Vulkan uploads and consumes all of these arrays. Buffer-device-address
+pages allow the encoded texel array to exceed one storage-buffer range. A packed-scene CPU shading
+path, native compressed-image storage, streaming, and proactive heap-budget enforcement remain
+open.
 
 Gate: packed-scene CPU traversal and shading match the Stage 0 reference before any GPU kernels are
 accepted.
@@ -674,14 +733,16 @@ accepted.
   iterative megakernel. Introduce compacted wavefront queues only if profiling demonstrates that
   divergence or register pressure justifies their synchronization and storage cost.
 
-Gate: recursive-reference and iterative CPU results agree statistically, and random streams remain
-deterministic when execution order changes.
+Gate: the iterative GPU result agrees statistically with the recursive CPU reference, and random
+streams remain deterministic when execution partitioning changes.
 
-Status: a shared Philox4x32-10 CPU/GLSL contract now maps seed, pixel, sample, bounce, and dimension
-to endpoint-safe values independently of execution order. CPU known-answer and scheduling tests
-pass, and the GLSL contract compiles and validates as SPIR-V. A Vulkan known-answer test verifies
-all 12 renderer addresses as raw integer and open-(0,1) float bits against the CPU and verifies a
-repeated dispatch. CPU-integrator migration and iterative transport remain open.
+Status: implemented through the GPU path while the CPU reference intentionally remains recursive.
+A shared Philox4x32-10 CPU/GLSL contract maps seed, pixel, sample, bounce, replicate, and dimension
+to endpoint-safe values independently of scheduling. The Vulkan shader uses fixed 17-entry medium
+state, an iterative loop through depth 16, addressed direct-light samples, and per-pixel Film
+accumulators. Tile and SPP-batch partitioning do not change random addresses. Replacing CPU
+recursion with the same state machine is no longer required for GPU execution, but remains useful
+if future work needs instruction-level CPU/GPU comparison.
 
 ### Stage 4: Add the optional Vulkan Ray Query backend
 
@@ -694,12 +755,14 @@ repeated dispatch. CPU-integrator migration and iterative transport remain open.
 - Start with triangle traversal, a minimal opaque material, and environment lighting; add textures,
   emissive triangles, transmission, cutouts, and post-processing only after parity at each step.
 
-Status: G0, G1, the initial G2 imported-geometry slice, G3a primary AOVs, and the G3b deterministic
-directional-light slice are complete on the current Windows AMD functionality device. G3b adds
-camera-facing Lambert shading and conditional hard-shadow queries. Subsequent foundation work adds
-device texture storage, CPU-compatible diffuse filtering, candidate alpha cutouts, packed/uploaded
-area lights and environments, and a verified GPU Philox contract. The full G3 milestone and this
-stage remain open until general lighting and path integration run under CPU/GPU comparison.
+Status: implemented for the complete current CPU estimator on the Windows AMD development device.
+The focused G0 through G3b probes remain available, while `VulkanPathRenderer` adds tiled SPP
+accumulation, complete material textures, candidate alpha cutouts, environment and area-light
+sampling, emission, reflection, transmission, absorption, nested media, and a 16-bounce iterative
+path. It returns the common Film representation and the `raym0nade_gpu_render` application feeds
+that result into the existing host post-processing path. Cross-platform GPU validation,
+stored-image acceptance thresholds, proactive memory-budget policy, and discrete-GPU performance
+remain open parts of the stage gate.
 
 Gate: every supported feature has a CPU/GPU comparison scene, and unsupported features fail through
 capability checks rather than silently changing appearance.

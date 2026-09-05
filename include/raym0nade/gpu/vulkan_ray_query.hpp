@@ -62,6 +62,9 @@ struct VulkanValidationReport {
 struct VulkanRayQueryOptions {
     bool requestValidation{false};
     std::uint64_t fenceTimeoutNanoseconds{60'000'000'000ULL};
+    // Upper bound for one packed RGBA8 texel page. The runtime rounds down to a power of two
+    // and also respects maxStorageBufferRange. Small values are useful for paging tests.
+    std::uint64_t textureTexelPageBytes{256ULL * 1024ULL * 1024ULL};
 };
 
 // Persistent, headless AMD Vulkan Ray Query intersector for one immutable packed scene.

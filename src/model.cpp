@@ -188,9 +188,9 @@ Model::Model(
 void ModelBuilder::build() {
     Assimp::Importer importer;
     importer.SetPropertyInteger(AI_CONFIG_PP_PTV_KEEP_HIERARCHY, 1);
-    // Assimp 5.4 can nondeterministically omit complete meshes while merging all
-    // FBX geometry layers in the Bistro scene. The first layer contains the
-    // renderable geometry and produces stable topology across repeated imports.
+    // The first FBX geometry layer contains the Bistro renderable geometry and avoids
+    // importing duplicate layers. Assimp 5.4 can still omit meshes nondeterministically;
+    // appearance and benchmark runs record their imported topology instead of hiding it.
     importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_ALL_GEOMETRY_LAYERS, false);
     const unsigned int flags = aiProcess_Triangulate | aiProcess_PreTransformVertices;
     const std::string modelPathUtf8 = model_.modelPath_.u8string();

@@ -1,0 +1,17 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "include/packed_scene.glsl"
+#include "include/counter_rng.glsl"
+#include "include/path_contract.glsl"
+#include "include/path_material.glsl"
+#include "include/path_bsdf.glsl"
+#include "include/path_lighting.glsl"
+#include "include/path_integrator.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+void main() {
+    raym0nadePathTraceInvocation();
+}

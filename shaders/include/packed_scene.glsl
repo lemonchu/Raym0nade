@@ -1,6 +1,9 @@
 #ifndef RAYM0NADE_PACKED_SCENE_GLSL
 #define RAYM0NADE_PACKED_SCENE_GLSL
 
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+
 struct PackedVertex {
     vec4 positionAndNormalX;
     vec4 normalYZAndUv;
@@ -30,6 +33,17 @@ struct PackedTraceHit {
     vec2 barycentrics;
 };
 
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer
+    PackedTextureTexelPage {
+    uint texelsRgba8[];
+};
+
+struct PackedTextureTexelPageRecord {
+    PackedTextureTexelPage page;
+    uint texelCount;
+    uint reserved;
+};
+
 layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevel;
 layout(set = 0, binding = 1, std430) readonly buffer VertexBuffer {
     PackedVertex vertices[];
@@ -49,9 +63,11 @@ layout(set = 0, binding = 6, std430) readonly buffer TextureBuffer {
 layout(set = 0, binding = 7, std430) readonly buffer TextureMipBuffer {
     PackedTextureMip mipLevels[];
 } textureMipBuffer;
-layout(set = 0, binding = 8, std430) readonly buffer TextureTexelBuffer {
-    uint texelsRgba8[];
-} textureTexelBuffer;
+layout(set = 0, binding = 8, std430) readonly buffer TextureTexelPageTableBuffer {
+    // Page size in texels, page count, total texel count, and log2(page size).
+    uvec4 paging;
+    PackedTextureTexelPageRecord pages[];
+} textureTexelPageTable;
 
 const uint packedMaterialCutout = 1U << 0U;
 const uint packedMaterialHasDiffuseTexture = 1U << 1U;
@@ -114,6 +130,25 @@ vec4 unpackRgba8(uint value) {
            255.0;
 }
 
+uint packedTextureTexel(uint texelIndex) {
+    const uvec4 paging = textureTexelPageTable.paging;
+    if (texelIndex >= paging.z || paging.x == 0U || paging.y == 0U ||
+        paging.w >= 32U || (1U << paging.w) != paging.x) {
+        return 0U;
+    }
+    const uint pageIndex = texelIndex >> paging.w;
+    const uint pageOffset = texelIndex & (paging.x - 1U);
+    if (pageIndex >= paging.y) {
+        return 0U;
+    }
+    PackedTextureTexelPageRecord page =
+        textureTexelPageTable.pages[pageIndex];
+    if (pageOffset >= page.texelCount) {
+        return 0U;
+    }
+    return page.page.texelsRgba8[pageOffset];
+}
+
 vec4 samplePackedMip(uint textureId, vec2 uv, uint relativeMipLevel) {
     if (!isFiniteVector(uv)) {
         return vec4(0.0);
@@ -135,10 +170,10 @@ vec4 samplePackedMip(uint textureId, vec2 uv, uint relativeMipLevel) {
     const uint i01 = mip.x + first.y * rowStride + second.x;
     const uint i10 = mip.x + second.y * rowStride + first.x;
     const uint i11 = mip.x + second.y * rowStride + second.x;
-    const vec4 c00 = unpackRgba8(textureTexelBuffer.texelsRgba8[i00]);
-    const vec4 c01 = unpackRgba8(textureTexelBuffer.texelsRgba8[i01]);
-    const vec4 c10 = unpackRgba8(textureTexelBuffer.texelsRgba8[i10]);
-    const vec4 c11 = unpackRgba8(textureTexelBuffer.texelsRgba8[i11]);
+    const vec4 c00 = unpackRgba8(packedTextureTexel(i00));
+    const vec4 c01 = unpackRgba8(packedTextureTexel(i01));
+    const vec4 c10 = unpackRgba8(packedTextureTexel(i10));
+    const vec4 c11 = unpackRgba8(packedTextureTexel(i11));
     const vec4 top = mix(c00, c01, blend.x);
     const vec4 bottom = mix(c10, c11, blend.x);
     return mix(top, bottom, blend.y);

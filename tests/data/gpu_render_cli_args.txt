@@ -1,0 +1,15 @@
+create model gpu_cli_fixture
+tests/data/
+directional_light.obj
+null
+create args gpu_cli_settings
+0 0 1
+1 0 0
+0 1 0
+0 0 0
+0.25 4.0 0.0 1.0
+4 4
+0 1 0.5
+unused/gpu-render-cli
+render gpu_cli_fixture gpu_cli_settings
+exit

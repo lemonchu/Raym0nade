@@ -231,17 +231,31 @@ if(RAYM0NADE_ENABLE_VULKAN)
         "Compiling the Vulkan counter-RNG contract shader"
         "${PROJECT_SOURCE_DIR}/shaders/include/counter_rng.glsl"
     )
+    raym0nade_compile_vulkan_shader(
+        RAYM0NADE_PATH_TRACE_SHADER_BINARY
+        path_trace.comp
+        "Compiling the Vulkan path-tracing shader"
+        "${PROJECT_SOURCE_DIR}/shaders/include/counter_rng.glsl"
+        "${PROJECT_SOURCE_DIR}/shaders/include/packed_scene.glsl"
+        "${PROJECT_SOURCE_DIR}/shaders/include/path_contract.glsl"
+        "${PROJECT_SOURCE_DIR}/shaders/include/path_material.glsl"
+        "${PROJECT_SOURCE_DIR}/shaders/include/path_bsdf.glsl"
+        "${PROJECT_SOURCE_DIR}/shaders/include/path_lighting.glsl"
+        "${PROJECT_SOURCE_DIR}/shaders/include/path_integrator.glsl"
+    )
     add_custom_target(raym0nade_gpu_shaders
         DEPENDS
             "${RAYM0NADE_RAY_QUERY_SHADER_BINARY}"
             "${RAYM0NADE_RAY_QUERY_SCENE_SHADER_BINARY}"
             "${RAYM0NADE_PRIMARY_AOV_SHADER_BINARY}"
             "${RAYM0NADE_COUNTER_RNG_SHADER_BINARY}"
+            "${RAYM0NADE_PATH_TRACE_SHADER_BINARY}"
     )
 
     add_library(raym0nade_vulkan STATIC
         src/gpu/vulkan_capabilities.cpp
         src/gpu/vulkan_counter_rng_test.cpp
+        src/gpu/vulkan_path_renderer.cpp
         src/gpu/vulkan_primary_renderer.cpp
         src/gpu/vulkan_ray_query.cpp
         src/gpu/vulkan_runtime.cpp
@@ -300,6 +314,37 @@ if(RAYM0NADE_ENABLE_VULKAN)
     )
     raym0nade_enable_warnings(raym0nade_gpu_primary_benchmark)
     raym0nade_set_runtime_directory(raym0nade_gpu_primary_benchmark)
+
+    file(TO_CMAKE_PATH
+        "${RAYM0NADE_PATH_TRACE_SHADER_BINARY}"
+        RAYM0NADE_PATH_TRACE_SHADER_BINARY_CMAKE_PATH
+    )
+    get_filename_component(
+        RAYM0NADE_PATH_TRACE_SHADER_FILENAME
+        "${RAYM0NADE_PATH_TRACE_SHADER_BINARY}"
+        NAME
+    )
+    add_executable(raym0nade_gpu_render apps/gpu_render_cli.cpp)
+    target_link_libraries(raym0nade_gpu_render PRIVATE
+        Raym0nade::core
+        Raym0nade::vulkan
+    )
+    add_custom_target(raym0nade_gpu_render_shader_copy
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${PROJECT_BINARY_DIR}/bin"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${RAYM0NADE_PATH_TRACE_SHADER_BINARY}"
+            "${PROJECT_BINARY_DIR}/bin/${RAYM0NADE_PATH_TRACE_SHADER_FILENAME}"
+        DEPENDS "${RAYM0NADE_PATH_TRACE_SHADER_BINARY}"
+        COMMENT "Copying the Vulkan path-tracing shader beside the GPU renderer"
+        VERBATIM
+    )
+    add_dependencies(raym0nade_gpu_render raym0nade_gpu_render_shader_copy)
+    target_compile_definitions(raym0nade_gpu_render PRIVATE
+        "RAYM0NADE_PATH_TRACE_SHADER=\"${RAYM0NADE_PATH_TRACE_SHADER_BINARY_CMAKE_PATH}\""
+        "RAYM0NADE_PATH_TRACE_SHADER_NAME=\"${RAYM0NADE_PATH_TRACE_SHADER_FILENAME}\""
+    )
+    raym0nade_enable_warnings(raym0nade_gpu_render)
+    raym0nade_set_runtime_directory(raym0nade_gpu_render)
 endif()
 
 if(BUILD_TESTING)
@@ -395,6 +440,22 @@ if(BUILD_TESTING)
         )
         raym0nade_enable_warnings(raym0nade_gpu_primary_render_tests)
         raym0nade_set_runtime_directory(raym0nade_gpu_primary_render_tests)
+
+        add_executable(
+            raym0nade_gpu_path_render_tests
+            tests/gpu_path_render_tests.cpp
+        )
+        target_link_libraries(raym0nade_gpu_path_render_tests PRIVATE
+            Raym0nade::core
+            Raym0nade::vulkan
+        )
+        add_dependencies(raym0nade_gpu_path_render_tests raym0nade_gpu_shaders)
+        target_compile_definitions(raym0nade_gpu_path_render_tests PRIVATE
+            "RAYM0NADE_TEST_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+            "RAYM0NADE_PATH_TRACE_SHADER=\"${RAYM0NADE_PATH_TRACE_SHADER_BINARY_CMAKE_PATH}\""
+        )
+        raym0nade_enable_warnings(raym0nade_gpu_path_render_tests)
+        raym0nade_set_runtime_directory(raym0nade_gpu_path_render_tests)
     endif()
 
     add_test(NAME core COMMAND raym0nade_tests)
@@ -408,11 +469,38 @@ if(BUILD_TESTING)
         add_test(NAME gpu-counter-rng COMMAND raym0nade_gpu_counter_rng_tests)
         add_test(NAME gpu-packed-scene COMMAND raym0nade_gpu_scene_tests)
         add_test(NAME gpu-primary-render COMMAND raym0nade_gpu_primary_render_tests)
+        add_test(NAME gpu-path-render COMMAND raym0nade_gpu_path_render_tests)
+        add_test(NAME gpu-render-cli-help COMMAND raym0nade_gpu_render --help)
+        add_test(
+            NAME gpu-render-cli-e2e
+            COMMAND raym0nade_gpu_render
+                --recipe tests/data/gpu_render_cli_args.txt
+                --resolution 8x4
+                --spp 1
+                --seed 7
+                --direct-probability 0
+                --output-prefix "${PROJECT_BINARY_DIR}/test-output/gpu-render-cli"
+                --expect-faces 2
+                --tile 4x4
+                --batch-spp 1
+        )
+        set_tests_properties(gpu-render-cli-help PROPERTIES
+            PASS_REGULAR_EXPRESSION
+                "Run checked-in examples from the repository root"
+        )
+        set_tests_properties(gpu-render-cli-e2e PROPERTIES
+            PASS_REGULAR_EXPRESSION "Beauty image:"
+            SKIP_RETURN_CODE 77
+            TIMEOUT 120
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        )
         set_tests_properties(
             gpu-ray-query
             gpu-counter-rng
             gpu-packed-scene
             gpu-primary-render
+            gpu-path-render
+            gpu-render-cli-e2e
             PROPERTIES
             SKIP_RETURN_CODE 77
         )
@@ -438,6 +526,9 @@ if(BUILD_TESTING)
                 gpu-counter-rng
                 gpu-packed-scene
                 gpu-primary-render
+                gpu-path-render
+                gpu-render-cli-help
+                gpu-render-cli-e2e
             )
         endif()
         set_tests_properties(${RAYM0NADE_WINDOWS_RUNTIME_TESTS} PROPERTIES
@@ -451,6 +542,7 @@ if(BUILD_TESTING)
                     gpu-counter-rng
                     gpu-packed-scene
                     gpu-primary-render
+                    gpu-path-render
                 APPEND PROPERTY
                 ENVIRONMENT_MODIFICATION
                     "VK_LAYER_PATH=set:${RAYM0NADE_PYTHON_RUNTIME_DIR}/Library/bin"

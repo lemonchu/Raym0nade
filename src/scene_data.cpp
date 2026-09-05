@@ -144,22 +144,20 @@ std::uint32_t packRgba8(
     return red | (green << 8U) | (blue << 16U) | (alpha << 24U);
 }
 
-std::uint32_t appendTexture(PackedSceneData& scene, const ImageData& image) {
+struct TextureStorageRequirements {
+    std::size_t mipLevelCount{0U};
+    std::size_t texelCount{0U};
+};
+
+TextureStorageRequirements textureStorageRequirements(const ImageData& image) {
     if (image.empty() || image.width() <= 0 || image.height() <= 0 ||
         image.channels() < 1 || image.channels() > 4 || image.mipLevelCount() == 0U ||
         image.mipLevelCount() > kPackedTextureMaxMipLevels) {
         throw std::logic_error("A material contains invalid texture data.");
     }
-    if (scene.textures.size() >= kInvalidSceneId) {
-        throw std::overflow_error("Packed scene has too many textures.");
-    }
 
     const std::size_t levelCount = image.mipLevelCount();
     const std::size_t maximumUint32 = std::numeric_limits<std::uint32_t>::max();
-    if (scene.textureMipLevels.size() > maximumUint32 - levelCount) {
-        throw std::overflow_error("Packed scene texture mip count exceeds the 32-bit range.");
-    }
-
     std::size_t addedTexels = 0U;
     for (std::size_t level = 0U; level < levelCount; ++level) {
         const int mipWidth = image.mipWidth(level);
@@ -173,8 +171,7 @@ std::uint32_t appendTexture(PackedSceneData& scene, const ImageData& image) {
             throw std::overflow_error("Packed texture mip dimensions overflow.");
         }
         const std::size_t texelCount = width * height;
-        if (texelCount > maximumUint32 || addedTexels > maximumUint32 - texelCount ||
-            scene.textureTexelsRgba8.size() > maximumUint32 - addedTexels - texelCount) {
+        if (texelCount > maximumUint32 || addedTexels > maximumUint32 - texelCount) {
             throw std::overflow_error("Packed scene texture texels exceed the 32-bit range.");
         }
         const std::size_t channels = static_cast<std::size_t>(image.channels());
@@ -184,9 +181,27 @@ std::uint32_t appendTexture(PackedSceneData& scene, const ImageData& image) {
         }
         addedTexels += texelCount;
     }
+    return TextureStorageRequirements{levelCount, addedTexels};
+}
+
+std::uint32_t appendTexture(PackedSceneData& scene, const ImageData& image) {
+    if (scene.textures.size() >= kInvalidSceneId) {
+        throw std::overflow_error("Packed scene has too many textures.");
+    }
+
+    const TextureStorageRequirements requirements = textureStorageRequirements(image);
+    const std::size_t levelCount = requirements.mipLevelCount;
+    const std::size_t maximumUint32 = std::numeric_limits<std::uint32_t>::max();
+    if (scene.textureMipLevels.size() > maximumUint32 - levelCount) {
+        throw std::overflow_error("Packed scene texture mip count exceeds the 32-bit range.");
+    }
+    if (scene.textureTexelsRgba8.size() > maximumUint32 - requirements.texelCount) {
+        throw std::overflow_error("Packed scene texture texels exceed the 32-bit range.");
+    }
 
     const std::size_t newMipCount = scene.textureMipLevels.size() + levelCount;
-    const std::size_t newTexelCount = scene.textureTexelsRgba8.size() + addedTexels;
+    const std::size_t newTexelCount =
+        scene.textureTexelsRgba8.size() + requirements.texelCount;
     if (newMipCount > scene.textureMipLevels.max_size() ||
         newTexelCount > scene.textureTexelsRgba8.max_size() ||
         newTexelCount > std::numeric_limits<std::size_t>::max() / sizeof(std::uint32_t)) {
@@ -899,6 +914,43 @@ PackedSceneData Model::packScene() const {
     result.triangleIndices.reserve(faces_.size() * 3U);
     result.triangleMaterialIds.reserve(faces_.size());
     result.materials.reserve(materials_.size());
+
+    std::map<std::string, const ImageData*> uniqueTextureData;
+    for (const Material& material : materials_) {
+        for (const TextureSlot slot : kTextureSlots) {
+            if (!material.hasTexture(slot)) {
+                continue;
+            }
+            const std::string key =
+                normalizedTextureKey(material.textureSourcePath(slot));
+            uniqueTextureData.emplace(key, &material.textureData(slot));
+        }
+    }
+    std::size_t plannedMipLevels = 0U;
+    std::size_t plannedTexels = 0U;
+    const std::size_t maximumUint32 =
+        std::numeric_limits<std::uint32_t>::max();
+    for (const auto& entry : uniqueTextureData) {
+        const TextureStorageRequirements requirements =
+            textureStorageRequirements(*entry.second);
+        if (plannedMipLevels > maximumUint32 - requirements.mipLevelCount ||
+            plannedTexels > maximumUint32 - requirements.texelCount) {
+            throw std::overflow_error(
+                "Packed scene texture storage exceeds the 32-bit range.");
+        }
+        plannedMipLevels += requirements.mipLevelCount;
+        plannedTexels += requirements.texelCount;
+    }
+    if (uniqueTextureData.size() > result.textures.max_size() ||
+        plannedMipLevels > result.textureMipLevels.max_size() ||
+        plannedTexels > result.textureTexelsRgba8.max_size()) {
+        throw std::overflow_error(
+            "Packed scene texture storage exceeds the addressable range.");
+    }
+    result.textures.reserve(uniqueTextureData.size());
+    result.textureMipLevels.reserve(plannedMipLevels);
+    result.textureTexelsRgba8.reserve(plannedTexels);
+
     std::map<std::string, std::uint32_t> textureIdsByPath;
     for (const Material& material : materials_) {
         PackedMaterial packedMaterial = packMaterial(material);

@@ -1,8 +1,10 @@
 # Raym0nade
 
-Raym0nade is an offline CPU path tracer written in C++17. It imports scenes with Assimp,
-accelerates ray intersections with a BVH, and provides direct and indirect light sampling,
-textured materials, HDR environment lighting, denoising, bloom, depth of field, and FXAA.
+Raym0nade is an offline path tracer written in C++17. Its CPU renderer is the correctness
+reference, and its optional AMD Vulkan compute renderer executes the multi-bounce path estimator
+with hardware Ray Queries. The project imports scenes with Assimp and provides direct and indirect
+light sampling, textured materials, HDR environment lighting, denoising, bloom, depth of field,
+and FXAA.
 
 The current refactor establishes a portable core library and separate command-line applications.
 Windows, Linux, and macOS use the same CMake presets and the same Conda dependency definition.
@@ -31,18 +33,21 @@ The build creates these targets:
 - `raym0nade_primary_render_tests`: the deterministic, no-file CPU primary-AOV regression
   executable when testing is enabled
 - `raym0nade_console_tests`: the command-loop regression executable when testing is enabled
-- `raym0nade_vulkan`: the optional experimental Vulkan backend library
+- `raym0nade_vulkan`: the optional AMD Vulkan backend library
 - `raym0nade_gpu_probe`: the optional AMD Ray Query capability and hardware self-test executable
 - `raym0nade_gpu_scene_tests`: the optional packed-scene CPU/GPU intersection comparison
 - `raym0nade_gpu_primary_render_tests`: the optional CPU/GPU primary-AOV comparison
 - `raym0nade_gpu_counter_rng_tests`: the optional CPU/GLSL Philox known-answer comparison on a
   Vulkan device
+- `raym0nade_gpu_path_render_tests`: the optional GPU path integration, determinism, partitioning,
+  lighting, material, Film, and CPU-oracle regression executable
+- `raym0nade_gpu_render`: the optional general AMD Vulkan path-rendering command-line application
 - `raym0nade_gpu_primary_benchmark`: the optional Bistro ShapeNormal comparison and GPU-only
   diagnostic utility
 
 See `docs/architecture.md` for module boundaries, ownership rules, render data flow,
-determinism guarantees, current limitations, and the staged GPU roadmap. The experimental AMD GPU
-work is specified in `docs/gpu-backend.md`.
+determinism guarantees, current limitations, and the staged GPU roadmap. The AMD GPU backend is
+specified in `docs/gpu-backend.md`.
 
 ## Requirements
 
@@ -186,61 +191,28 @@ This keeps Conda's shared package cache. Use `conda clean --all` separately only
 environment needs those cached downloads. Remove `build/` independently to discard local build
 artifacts. Miniforge and the platform compiler remain separately managed system tools.
 
-## GPU roadmap
+## AMD Vulkan renderer
 
-The renderer currently uses `std::thread` for CPU parallelism. Experimental AMD GPU work lives on
-the `dev-gpu` branch and targets a headless Vulkan compute backend with `VK_KHR_ray_query`. The
-backend is optional, so ordinary CPU builds do not require a Vulkan-capable device.
+The CPU renderer continues to use `std::thread` and remains the correctness reference. The optional
+GPU backend is a headless Vulkan compute implementation selected with
+`RAYM0NADE_ENABLE_VULKAN=ON` by the `gpu-debug` and `gpu-release` presets. It requires an AMD device
+with Vulkan 1.2, a compute queue, buffer device address, acceleration structures, and
+`VK_KHR_ray_query`; ordinary CPU builds and runs do not require Vulkan.
 
-The G3a/G3b vertical slices provide a shared backend-neutral render contract (`ImageExtent`,
-`PinholeCamera`, `DirectionalLight`, `PrimaryRenderRequest`, `PrimaryAov`, and `LinearImage`). The
-CPU implementation is a deterministic, no-file reference for `BaseColor`, `ShapeNormal`, and the
-G3b `DirectDiffuse` diagnostic. The experimental `VulkanPrimaryRenderer` generates every primary
-ray on the device in one two-dimensional compute dispatch using 8 x 8 workgroups and returns a
-row-major linear image after one readback.
+`VulkanPathRenderer` consumes the backend-neutral packed scene and performs tiled, deterministic
+SPP accumulation with the Philox counter RNG. The shader implements the current 16-bounce path
+estimator, including encoded diffuse, specular, emissive, and normal textures; alpha-tested primary,
+continuation, and shadow rays; HDR environments and emissive area lights; reflection,
+transmission, absorption, and nested media. It reads all G-buffer and radiance planes back into the
+same `Film` representation used by the CPU renderer, so display processing and file naming share
+the CPU export implementation. The smaller `VulkanPrimaryRenderer`, Ray Query intersector, probe,
+and ShapeNormal benchmark remain available as focused diagnostics.
 
-The current primary-AOV implementation extends that slice with packed diffuse-texture sampling and
-Ray Query candidate alpha testing for primary and shadow rays. Sampling matches the CPU convention:
-V is flipped, coordinates repeat, encoded RGBA8 mip levels are bilinearly or trilinearly filtered,
-and RGB is decoded with `pow(value, 2.2)` after filtering. Cutout acceptance samples base-mip alpha
-and uses the `1e-4` threshold. The candidate loop intentionally has no 32-layer counter because
-Vulkan does not guarantee candidate order; it rejects every transparent candidate before
-confirming a hit. The compact arbitrary-ray `VulkanRayQueryIntersector` still rejects cutout scenes
-because its API has no material-sampling contract.
-
-Packed scene format version 4 contains deduplicated encoded RGBA8 textures and complete mip chains,
-indexed emissive-area-light records, and HDR linear radiance with a hierarchical importance CDF.
-`VulkanRuntime` uploads the texture, light, and environment arrays into persistent device-local
-buffers through a reusable staging buffer capped at 16 MiB per transfer. The lighting buffers are
-device-ready but are not yet consumed by a GPU path integrator.
-
-G3b remains a deterministic directional-light diagnostic, not a complete GPU path tracer. General
-environment and area-light transport, emission, full material response, random path continuation,
-SPP accumulation, Film readback, and post-processing integration remain open. The validated small
-timings are bring-up diagnostics and do not establish a speedup; the full G3 milestone remains
-open.
-
-`raym0nade_gpu_primary_benchmark` provides an explicitly limited Bistro geometry-throughput check.
-It reports single-thread CPU, parallel CPU, complete GPU-call, and dispatch/readback wall-clock
-timings plus a separate GPU device-timestamp duration. CPU/GPU ShapeNormal images are written
-outside the timed region. The benchmark no longer clears packed cutout flags: CPU and GPU both
-apply diffuse-alpha cutout semantics. It remains a primary-AOV geometry benchmark rather than a
-textured beauty benchmark or a substitute for the complete-topology performance gate. The older
-opaque-fallback error result is retained only as superseded history in `docs/development-log.md`.
-
-Pass `--gpu-only` for a manual GPU diagnostic that performs scene import, packing, Vulkan setup,
-GPU warm-up, and measured GPU renders without executing any CPU render. This mode writes only the
-GPU ShapeNormal PNG, GPU timing CSV, and an explicitly GPU-only summary. Use a dedicated output
-directory so files left by an earlier CPU/GPU comparison cannot be mistaken for current output:
-
-```sh
-./build/gpu-release/bin/raym0nade_gpu_primary_benchmark --gpu-only \
-    --width 3840 --height 2160 \
-    --output-dir output/benchmarks/gpu-only-3840x2160
-```
-
-Windows users should invoke the corresponding `.exe`. This remains a geometry diagnostic, not a
-path-traced Bistro beauty render.
+`raym0nade_gpu_render` is the general GPU rendering entry point. It accepts a checked-in console
+recipe plus command-line overrides and writes the usual FXAA beauty image by default. Pass
+`--all-passes` to export the full CPU-compatible Film pass set. Building the target also compiles
+and validates `path_trace.comp` and copies its SPIR-V file beside the executable; normal runs do not
+need a `--shader` argument.
 
 After activating the Conda environment, configure, build, and test the optional backend with:
 
@@ -249,6 +221,30 @@ cmake --preset gpu-release
 cmake --build --preset gpu-release
 ctest --preset gpu-release
 ```
+
+The configure and build commands are identical on Windows, Linux, and macOS. Run checked-in
+recipes from the repository root so their relative model and output paths resolve correctly. On
+Windows:
+
+```bat
+build\gpu-release\bin\raym0nade_gpu_render.exe ^
+    --recipe examples\bistro_daylight_appearance_1024.txt ^
+    --batch-spp 64 ^
+    --output-prefix output\BistroGpuPathQuality1024
+```
+
+On Linux or macOS:
+
+```sh
+./build/gpu-release/bin/raym0nade_gpu_render \
+    --recipe examples/bistro_daylight_appearance_1024.txt \
+    --batch-spp 64 \
+    --output-prefix output/BistroGpuPathQuality1024
+```
+
+Building is portable, but rendering still requires a device that passes the AMD Vulkan feature
+gate above. See `docs/render-examples.md` for recipe overrides, output selection, and validation
+examples.
 
 Run `build/gpu-release/bin/raym0nade_gpu_probe` (`.exe` on Windows) to inspect the available device.
 Add `--self-test` to build a one-triangle BLAS/TLAS and execute deterministic hardware Ray Queries;
@@ -263,6 +259,6 @@ requested. PowerShell development sessions can enable the layer and synchronizat
 
 ```powershell
 $env:VK_LAYER_PATH = "$env:CONDA_PREFIX\Library\bin"
-$env:VK_LAYER_VALIDATE_SYNC = "1"
+$env:VK_LAYER_VALIDATE_SYNC = "true"
 build\gpu-debug\bin\raym0nade_gpu_probe.exe --self-test --validation
 ```

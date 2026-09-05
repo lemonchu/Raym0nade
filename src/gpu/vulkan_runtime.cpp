@@ -12,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "raym0nade/scene_data.hpp"
@@ -943,8 +944,104 @@ VkDeviceSize packedArrayBufferByteSize(
                : checkedVulkanByteSize(elements.size(), sizeof(Element), description);
 }
 
+struct alignas(16) TextureTexelPageTableRecord {
+    std::array<std::uint32_t, 4> values{};
+};
+
+static_assert(sizeof(TextureTexelPageTableRecord) == 16U);
+static_assert(alignof(TextureTexelPageTableRecord) == 16U);
+static_assert(std::is_standard_layout_v<TextureTexelPageTableRecord>);
+static_assert(std::is_trivially_copyable_v<TextureTexelPageTableRecord>);
+
+struct TextureTexelPagingPlan {
+    std::uint32_t pageSizeTexels{0U};
+    std::uint32_t pageCount{0U};
+    std::uint32_t totalTexels{0U};
+    std::uint32_t pageShift{0U};
+    VkDeviceSize pageBytes{0U};
+    VkDeviceSize tableBytes{0U};
+};
+
+TextureTexelPagingPlan makeTextureTexelPagingPlan(
+    const PackedSceneData& scene,
+    const PhysicalDeviceSelection& physical,
+    std::uint64_t preferredPageBytes) {
+    if (scene.textureTexelsRgba8.size() >
+        std::numeric_limits<std::uint32_t>::max()) {
+        throw std::invalid_argument(
+            "The packed texture texel count exceeds the uint32 scene ABI.");
+    }
+
+    const VkDeviceSize storageRange =
+        physical.properties.limits.maxStorageBufferRange;
+    const VkDeviceSize boundedPageBytes =
+        std::min(static_cast<VkDeviceSize>(preferredPageBytes), storageRange);
+    const std::uint64_t maximumPageTexels =
+        static_cast<std::uint64_t>(boundedPageBytes / sizeof(std::uint32_t));
+    if (maximumPageTexels == 0U) {
+        throw std::invalid_argument(
+            "The Vulkan storage-buffer range cannot hold one texture texel.");
+    }
+
+    std::uint32_t pageSizeTexels = 1U;
+    std::uint32_t pageShift = 0U;
+    while (static_cast<std::uint64_t>(pageSizeTexels) * 2U <=
+           maximumPageTexels) {
+        pageSizeTexels *= 2U;
+        ++pageShift;
+    }
+
+    const auto totalTexels =
+        static_cast<std::uint32_t>(scene.textureTexelsRgba8.size());
+    const std::uint64_t pageCount64 =
+        totalTexels == 0U
+            ? 1U
+            : (static_cast<std::uint64_t>(totalTexels) + pageSizeTexels - 1U) /
+                  pageSizeTexels;
+    if (pageCount64 == 0U ||
+        pageCount64 > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::invalid_argument(
+            "The packed texture texel page count exceeds the GPU ABI.");
+    }
+    const auto pageCount = static_cast<std::uint32_t>(pageCount64);
+    const std::uint64_t tableRecordCount = pageCount64 + 1U;
+    if (tableRecordCount > std::numeric_limits<std::size_t>::max()) {
+        throw std::overflow_error(
+            "The packed texture texel page table is too large.");
+    }
+    const VkDeviceSize tableBytes = checkedVulkanByteSize(
+        static_cast<std::size_t>(tableRecordCount),
+        sizeof(TextureTexelPageTableRecord),
+        "Packed texture texel page table");
+    if (tableBytes > storageRange) {
+        throw std::invalid_argument(
+            "The packed texture texel page table exceeds maxStorageBufferRange.");
+    }
+
+    // Runtime resources plus a renderer's output/readback buffers consume at most seventeen
+    // additional VkDeviceMemory allocations while the paged texels remain alive.
+    constexpr std::uint64_t kPeakNonTexelPageAllocationCount = 17U;
+    if (pageCount64 + kPeakNonTexelPageAllocationCount >
+        physical.properties.limits.maxMemoryAllocationCount) {
+        throw std::invalid_argument(
+            "The packed texture texel pages exceed maxMemoryAllocationCount.");
+    }
+
+    TextureTexelPagingPlan result;
+    result.pageSizeTexels = pageSizeTexels;
+    result.pageCount = pageCount;
+    result.totalTexels = totalTexels;
+    result.pageShift = pageShift;
+    result.pageBytes =
+        static_cast<VkDeviceSize>(pageSizeTexels) * sizeof(std::uint32_t);
+    result.tableBytes = tableBytes;
+    return result;
+}
+
 void validatePackedSceneForGpu(
-    const PackedSceneData& scene, const PhysicalDeviceSelection& physical) {
+    const PackedSceneData& scene,
+    const PhysicalDeviceSelection& physical,
+    const VulkanRayQueryOptions& options) {
     const std::size_t triangleCount = scene.triangleCount();
     if (triangleCount > physical.accelerationProperties.maxPrimitiveCount ||
         physical.accelerationProperties.maxGeometryCount < 1U ||
@@ -979,8 +1076,8 @@ void validatePackedSceneForGpu(
         scene.textures, "Packed texture descriptor buffer");
     const VkDeviceSize textureMipBytes = packedArrayBufferByteSize(
         scene.textureMipLevels, "Packed texture mip buffer");
-    const VkDeviceSize textureTexelBytes = packedArrayBufferByteSize(
-        scene.textureTexelsRgba8, "Packed texture texel buffer");
+    static_cast<void>(makeTextureTexelPagingPlan(
+        scene, physical, options.textureTexelPageBytes));
     const VkDeviceSize areaLightBytes = packedArrayBufferByteSize(
         scene.areaLights, "Packed area light buffer");
     const VkDeviceSize areaLightTriangleBytes = packedArrayBufferByteSize(
@@ -1006,7 +1103,6 @@ void validatePackedSceneForGpu(
     requireStorageBufferRange(
         textureDescriptorBytes, "Packed texture descriptor buffer");
     requireStorageBufferRange(textureMipBytes, "Packed texture mip buffer");
-    requireStorageBufferRange(textureTexelBytes, "Packed texture texel buffer");
     requireStorageBufferRange(areaLightBytes, "Packed area light buffer");
     requireStorageBufferRange(
         areaLightTriangleBytes, "Packed area light triangle buffer");
@@ -1043,7 +1139,8 @@ struct VulkanRuntime::Implementation::State {
     std::unique_ptr<VulkanBuffer> materialBuffer;
     std::unique_ptr<VulkanBuffer> textureDescriptorBuffer;
     std::unique_ptr<VulkanBuffer> textureMipBuffer;
-    std::unique_ptr<VulkanBuffer> textureTexelBuffer;
+    std::unique_ptr<VulkanBuffer> textureTexelPageTableBuffer;
+    std::vector<std::unique_ptr<VulkanBuffer>> textureTexelPages;
     std::unique_ptr<VulkanBuffer> areaLightBuffer;
     std::unique_ptr<VulkanBuffer> areaLightTriangleBuffer;
     std::unique_ptr<VulkanBuffer> environmentRowBuffer;
@@ -1064,7 +1161,11 @@ VulkanRuntime::Implementation::Implementation(
     if (state_->options.fenceTimeoutNanoseconds == 0U) {
         throw std::invalid_argument("The Vulkan fence timeout must be non-zero.");
     }
-    validatePackedSceneForGpu(scene, state_->physical);
+    if (state_->options.textureTexelPageBytes < sizeof(std::uint32_t)) {
+        throw std::invalid_argument(
+            "The Vulkan texture-texel page size must hold at least one RGBA8 texel.");
+    }
+    validatePackedSceneForGpu(scene, state_->physical, state_->options);
     createCommandResources();
     createGeometry(scene);
 }
@@ -1144,7 +1245,7 @@ const VulkanBuffer& VulkanRuntime::Implementation::textureMipBuffer() const noex
 }
 
 const VulkanBuffer& VulkanRuntime::Implementation::textureTexelBuffer() const noexcept {
-    return *state_->textureTexelBuffer;
+    return *state_->textureTexelPageTableBuffer;
 }
 
 const VulkanBuffer& VulkanRuntime::Implementation::areaLightBuffer() const noexcept {
@@ -1295,8 +1396,26 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         scene.textures, "Packed texture descriptor buffer");
     const VkDeviceSize textureMipBytes = packedArrayBufferByteSize(
         scene.textureMipLevels, "Packed texture mip buffer");
-    const VkDeviceSize textureTexelBytes = packedArrayBufferByteSize(
-        scene.textureTexelsRgba8, "Packed texture texel buffer");
+    const TextureTexelPagingPlan textureTexelPlan =
+        makeTextureTexelPagingPlan(
+            scene,
+            state_->physical,
+            state_->options.textureTexelPageBytes);
+    std::vector<TextureTexelPageTableRecord> textureTexelPageTable(
+        static_cast<std::size_t>(textureTexelPlan.pageCount) + 1U);
+    textureTexelPageTable[0].values = {
+        textureTexelPlan.pageSizeTexels,
+        textureTexelPlan.pageCount,
+        textureTexelPlan.totalTexels,
+        textureTexelPlan.pageShift,
+    };
+    const VkDeviceSize maximumTextureTexelPageBytes =
+        textureTexelPlan.totalTexels == 0U
+            ? static_cast<VkDeviceSize>(sizeof(std::uint32_t))
+            : std::min(
+                  textureTexelPlan.pageBytes,
+                  static_cast<VkDeviceSize>(textureTexelPlan.totalTexels) *
+                      sizeof(std::uint32_t));
     const VkDeviceSize areaLightBytes = packedArrayBufferByteSize(
         scene.areaLights, "Packed area light buffer");
     const VkDeviceSize areaLightTriangleBytes = packedArrayBufferByteSize(
@@ -1312,6 +1431,8 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     constexpr VkBufferUsageFlags kShadingDataUsage =
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    constexpr VkBufferUsageFlags kTextureTexelPageUsage =
+        kShadingDataUsage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     state_->vertexBuffer = std::make_unique<VulkanBuffer>(
         logicalDevice,
         state_->physical.memoryProperties,
@@ -1354,10 +1475,51 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         kShadingDataUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         false);
-    state_->textureTexelBuffer = std::make_unique<VulkanBuffer>(
+    state_->textureTexelPages.reserve(textureTexelPlan.pageCount);
+    for (std::uint32_t pageIndex = 0U;
+         pageIndex < textureTexelPlan.pageCount;
+         ++pageIndex) {
+        const std::uint64_t firstTexel =
+            static_cast<std::uint64_t>(pageIndex) *
+            textureTexelPlan.pageSizeTexels;
+        const std::uint32_t validTexels =
+            firstTexel >= textureTexelPlan.totalTexels
+                ? 0U
+                : static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                      textureTexelPlan.pageSizeTexels,
+                      static_cast<std::uint64_t>(textureTexelPlan.totalTexels) -
+                          firstTexel));
+        const VkDeviceSize allocationBytes =
+            static_cast<VkDeviceSize>(std::max(validTexels, 1U)) *
+            sizeof(std::uint32_t);
+        auto page = std::make_unique<VulkanBuffer>(
+            logicalDevice,
+            state_->physical.memoryProperties,
+            allocationBytes,
+            kTextureTexelPageUsage,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            true);
+        const VkDeviceAddress address = page->deviceAddress();
+        if (address % alignof(std::uint32_t) != 0U ||
+            address >
+                std::numeric_limits<VkDeviceAddress>::max() -
+                    (allocationBytes - 1U)) {
+            throw std::runtime_error(
+                "A packed texture texel page has an invalid device-address range.");
+        }
+        textureTexelPageTable[
+            static_cast<std::size_t>(pageIndex) + 1U].values = {
+            static_cast<std::uint32_t>(address),
+            static_cast<std::uint32_t>(address >> 32U),
+            validTexels,
+            0U,
+        };
+        state_->textureTexelPages.push_back(std::move(page));
+    }
+    state_->textureTexelPageTableBuffer = std::make_unique<VulkanBuffer>(
         logicalDevice,
         state_->physical.memoryProperties,
-        textureTexelBytes,
+        textureTexelPlan.tableBytes,
         kShadingDataUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         false);
@@ -1483,10 +1645,6 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         scene.textureMipLevels.empty()
             ? static_cast<const void*>(&dummyMip)
             : static_cast<const void*>(scene.textureMipLevels.data());
-    const void* textureTexelSource =
-        scene.textureTexelsRgba8.empty()
-            ? static_cast<const void*>(&dummyTexel)
-            : static_cast<const void*>(scene.textureTexelsRgba8.data());
     const void* areaLightSource =
         scene.areaLights.empty()
             ? static_cast<const void*>(&dummyAreaLight)
@@ -1512,7 +1670,8 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
              instanceBytes,
              textureDescriptorBytes,
              textureMipBytes,
-             textureTexelBytes,
+             textureTexelPlan.tableBytes,
+             maximumTextureTexelPageBytes,
              areaLightBytes,
              areaLightTriangleBytes,
              environmentRowBytes,
@@ -1626,12 +1785,37 @@ void VulkanRuntime::Implementation::createGeometry(const PackedSceneData& scene)
         kShaderDestinationStage,
         "packed texture mip upload");
     uploadPackedBuffer(
-        *state_->textureTexelBuffer,
-        textureTexelSource,
-        textureTexelBytes,
+        *state_->textureTexelPageTableBuffer,
+        textureTexelPageTable.data(),
+        textureTexelPlan.tableBytes,
         kShaderDestinationAccess,
         kShaderDestinationStage,
-        "packed texture texel upload");
+        "packed texture texel page-table upload");
+    for (std::uint32_t pageIndex = 0U;
+         pageIndex < textureTexelPlan.pageCount;
+         ++pageIndex) {
+        const TextureTexelPageTableRecord& pageRecord =
+            textureTexelPageTable[static_cast<std::size_t>(pageIndex) + 1U];
+        const std::uint32_t validTexels = pageRecord.values[2];
+        const std::size_t firstTexel =
+            static_cast<std::size_t>(pageIndex) *
+            textureTexelPlan.pageSizeTexels;
+        const void* pageSource =
+            validTexels == 0U
+                ? static_cast<const void*>(&dummyTexel)
+                : static_cast<const void*>(
+                      scene.textureTexelsRgba8.data() + firstTexel);
+        const VkDeviceSize pageBytes =
+            static_cast<VkDeviceSize>(std::max(validTexels, 1U)) *
+            sizeof(std::uint32_t);
+        uploadPackedBuffer(
+            *state_->textureTexelPages[pageIndex],
+            pageSource,
+            pageBytes,
+            kShaderDestinationAccess,
+            kShaderDestinationStage,
+            "packed texture texel page upload");
+    }
     uploadPackedBuffer(
         *state_->areaLightBuffer,
         areaLightSource,

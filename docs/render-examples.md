@@ -57,10 +57,11 @@ highlights and should not be used to judge base exposure. `Raw` still includes t
 spatial outlier clamp and is not an untouched estimator dump. Depth-of-field variants are emitted
 only when CoC is positive.
 
-Before comparing Bistro images, confirm that the loader reports the complete known topology:
-8,496,360 vertices and 2,832,120 faces. The installed Assimp 5.4.3 can intermittently omit complete
-meshes with both the legacy and current importer settings. A run with different counts is not a
-valid appearance or timing baseline.
+Before comparing Bistro images, record the topology reported by the loader. The complete known
+topology is 8,496,360 vertices and 2,832,120 faces and remains the canonical visual baseline. The
+installed Assimp 5.4.3 can intermittently omit complete meshes with both the legacy and current
+importer settings. Do not retry imports merely to obtain a preferred count; compare CPU and GPU
+runs only when their recorded counts match, and label any incomplete result explicitly.
 
 ## Current daylight appearance recipe
 
@@ -126,6 +127,81 @@ exit
 
 Use exposure `14` in either recipe when a slightly brighter daylight presentation is desired. Do
 not change pixel scale when changing exposure.
+
+## AMD Vulkan path rendering
+
+The optional `raym0nade_gpu_render` application runs the same multi-bounce estimator on a supported
+AMD Vulkan device and returns its result through the shared `Film` post-processing path. Configure,
+build, and test it after activating the `raym0nade` Conda environment:
+
+```sh
+cmake --preset gpu-release
+cmake --build --preset gpu-release
+ctest --preset gpu-release
+```
+
+These CMake commands are the same on Windows, Linux, and macOS. The runtime requires an AMD device
+with Vulkan 1.2, a compute queue, buffer device address, acceleration structures, and Ray Query
+support. A platform can therefore build the optional backend even when its available device cannot
+run it.
+
+Always launch checked-in recipes from the repository root. Relative paths are resolved against the
+current working directory rather than the recipe file's directory; the model and HDR filenames are
+then resolved inside the recipe's model directory. On Windows, render the 1024 x 576 daylight
+recipe with:
+
+```bat
+build\gpu-release\bin\raym0nade_gpu_render.exe ^
+    --recipe examples\bistro_daylight_appearance_1024.txt ^
+    --seed 0 ^
+    --batch-spp 64 ^
+    --output-prefix output\BistroGpuPathQuality1024
+```
+
+The PowerShell equivalent can be entered on one line, or split with PowerShell backticks instead of
+the `cmd.exe` continuation characters above. On Linux or macOS:
+
+```sh
+./build/gpu-release/bin/raym0nade_gpu_render \
+    --recipe examples/bistro_daylight_appearance_1024.txt \
+    --seed 0 \
+    --batch-spp 64 \
+    --output-prefix output/BistroGpuPathQuality1024
+```
+
+The build compiles and validates the path-tracing shader and copies its SPIR-V file beside the
+executable. The renderer finds that adjacent file automatically, so `--shader` is only needed to
+test another SPIR-V file explicitly.
+
+The recipe parser accepts exactly one `create model` command, one `create settings` command, and
+their matching `render` command; the historical `create args` spelling is also accepted for the
+settings command. An optional final `exit` is allowed.
+
+By default, the GPU CLI writes only `<prefix>(Filter_FXAA).png`, which is the recommended beauty
+image for evaluating the result. Add `--all-passes` to use the full CPU-compatible Film exporter.
+For example, this preview keeps the recipe camera while changing resolution, sample count,
+exposure, seed, and output location:
+
+```sh
+./build/gpu-release/bin/raym0nade_gpu_render \
+    --recipe examples/bistro_daylight_appearance_1024.txt \
+    --resolution 512x288 \
+    --spp 32 \
+    --seed 7 \
+    --exposure 12 \
+    --output-prefix output/BistroGpuPreview
+```
+
+`--resolution` preserves the horizontal field of view by scaling pixel size and circle of
+confusion from the recipe width. Other estimator overrides are `--direct-probability`, `--spp`,
+`--seed`, and `--exposure`. `--output-prefix` changes only the output location. The recipe's
+worker count is accepted for compatibility but is not used by the GPU renderer.
+
+Execution controls are `--tile WIDTHxHEIGHT` and `--batch-spp N`, where `N` is from 1 through 64;
+the defaults are `128x128` and `8`. `--validation` requests the Vulkan validation layer and
+synchronization validation. `--expect-faces N` is an optional import-topology guard, and
+`--shader FILE` overrides the automatically located shader. Run
+`raym0nade_gpu_render --help` for the authoritative option list.
 
 ## Daylight exposure derivation
 

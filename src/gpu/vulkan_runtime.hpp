@@ -133,6 +133,8 @@ public:
     [[nodiscard]] const VulkanBuffer& materialBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& textureDescriptorBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& textureMipBuffer() const noexcept;
+    // Binding 8 contains a compact page table. Its entries address the separately owned
+    // texture-texel pages through Vulkan buffer device addresses.
     [[nodiscard]] const VulkanBuffer& textureTexelBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& areaLightBuffer() const noexcept;
     [[nodiscard]] const VulkanBuffer& areaLightTriangleBuffer() const noexcept;
